@@ -80,7 +80,7 @@ Exit (spec §20): a user can describe an image task, compare installed-asset can
   - [x] 2.3.2 `installedModels` in the snapshot; freshness with a configurable maximum age; a stale or partial snapshot says so
 - [x] 2.4 Local catalog and three curated recipes for the families chosen in GAPS Q12 (spec §8)
   - [x] 2.4.1 Recipe loader: shipped recipes from `architect/recipes/`, validated, content-hashed, recorded with their catalog source; an invalid file is reported, never skipped silently
-  - [x] 2.4.2 Retrieval: filter by kind and operation, then rank by installed-dependency overlap, at most 20 (spec §8.5, §9.2)
+  - [x] 2.4.2 Retrieval: filter by kind and operation, then rank by installed-dependency overlap, at most 20 (spec §8.5, §9.2). A model slot counts as fillable only by a file that could make a feasible candidate: its default file, or for a slot with neither default nor family any listed file (fixed 2026-11-15 20:49; before, any file in the folder counted)
   - [x] 2.4.3 Fixture recipes for tests (certification `fixture`)
   - [x] 2.4.4 Three recipes for Z-Image Turbo and FLUX.1-schnell (GAPS Q12), shipped as `proposed` until the owner reviews them, each checked against the live node schemas of the Desktop install. On that install Z-Image Turbo plans to a feasible candidate. The three are `curated` after the owner's review (GAPS Q12). A fourth, `recipe-flux1-schnell.ckpt-t2i` (`proposed`), loads FLUX.1-schnell's all-in-one file from `checkpoints/` and plans to a feasible candidate too (GAPS Q13)
 - [x] 2.5 `architect_inspect` and the planning actions of `architect_plan` (spec §16.1)

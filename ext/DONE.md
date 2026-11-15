@@ -2,6 +2,31 @@
 
 The progress log, newest entry on top. Each entry: `## YYYY-MM-DD HH:MM — Title` (time from `date`), the TODO items and PR or commit, an `Agent:` line, then **Implementation notes**, **Deviations** and **Insights**. The plan is in [TODO](TODO.md).
 
+## 2026-11-15 20:49 — Installed fit that matches the validator; milestone 2 closed
+
+TODO items: 2.4.2 (fix). PR on branch `fix/installed-fit`.
+
+Agent: Opus 5.5, subagents: none.
+
+### Implementation notes
+
+- **Installed fit:** `prepare` reported FLUX.1-schnell (`UNETLoader`) as 4 of 4 model slots fillable, and `propose` then blocked it for two missing text encoders. Retrieval counted a slot as fillable whenever its folder listed any file. A slot now counts only for a file that could make a feasible candidate, by the validator's rules:
+  - with a default: that file must be listed, since any other file fails the family check once the slot names a family (GAPS Q14);
+  - with a family but no default: never;
+  - with neither: any listed file.
+  An unread folder stays unknown (#796).
+- On the reference machine, `prepare` now reports Z-Image Turbo 3 of 3, FLUX.1-schnell (`UNETLoader`) 2 of 4 and the checkpoint recipe 1 of 1.
+- Two tests, both failing on the earlier code: the FLUX case (other files in the folder don't count), and the slot without a default, with and without a family.
+- **Status:** AGENTS.md and ROAD mark milestone 2 done and spec Phase 2 next. AGENTS.md names the rename milestone's wider scope (GAPS Q11, 20:21) and that panel work waits for the panel phase (owner, 2026-11-15).
+
+### Deviations
+
+- None.
+
+### Insights
+
+- The validator's rules decide what a "fit" is. A ranking signal computed by a looser rule promises what the validator then refuses, so retrieval applies the validator's rule.
+
 ## 2026-11-15 19:03 — Milestone 2 follow-ups: FLUX checkpoint, curated recipes, panel in the browser
 
 TODO items: 1.2.4, 1.10 (done), notes on 1.3, 1.9 and 2.4.4. GAPS Q6, Q11–Q16 answered. PR #8, branch `feat/milestone-2-followups`, built on #7.
