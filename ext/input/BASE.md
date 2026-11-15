@@ -1,0 +1,38 @@
+# Baseline
+
+The upstream commit the fork is built on, and what has been checked against it. A newer baseline comes only through an upstream sync ([AGENTS](../../AGENTS.md#process)), and each sync adds a section on top. Status: 2026-11-15 13:29.
+
+## Current baseline: `707474d2` (v0.52.206)
+
+| | |
+| --- | --- |
+| Repository | [`artokun/comfyui-mcp`](https://github.com/artokun/comfyui-mcp) |
+| Commit | `707474d24d0d251ba04a1bebdf86620cef2eaa8b`, 2026-11-04 02:40, "fix(3002): get_image names workable remedies when a video /view fetch is refused or stalls (#3003)" |
+| Package version | `0.52.206` |
+| Pinned since | 2026-11-15 12:54 (fork created) |
+| Spec inspected the same commit | Yes (spec source [S1]) |
+
+### Checks run
+
+Recorded on 2026-11-15 on the owner's macOS workstation, Node from the local install, with ComfyUI reachable on port 8188.
+
+| Check | Result |
+| --- | --- |
+| `npm ci` | Passed |
+| `npm run lint` (`tsc --noEmit`) | Passed, 0.7 s |
+| `npm run check:vocabulary` | Passed: 1,929 files scanned, 160 retired names in the ledger, no live references (with `ext/` present) |
+| `npm run check:unknown-collapse` | Passed: no new collapses |
+| `npm run build`, `npm test` | Not run yet (TODO 1.1.2) |
+| `asset-counts --check`, `vocab:export -- --check`, `docs:gen` no-op, pack smoke | Not run yet (TODO 1.1.2) |
+| `npm run test:integration` | Not run yet (TODO 1.1.3) |
+
+### Baseline facts for the fork
+
+- **Size:** about 238,000 lines of TypeScript source and 304,000 lines of tests in 795 test files.
+- **Hotspot:** `src/orchestrator/panel-tools.ts`, 31,000 lines, touched by 143 of the last 500 source commits. Avoid editing it; conflicts there are the most likely on a sync.
+- **Activity:** 2,045 commits in August 2026, 61 in October, 1 in November up to the baseline.
+- **No external tool registration:** `src/tools/index.ts` registers a fixed set; the panel agent picks up other MCP servers only on the Claude backend (`backendInheritsUserMcpServers` in `src/services/user-mcp-config.ts`).
+- **Tool policy is per tool:** `src/tools/tool-surface-filter.ts` filters whole tools by environment configuration and states that per-action policy is deliberately not attempted.
+- **Hardcoded package name:** `PACKAGE_NAME = "comfyui-mcp"` in `src/services/self-update.ts`.
+- **Ignored agent files:** upstream's `.gitignore` excludes `/AGENTS.md`, `/CLAUDE.md` and `.claude/`.
+- **CI leftover:** `.github/workflows/ci.yml` keeps the comment of the Oxlint gate removed in `1d5b12b1` (#2928), with no step under it. Harmless; a candidate for an upstream fix.
