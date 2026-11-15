@@ -4,7 +4,7 @@ Planning: ChatGPT: Product Architect/ComfyUI Workflow Architecture
 
 ## 1. Purpose
 
-[ComfyUI Architect](./input/comfy-architect-system-spec.md) is designed to turn a natural-language task into an executable ComfyUI workflow, taking account of quality targets, installed models, available templates, and compute and memory limits. Rather than simply generating graph JSON, it retrieves suitable workflow patterns, selects compatible components, compares feasible alternatives, and explains their quality, speed, and resource trade-offs. Missing models or dependencies can be proposed for download, subject to user approval.
+[ComfyUI Architect](./input/comfyui-architect-system-spec.md) is designed to turn a natural-language task into an executable ComfyUI workflow, taking account of quality targets, installed models, available templates, and compute and memory limits. Rather than simply generating graph JSON, it retrieves suitable workflow patterns, selects compatible components, compares feasible alternatives, and explains their quality, speed, and resource trade-offs. Missing models or dependencies can be proposed for download, subject to user approval.
 
 The implementation extends a fork of **`artokun/comfyui-mcp`**, reusing its provider integrations, workflow tooling, model management, and execution infrastructure. ComfyUI Architect adds structured task specifications, a capability knowledge base, constraint-aware planning, and a bounded execution-and-evaluation loop. The same core serves external MCP clients and the ComfyUI sidebar, using local Ollama models or configured Claude, Codex, and API providers. Deterministic checks govern graph compatibility and permitted actions; test renders and user feedback establish whether the resulting workflow actually meets the intended outcome.
 
@@ -16,7 +16,7 @@ The project follows gregoryyy's agentic coding project structure, as adapted in 
 
 | Path | Content |
 | --- | --- |
-| `ext/` | Project documents: this README, [BOOT](input/BOOT.md), [IDEA](IDEA.md), [GAPS](GAPS.md), [TODO](TODO.md), [ROAD](ROAD.md), [DONE](DONE.md), [STYLE](STYLE.md), [SPEC](design/SPEC.md) (the design), [BASE](input/BASE.md), and the [spec](input/comfy-architect-system-spec.md) as input |
+| `ext/` | Project documents: this README, [BOOT](input/BOOT.md), [IDEA](IDEA.md), [GAPS](GAPS.md), [TODO](TODO.md), [ROAD](ROAD.md), [DONE](DONE.md), [STYLE](STYLE.md), [SPEC](design/SPEC.md) (the design), [BASE](input/BASE.md), and the [spec](input/comfyui-architect-system-spec.md) as input |
 | `src/services/architect/` | The Architect domain: task specs, catalog, planner, constraints, policy, resources, run controller, evaluation, store |
 | `src/services/architect/upstream.ts` | The one facade through which the Architect code calls upstream services |
 | `src/tools/architect.ts` | The MCP tools `architect_inspect`, `architect_plan`, `architect_run`, `architect_library` |

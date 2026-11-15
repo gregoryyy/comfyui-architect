@@ -1,4 +1,4 @@
-# Comfy Architect
+# ComfyUI Architect
 ## System specification for an `artokun/comfyui-mcp` fork
 
 **Version:** 1.0  
@@ -9,7 +9,7 @@
 
 ## 1. Product definition
 
-Comfy Architect turns a user's intended result, quality requirements, available workflows and models, and hardware constraints into an executable, editable, tested ComfyUI workflow.
+ComfyUI Architect turns a user's intended result, quality requirements, available workflows and models, and hardware constraints into an executable, editable, tested ComfyUI workflow.
 
 It is an extension of the fork's existing control plane, not a replacement for it. The fork retains upstream MCP connectivity, provider backends, workflow tooling, model management, execution, and live-canvas integration. New code adds a structured planning and evaluation layer.
 
@@ -772,7 +772,7 @@ architect/
   rules/                     # Versioned compatibility/parameter rules
   fixtures/                  # Small task and environment fixtures
 plugin/
-  skills/comfy-architect/SKILL.md
+  skills/comfyui-architect/SKILL.md
   commands/architect.md
 ```
 

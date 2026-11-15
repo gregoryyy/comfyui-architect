@@ -2,6 +2,23 @@
 
 The progress log, newest entry on top. Each entry: `## YYYY-MM-DD HH:MM — Title` (time from `date`), the TODO items and PR or commit, an `Agent:` line, then **Implementation notes**, **Deviations** and **Insights**. The plan is in [TODO](TODO.md).
 
+## 2026-11-15 14:26 — ComfyUI Architect in the input spec too
+
+TODO item: 0.1. Branch `docs/gaps-answers`.
+
+Agent: Opus 5.5, subagents: none.
+
+### Implementation notes
+
+- The input spec is now `ext/input/comfyui-architect-system-spec.md`, and its text says ComfyUI Architect, with the skill folder `plugin/skills/comfyui-architect/` (owner, 2026-11-15). Links in AGENTS, IDEA, README, BOOT and SPEC follow the new file name.
+- SPEC's working-copy note, STYLE (documents) and BOOT (names) say that the input is frozen apart from the product name.
+- No "Comfy Architect" or `comfy-architect` remains in tracked files, apart from DONE's earlier entries and the subject of commit `874c4489`.
+
+### Deviations
+
+- The rename at 13:19 left the spec unchanged as frozen input, against the owner's instruction to call the project ComfyUI Architect. The owner corrected it.
+- The 13:46 entry, explaining the vocabulary fix, spelled out the retired tool name itself, so PR #2 failed `check:vocabulary` as pushed (`795e932a`). The gate had run before that line was added. Reworded; the gate passes (1,938 files).
+
 ## 2026-11-15 13:46 — GAPS questions answered
 
 TODO items: 0.3.2, 0.7.1, 0.7.2. Branch `docs/gaps-answers`.
@@ -18,7 +35,7 @@ Agent: Opus 5.5, subagents: none.
 ### Deviations
 
 - `LICENSE` is an upstream file outside the seams listed in BOOT; the change follows from Q4. Upstream has changed `LICENSE` once (`5ac899b4`), so a sync conflict there is unlikely.
-- `main` after PR #1 fails `check:vocabulary`: AGENTS.md says "regenerate generated files", and `regenerate` is a tool name upstream retired in 0.50.0. PR #1's checks passed because AGENTS.md was still ignored then and the gate scans only tracked and untracked-not-ignored files. Reworded to "rebuild the generated files"; the gate passes again (1,938 files).
+- `main` after PR #1 fails `check:vocabulary`: AGENTS.md used a verb that is also the name of a tool upstream retired in 0.50.0 (now an action of `generate_image`), and the gate matches whole words in every tracked file. PR #1's checks passed because AGENTS.md was still ignored then and the gate scans only tracked and untracked-not-ignored files. Reworded to "rebuild the generated files"; the gate passes again (1,938 files).
 
 ### Insights
 

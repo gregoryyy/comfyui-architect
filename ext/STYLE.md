@@ -63,7 +63,7 @@ Prose follows the [writing style](#writing-style) below. This section covers lay
 
 ### Documents
 
-- Upper-case file names only for central documents (`README`, `AGENTS`, `IDEA`, `ARCH`, `SEC`, `GAPS`, `SDLC`, `STYLE`, `SBOM`, `TODO`, `ROAD`, `DONE`, `design/SPEC`); everything else lower case with hyphens. `ext/input/` holds bootstrap material: the spec v1.0 is frozen, BOOT stays as moved, and BASE gains a section per upstream sync.
+- Upper-case file names only for central documents (`README`, `AGENTS`, `IDEA`, `ARCH`, `SEC`, `GAPS`, `SDLC`, `STYLE`, `SBOM`, `TODO`, `ROAD`, `DONE`, `design/SPEC`); everything else lower case with hyphens. `ext/input/` holds bootstrap material: the spec v1.0 is frozen apart from the product name ComfyUI Architect, BOOT stays as moved, and BASE gains a section per upstream sync.
 - Each central document opens with one paragraph on what it covers and links to its neighbours, then a status line with a timestamp to the minute (`Status: 2026-11-15 13:46.`, local time). Take every timestamp from the clock (`date '+%Y-%m-%d %H:%M'`), never estimate it.
 - Sentence-case headings, short paragraphs, tables for comparisons, bold lead-ins for list items that carry a term. Say what is decided, proposed and open.
 - `§` refers to the sections of [SPEC](design/SPEC.md); IDs from other documents carry their document (`GAPS Q2`, `TODO 1.3`).
