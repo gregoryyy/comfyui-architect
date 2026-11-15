@@ -2,6 +2,61 @@
 
 The progress log, newest entry on top. Each entry: `## YYYY-MM-DD HH:MM — Title` (time from `date`), the TODO items and PR or commit, an `Agent:` line, then **Implementation notes**, **Deviations** and **Insights**. The plan is in [TODO](TODO.md).
 
+## 2026-11-15 14:26 — ComfyUI Architect in the input spec too
+
+TODO item: 0.1. Branch `docs/gaps-answers`.
+
+Agent: Opus 5.5, subagents: none.
+
+### Implementation notes
+
+- The input spec is now `ext/input/comfyui-architect-system-spec.md`, and its text says ComfyUI Architect, with the skill folder `plugin/skills/comfyui-architect/` (owner, 2026-11-15). Links in AGENTS, IDEA, README, BOOT and SPEC follow the new file name.
+- SPEC's working-copy note, STYLE (documents) and BOOT (names) say that the input is frozen apart from the product name.
+- No "Comfy Architect" or `comfy-architect` remains in tracked files, apart from DONE's earlier entries and the subject of commit `874c4489`.
+
+### Deviations
+
+- The rename at 13:19 left the spec unchanged as frozen input, against the owner's instruction to call the project ComfyUI Architect. The owner corrected it.
+- The 13:46 entry, explaining the vocabulary fix, spelled out the retired tool name itself, so PR #2 failed `check:vocabulary` as pushed (`795e932a`). The gate had run before that line was added. Reworded; the gate passes (1,938 files).
+
+## 2026-11-15 13:46 — GAPS questions answered
+
+TODO items: 0.3.2, 0.7.1, 0.7.2. Branch `docs/gaps-answers`.
+
+Agent: Opus 5.5, subagents: none.
+
+### Implementation notes
+
+- The owner answered all ten GAPS questions (2026-11-15 13:45); each has its answer and a Resolved line naming where the decision went. Eight followed the proposal. Q5 and Q9 chose differently: the reference target is the source install at `~/Documents/opt/flux/ComfyUI`, not the Desktop install, and the first local planner is upstream's default `artokun/gemma4-comfyui-mcp:e4b`.
+- [SPEC](design/SPEC.md) is the design authority (Q1): a copy of the input spec with a working-copy note and the owner's decisions since applied (product name, skill folder, baseline record). AGENTS, IDEA, STYLE, TODO and README refer to it; § now means its sections.
+- TODO 1.2.1, 1.2.2, 1.3.1 and 1.9 carry the answers to Q5, Q9, Q2 and Q3, and Q6.
+- `LICENSE` gained the line `Copyright (c) 2026 Gregor Heinrich (ComfyUI Architect additions)` (Q4: MIT for everything).
+
+### Deviations
+
+- `LICENSE` is an upstream file outside the seams listed in BOOT; the change follows from Q4. Upstream has changed `LICENSE` once (`5ac899b4`), so a sync conflict there is unlikely.
+- `main` after PR #1 fails `check:vocabulary`: AGENTS.md used a verb that is also the name of a tool upstream retired in 0.50.0 (now an action of `generate_image`), and the gate matches whole words in every tracked file. PR #1's checks passed because AGENTS.md was still ignored then and the gate scans only tracked and untracked-not-ignored files. Reworded to "rebuild the generated files"; the gate passes again (1,938 files).
+
+### Insights
+
+- Neither install holds image models: the reference install has one MiniMax video LoRA (1.8 GB in total) three levels deep, and the Desktop install's models folder is empty. The first certified families start with downloads, so TODO 1.2.1 checks the model path layout before any recipe work.
+- The machine is an Apple M5 Pro with 48 GB of unified memory, so reasoning and rendering share one memory pool, and the spec's shared-memory scheduling (§11.3) applies from the first local run.
+
+## 2026-11-15 13:35 — Repository renamed; neutral PR text
+
+TODO item: 0.6. Branch `docs/gaps-answers`; PR #1 (merged 2026-11-15) got the rewritten description.
+
+Agent: Opus 5.5, subagents: none.
+
+### Implementation notes
+
+- Renamed the fork on GitHub from `gregoryyy/comfyui-mcp` to `gregoryyy/comfyui-architect` (owner, 2026-11-15). It stays a fork of `artokun/comfyui-mcp`; `origin` and `gh`'s default repository point at the new name, and GitHub redirects the old URLs. AGENTS, README and TODO 0.6 use the new name; GAPS Q2 notes the rename, and the package and command names stay open there.
+- PR text is neutral and in the third person, without addressing the owner or an agent signature (owner, 2026-11-15): a rule in STYLE (Commits and pull requests) and AGENTS (Commits). PR #1's description was rewritten to match.
+
+### Deviations
+
+- PR #1 was first written with an "Open for the owner" section and a generated-by line.
+
 ## 2026-11-15 13:31 — BOOT edits restored
 
 TODO item: 0.1. Branch `architect/spec`, PR #1, not yet committed.
@@ -14,7 +69,7 @@ Agent: Opus 5.5, subagents: none.
 
 ### Deviations
 
-- Two edits differ from the lost ones: step 1 says the move is done and committed, and the `input/` line lists BOOT and BASE, which moved there after the edits were first written.
+- Step 1 now says the move is done and committed, and the `input/` line also lists BOOT and BASE, which moved there after the lost edits were written.
 
 ## 2026-11-15 13:29 — STYLE as the central standard; BOOT and BASE to input
 

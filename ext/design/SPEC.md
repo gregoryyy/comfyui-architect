@@ -1,15 +1,16 @@
-# Comfy Architect
+# ComfyUI Architect
 ## System specification for an `artokun/comfyui-mcp` fork
 
 **Version:** 1.0  
 **Date:** 15 November 2026  
 **Status:** Proposed implementation specification; not an implemented or runtime-tested system.  
+**Working copy:** of the [input spec v1.0](../input/comfyui-architect-system-spec.md), made 2026-11-15 (GAPS Q1). This file is the design authority and evolves; the input stays frozen apart from the product name. Section numbers matched the input when copied. Changes since v1.0: the product name ComfyUI Architect and the skill folder `plugin/skills/comfyui-architect/` (both also applied to the input), and the baseline record in `ext/input/BASE.md` (owner decisions of 2026-11-15, [DONE](../DONE.md)).  
 **Primary upstream:** `artokun/comfyui-mcp`  
 **Inspected baseline:** package version `0.52.206`, commit `707474d24d0d251ba04a1bebdf86620cef2eaa8b`. The retrieved commit is dated 4 November 2026. [S1][S2]
 
 ## 1. Product definition
 
-Comfy Architect turns a user's intended result, quality requirements, available workflows and models, and hardware constraints into an executable, editable, tested ComfyUI workflow.
+ComfyUI Architect turns a user's intended result, quality requirements, available workflows and models, and hardware constraints into an executable, editable, tested ComfyUI workflow.
 
 It is an extension of the fork's existing control plane, not a replacement for it. The fork retains upstream MCP connectivity, provider backends, workflow tooling, model management, execution, and live-canvas integration. New code adds a structured planning and evaluation layer.
 
@@ -772,7 +773,7 @@ architect/
   rules/                     # Versioned compatibility/parameter rules
   fixtures/                  # Small task and environment fixtures
 plugin/
-  skills/comfy-architect/SKILL.md
+  skills/comfyui-architect/SKILL.md
   commands/architect.md
 ```
 
@@ -802,7 +803,7 @@ Optional heavyweight evaluators may run in a separate, explicitly installed envi
 
 ### 17.4 Fork maintenance
 
-Record the exact upstream commit in `UPSTREAM_BASELINE.md` and build metadata. Maintain a clean upstream tracking branch and merge updates through a tested integration branch. Do not develop against an unpinned `latest` package.
+Record the exact upstream commit in `ext/input/BASE.md` and build metadata. Maintain a clean upstream tracking branch and merge updates through a tested integration branch. Do not develop against an unpinned `latest` package.
 
 Retain upstream license notices and attribution. Review licenses separately for added code, node packs, templates and model artifacts; the upstream package's license does not settle those other licenses.
 

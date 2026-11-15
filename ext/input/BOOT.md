@@ -36,7 +36,7 @@ Lakeshore started from an empty repository. ComfyUI Architect lives inside someo
 | 6 | Put it under version control | Public fork, remotes, working branch | Done 2026-11-15 12:54: `gregoryyy/comfyui-mcp`, branch `architect/spec` |
 | 7 | Start the foundation, then TODO mode | TODO 0 remainder, then TODO 1 (spec Phase 0) | Not started |
 
-**The spec and the standard documents** *(decision)*. `ext/input/comfy-architect-system-spec.md` covers most of what Lakeshore splits into IDEA, design concept, SEC, ARCH, EVAL and ROAD. Since it's now input, it's the frozen record of where the design came from and isn't edited further. The design documents derive from it in one of two ways:
+**The spec and the standard documents** *(decision)*. `ext/input/comfyui-architect-system-spec.md` covers most of what Lakeshore splits into IDEA, design concept, SEC, ARCH, EVAL and ROAD. Since it's now input, it's the frozen record of where the design came from and isn't edited further. The design documents derive from it in one of two ways:
 - *(variant, proposed)* A working copy, `ext/design/SPEC.md`, becomes the one design authority, upper case as a central document, and evolves from there. IDEA, SEC, ARCH, EVAL and ROAD are written only where the spec doesn't already say it, and they link to its sections rather than repeat them.
 - *(variant)* The spec's content is split into the standard documents, which then evolve on their own. This is cleaner later but means rewriting 1,000 lines now.
 
@@ -272,4 +272,4 @@ comfyui-mcp/                    the fork; everything not listed is upstream's
 └── docs/                       upstream's site; Architect adds generated tool pages only
 ```
 
-**Names:** upper case only for documents of central importance (`README.md`, `IDEA.md`, `ARCH.md`, `EVAL.md`, `SEC.md`, `GAPS.md`, `SDLC.md`, `STYLE.md`, `SBOM.md`, `TODO.md`, `ROAD.md`, `DONE.md`, `BOOT.md`, `UPSTREAM_BASELINE.md`, the optional `GLOS.md` and `SOTA.md`, `design/SPEC.md`). Everything else is lower case: input, research, notes, code. Everything in `input/` keeps the name it arrived with.
+**Names:** upper case only for documents of central importance (`README.md`, `IDEA.md`, `ARCH.md`, `EVAL.md`, `SEC.md`, `GAPS.md`, `SDLC.md`, `STYLE.md`, `SBOM.md`, `TODO.md`, `ROAD.md`, `DONE.md`, `BOOT.md`, `UPSTREAM_BASELINE.md`, the optional `GLOS.md` and `SOTA.md`, `design/SPEC.md`). Everything else is lower case: input, research, notes, code. Everything in `input/` keeps the name it arrived with, apart from the product name ComfyUI Architect (owner, 2026-11-15).
