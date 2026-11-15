@@ -1,6 +1,6 @@
 # Baseline
 
-The upstream commit the fork is built on, and what has been checked against it. A newer baseline comes only through an upstream sync ([AGENTS](../../AGENTS.md#process)), and each sync adds a section on top. Status: 2026-11-15 13:29.
+The upstream commit the fork is built on, and what has been checked against it. A newer baseline comes only through an upstream sync ([AGENTS](../../AGENTS.md#process)), and each sync adds a section on top. Status: 2026-11-15 15:19.
 
 ## Current baseline: `707474d2` (v0.52.206)
 
@@ -22,8 +22,11 @@ Recorded on 2026-11-15 on the owner's macOS workstation, Node from the local ins
 | `npm run lint` (`tsc --noEmit`) | Passed, 0.7 s |
 | `npm run check:vocabulary` | Passed: 1,929 files scanned, 160 retired names in the ledger, no live references (with `ext/` present) |
 | `npm run check:unknown-collapse` | Passed: no new collapses |
-| `npm run build`, `npm test` | Not run yet (TODO 1.1.2) |
-| `asset-counts --check`, `vocab:export -- --check`, `docs:gen` no-op, pack smoke | Not run yet (TODO 1.1.2) |
+| `npm run build` | Passed |
+| `npm test` (Vitest, 798 files) | Doesn't finish locally: `services/bridge-port-reclaim.test.ts` hangs, on `707474d2` as well. The other 797 files: 14,679 tests, **14 baseline failures** in six files, the same on `707474d2` and on `feat/milestone-1`: `orchestrator/install-accepted-never-enqueued` (9), `orchestrator/install-node-git-expectation`, `orchestrator/confirm-late-answer-recovery`, `services/divergent-install-reachable`, `services/ui-bridge`, `tools/stale-note-route-aware` (1 each). Not investigated; several wait on real timeouts, and a ComfyUI Desktop listens on 8188 |
+| `asset-counts --check`, `vocab:export -- --check` | Passed (38 core, 96 panel, 160 retired names) |
+| `docs:gen` | No-op: 16 pages, 38/38 tools |
+| `scripts/smoke-install.mjs` (pack and install) | Passed: 38 core tools plus 3 compact-mode tools, 96 panel tools |
 | `npm run test:integration` | Not run yet (TODO 1.1.3) |
 
 ### Baseline facts for the fork

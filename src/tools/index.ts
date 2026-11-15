@@ -41,6 +41,8 @@ import { ToolCatalog, type ToolRegistrar } from "./catalog.js";
 import { registerCompactTools } from "./compact.js";
 import { logger } from "../utils/logger.js";
 import { resolveToolSurfacePolicy, withToolSurfaceFilter } from "./tool-surface-filter.js";
+// ComfyUI Architect (fork seam): registers its group only when COMFYUI_ARCHITECT is on.
+import { ARCHITECT_CATEGORY, registerArchitectToolGroup } from "./architect.js";
 
 /**
  * Every static tool group, in registration order (order is observable in
@@ -173,6 +175,8 @@ export async function registerAllTools(server: McpServer): Promise<void> {
   const filtered: string[] = [];
   const gated = withToolSurfaceFilter(withBlindImageGate(server), policy, (n) => filtered.push(n));
   for (const [, register] of TOOL_GROUPS) register(gated);
+  // Fork seam: after every upstream group, so upstream's order is unchanged.
+  registerArchitectToolGroup(gated);
   await registerAutoloadedWorkflows(gated);
   if (policy.active) {
     // Logged, never pushed to the model: the point is that it does not learn these
@@ -273,6 +277,9 @@ export async function collectToolCatalog(): Promise<ToolCatalog> {
     catalog.setCategory(category);
     register(registrar);
   }
+  // Fork seam: the same policy-filtered registrar, so call_tool can't bypass the policy.
+  catalog.setCategory(ARCHITECT_CATEGORY);
+  registerArchitectToolGroup(registrar);
   catalog.setCategory("saved-workflows");
   await registerAutoloadedWorkflows(registrar);
   return catalog;

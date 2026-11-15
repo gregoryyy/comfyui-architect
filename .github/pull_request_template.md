@@ -21,4 +21,4 @@ TODO items:
 
 - [ ] Docs current (AGENTS layout, affected `ext/` documents, generated tool pages)
 - [ ] TODO items ticked, DONE entry on top
-- [ ] Upstream files changed outside the seams in `ext/input/BOOT.md` are named here and in DONE
+- [ ] Upstream files changed outside the seams in `ext/ARCH.md` (Upstream footprint) are named here, in DONE and in that list

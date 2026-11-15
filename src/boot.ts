@@ -28,6 +28,9 @@ import {
 } from "./services/advertised-origin.js";
 import { banner, labelRows, numberedSteps } from "./i18n/terminal-layout.js";
 import { STDIO_HANDSHAKE_INSTRUCTIONS } from "./handshake-instructions.js";
+// ComfyUI Architect (fork seam): the fork names itself in the handshake (spec §18.2).
+import { forkHandshakeLine, forkServerTitle } from "./fork-identity.js";
+import { architectEnabled } from "./services/architect/config.js";
 import { orchestratorLogPath } from "./services/orchestrator-log.js";
 import { probeSharp } from "./services/sharp-loader.js";
 
@@ -218,6 +221,7 @@ async function createConfiguredServer(toolMode: ToolMode = "compact"): Promise<M
     {
       name: "comfyui-mcp",
       version: SERVER_VERSION,
+      title: forkServerTitle(),
     },
     {
       // We declare `resources` and `prompts` (with noop list handlers below)
@@ -236,7 +240,9 @@ async function createConfiguredServer(toolMode: ToolMode = "compact"): Promise<M
       // trust posture). Tool schemas stay on the tools. Compact mode cannot
       // see the catalog until it asks, so this is the only place those flows
       // exist at connect.
-      instructions: STDIO_HANDSHAKE_INSTRUCTIONS,
+      // ComfyUI Architect: the fork line follows upstream's block. Concatenated, not a
+      // template literal, because handshake-instructions.test.ts pins this wiring as text.
+      instructions: STDIO_HANDSHAKE_INSTRUCTIONS + "\n" + forkHandshakeLine(architectEnabled()),
     },
   );
   if (toolMode === "compact") {

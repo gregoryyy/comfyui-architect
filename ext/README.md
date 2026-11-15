@@ -24,7 +24,7 @@ The project follows gregoryyy's agentic coding project structure, as adapted in 
 | `architect/` | Curated recipes, compatibility rules and fixtures, shipped with the package |
 | `plugin/skills/comfyui-architect/`, `plugin/commands/architect.md` | The Claude Code skill and slash command |
 
-Everything else is upstream's. The paths follow the spec (§17.1); none of them exists yet.
+Everything else is upstream's. The paths follow the spec (§17.1). `src/services/architect/`, `src/tools/architect.ts` and `src/__tests__/architect/` exist since milestone 1, together with `src/fork-identity.ts`; `architect/` and the plugin skill come with milestone 2. The Architect tools are off unless `COMFYUI_ARCHITECT=1` is set.
 
 **Stack and build.** Upstream's stack: TypeScript on Node 22, Zod, Vitest and SQLite. No new framework or service (spec §17.3). Upstream's npm scripts build and test it: `npm ci`, `npm run lint`, `npm run build`, `npm test`.
 
@@ -42,7 +42,7 @@ The fork is meant to stay a superset of upstream: everything upstream does keeps
 - the package identity;
 - the hardcoded package name in self-update.
 
-The list is in [BOOT](input/BOOT.md#fork-specifics). Changing a file outside it needs a recorded decision.
+The list is in [ARCH](ARCH.md#upstream-footprint). Changing a file outside it needs a recorded decision.
 
 **Upstream updates come in by merge.** The pinned upstream commit is recorded in `ext/input/BASE.md`. To take a newer upstream:
 1. Merge `upstream/main` into a sync branch.
@@ -53,7 +53,7 @@ The fork never builds against an unpinned upstream `latest`.
 
 **One server per ComfyUI.** The fork replaces upstream rather than running beside it. Both bind the same panel bridge port, so two servers on one ComfyUI would fight over the panel. MCP clients are configured to launch the fork's build, not `npx comfyui-mcp`. The fork has its own package name, so self-update and installs never pull upstream over it.
 
-**The panel is upstream's, unchanged.** The sidebar comes from the separate `comfyui-mcp-panel` project. The stock panel works with the fork through its existing chat and choice controls. Its autospawn is switched off (`COMFYUI_MCP_NO_AUTOSPAWN=1`), so it connects to the fork instead of launching upstream. At connection time, the fork identifies itself and its Architect capabilities, so a stock upstream connection never looks Architect-enabled. Richer panel UI (candidate cards, approvals, graph diffs) would come later as a small companion panel change (spec §3.2, Phase 4).
+**The panel is upstream's, unchanged.** The sidebar comes from the separate `comfyui-mcp-panel` project. The stock panel works with the fork through its existing chat and choice controls. Its "Autostart MCP" setting is switched off, so it connects to the running fork instead of having its launcher start upstream's package ([research](research/panel-connection.md)). At connection time, the fork identifies itself and its Architect capabilities, so a stock upstream connection never looks Architect-enabled. Richer panel UI (candidate cards, approvals, graph diffs) would come later as a small companion panel change (spec §3.2, Phase 4).
 
 **Data stays separate.** Architect keeps its own `architect.db` and artifact directory. Upstream's generation history and configuration aren't modified, and model weights are referenced, not copied (spec §15.1).
 

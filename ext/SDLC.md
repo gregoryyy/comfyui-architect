@@ -25,7 +25,7 @@ How work moves from a TODO item to merged, documented, tested code on the fork, 
 - **Docs current:** AGENTS layout, the affected `ext/` documents, generated tool pages.
 - **Security impact** stated in the PR against [SEC](SEC.md).
 - **TODO ticked and a DONE entry** on top.
-- **Upstream footprint:** any change to an upstream file outside the seams in [input/BOOT](input/BOOT.md#fork-specifics) is named in DONE and the PR.
+- **Upstream footprint:** any change to an upstream file outside the seams in [ARCH](ARCH.md#upstream-footprint) is named in DONE and the PR, and added to that list.
 
 The PR template (`.github/pull_request_template.md`) carries this list.
 
