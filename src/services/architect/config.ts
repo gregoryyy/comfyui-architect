@@ -17,3 +17,20 @@ export function architectEnabled(env: NodeJS.ProcessEnv = process.env): boolean 
   if (raw === undefined) return false;
   return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
 }
+
+/**
+ * Every variable Architect reads. The panel orchestrator builds its agent's tool-server
+ * environment from an allowlist (upstream #873), so these are forwarded explicitly through
+ * `architectChildEnv`; a variable missing here doesn't exist on the panel route.
+ */
+export const ARCHITECT_ENV_KEYS = [ARCHITECT_FLAG_ENV, "ARCHITECT_DATA_DIR", "ARCHITECT_ENV_MAX_AGE_SECONDS"] as const;
+
+/** The Architect variables that are set, for a child process's constructed environment. */
+export function architectChildEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of ARCHITECT_ENV_KEYS) {
+    const value = env[key];
+    if (value !== undefined && value !== "") out[key] = value;
+  }
+  return out;
+}

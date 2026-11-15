@@ -90,7 +90,7 @@ Exit (spec §20): a user can describe an image task, compare installed-asset can
 - [ ] 2.6 Template binding and layered validation, one task to a validated export (spec §10)
   - [ ] 2.6.1 Compiler: recipe and bindings to an API graph, a role map and a canonical graph fingerprint (spec §10.2, §10.5)
   - [ ] 2.6.2 Validation layers against the live node schemas: contract, structure, native types, dependencies, policy; semantic types where the recipe annotates families, otherwise unknown; runtime not applicable without execution (spec §10.3)
-  - [ ] 2.6.3 Export into `ARCHITECT_DATA_DIR/artifacts/<task>/<revision>/`: `task.json`, `plan.json`, `workflow.api.json`, `validation.json`, `dependencies.lock.json` (spec §15.1)
-- [ ] 2.7 The skill `plugin/skills/comfyui-architect/` and the command `plugin/commands/architect.md`
+  - [ ] 2.6.3 Export into `ARCHITECT_DATA_DIR/artifacts/<task-id>/<plan-id>/`: `task.json`, `plan.json`, `workflow.api.json`, `validation.json`, `dependencies.lock.json` (spec §15.1)
+- [ ] 2.7 The skill `plugin/skills/comfyui-architect/` and the command `plugin/commands/architect.md`. Written in `architect/skills/` and `architect/commands/` and served as MCP prompts while the flag is on; a file in `plugin/` would change the flag-off surface and upstream's README counts ([ARCH](ARCH.md#decision-log))
   - [ ] 2.7.1 The skill: when to plan with Architect, the action order, what the agent may and may not supply (spec §9.2), and how to present candidates and blockers
-  - [ ] 2.7.2 The command, and the plugin's skill and command lists, checked by upstream's plugin tests
+  - [ ] 2.7.2 The command, and both registered as MCP prompts with the Architect tools, absent with the flag off
