@@ -157,13 +157,13 @@ async function counts() {
 
 /** Claims embedded in prose, and how to read each one back out. */
 const CLAIMS = [
-  { file: "README.md", key: "mcp_tools", re: /\*\*(\d+) MCP tools\*\*/ },
-  { file: "README.md", key: "mcp_tools", re: /^(\d+) tools across/m },
-  { file: "README.md", key: "skills", re: /\*\*(\d+) AI skills\*\*/ },
-  { file: "README.md", key: "packs", re: /\*\*(\d+) installer packs\*\*/ },
-  { file: "README.md", key: "slash_commands", re: /\*\*(\d+) slash commands\*\*/ },
-  { file: "README.md", key: "agents", re: /\*\*(\d+) autonomous agents\*\*/ },
-  { file: "README.md", key: "hooks", re: /\*\*(\d+) hooks\*\*/ },
+  { file: "README_BASE.md", key: "mcp_tools", re: /\*\*(\d+) MCP tools\*\*/ },
+  { file: "README_BASE.md", key: "mcp_tools", re: /^(\d+) tools across/m },
+  { file: "README_BASE.md", key: "skills", re: /\*\*(\d+) AI skills\*\*/ },
+  { file: "README_BASE.md", key: "packs", re: /\*\*(\d+) installer packs\*\*/ },
+  { file: "README_BASE.md", key: "slash_commands", re: /\*\*(\d+) slash commands\*\*/ },
+  { file: "README_BASE.md", key: "agents", re: /\*\*(\d+) autonomous agents\*\*/ },
+  { file: "README_BASE.md", key: "hooks", re: /\*\*(\d+) hooks\*\*/ },
   { file: "docs/plugin.mdx", key: "mcp_tools", re: /the (\d+) MCP tools/ },
   // Every claim below was UNGUARDED and two had already drifted: this file said
   // "182 MCP tools" (matching a stale local dist build, not the 181 in the
@@ -185,7 +185,7 @@ const CLAIMS = [
   // file, and docs/index.mdx advertised "80+ tools" against a real 37 — both invisible to
   // this gate because it only matched the bolded forms. A count is a count wherever it is
   // written.
-  { file: "README.md", key: "skills", re: /(\d+) skills total/ },
+  { file: "README_BASE.md", key: "skills", re: /(\d+) skills total/ },
   { file: "docs/index.mdx", key: "mcp_tools", re: /(\d+)\+? tools, auto-documented/ },
   // The blog drifts the same way the README did. local-llms-comfyui said "roughly 200 tools"
   // — five times the real surface — because the consolidation landed and the post didn't move.

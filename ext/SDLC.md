@@ -38,7 +38,7 @@ The PR template (`.github/pull_request_template.md`) carries this list.
 ## Upstream sync
 
 1. Branch `sync/upstream-YYYY-MM-DD` from `main`.
-2. `git fetch upstream && git merge upstream/main`; resolve conflicts at the seams.
+2. `git fetch upstream && git merge upstream/main`; resolve conflicts at the seams. The README is a fixed rule: keep the fork's `README.md` (`git checkout --ours README.md`) and replace `README_BASE.md` with upstream's (`git show upstream/main:README.md > README_BASE.md`). Git doesn't see a rename there, because `README.md` still exists, so upstream's README changes arrive as conflicts in `README.md`.
 3. Rebuild the generated files (`npm run docs:gen`, `npm run vocab:export`, README counts).
 4. Run upstream's suite and the Architect tests.
 5. Open a PR; after the merge, add the new baseline to [input/BASE](input/BASE.md) as a new section on top.
