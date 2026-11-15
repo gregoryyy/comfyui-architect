@@ -149,6 +149,35 @@ describe("retrieveRecipes", () => {
     expect(noSnapshot.unknownFolders).toEqual(["checkpoints"]);
   });
 
+  it("counts a slot with a default as fillable only when that file is installed, not when the folder has other files", () => {
+    // The FLUX.1-schnell case: text_encoders lists files, but not the two the recipe names.
+    const slot = (id: string, def: string) => ({
+      id,
+      label: id,
+      valueType: "model_file",
+      target: { node: "1", input: "ckpt_name" },
+      required: true,
+      modelFolder: "text_encoders",
+      modelFamily: id,
+      default: def,
+    });
+    const r = parse(recipe("recipe-encoders", { slots: [slot("t5xxl", "t5xxl.safetensors"), slot("clip_l", "clip_l.safetensors")] }));
+    const fit = (files: string[]) =>
+      retrieveRecipes([r], task, { installedModels: { folders: { text_encoders: files }, unanswered: [], absent: [] } })[0].installedOverlap;
+    expect(fit(["qwen_3_4b.safetensors", "gemma.safetensors"])).toEqual({ satisfiable: 0, total: 2 });
+    expect(fit(["qwen_3_4b.safetensors", "clip_l.safetensors"])).toEqual({ satisfiable: 1, total: 2 });
+    expect(fit(["t5xxl.safetensors", "clip_l.safetensors"])).toEqual({ satisfiable: 2, total: 2 });
+  });
+
+  it("counts a slot without a default as fillable from any file only when it names no family (GAPS Q14)", () => {
+    const listing = { installedModels: { folders: { checkpoints: ["any.safetensors"] }, unanswered: [], absent: [] } };
+    const [plain] = retrieveRecipes([parse(recipe("recipe-plain"))], task, listing);
+    expect(plain.installedOverlap).toEqual({ satisfiable: 1, total: 1 });
+    const familySlot = { ...recipe("x").slots[0], modelFamily: "sdxl" };
+    const [withFamily] = retrieveRecipes([parse(recipe("recipe-family", { slots: [familySlot] }))], task, listing);
+    expect(withFamily.installedOverlap).toEqual({ satisfiable: 0, total: 1 });
+  });
+
   it("returns at most the limit", () => {
     const rs = Array.from({ length: 25 }, (_, i) => parse(recipe(`recipe-${String(i).padStart(2, "0")}`)));
     expect(retrieveRecipes(rs, task, {})).toHaveLength(20);

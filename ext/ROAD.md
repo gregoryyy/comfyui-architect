@@ -2,19 +2,19 @@
 
 Phases with a goal and a measured gate each, and ideas that aren't scheduled. The phases are the spec's (§20); a phase becomes TODO milestones when it starts. Status: 2026-11-15 18:49.
 
-## 0. Reproducible fork and seam audit (current)
+## 0. Reproducible fork and seam audit (done except the first CI run)
 
 **Goal:** a fork that builds, identifies itself and behaves like upstream until Architect is switched on, with the seams for the Architect layer in place. TODO milestone 1.
 
 **Gate:** the fork launches from an installed package and identifies itself correctly; it works with an external MCP client and the stock panel; with Architect disabled, upstream's suite passes and the tool surface equals the baseline's. Baseline failures are recorded, not attributed to the fork.
 
-## 1. One end-to-end planning slice
+## 1. One end-to-end planning slice (done)
 
 **Goal:** describe an image task, compare candidates built from installed assets, and get an editable graph with explicit constraints and provenance. Read-only: no downloads, no execution. TODO milestone 2.
 
 **Gate:** three curated recipes compile and validate; a task fixture produces up to three candidates with recorded rejection reasons; malformed proposals never pass validation (AT-01); deliberate conflicts are blocked with the right reason (AT-02).
 
-## 2. Managed execution and evidence (first usable MVP)
+## 2. Managed execution and evidence (first usable MVP) (next)
 
 **Goal:** an approved candidate executes locally, survives reconnect and restart, records its outcome, and can't bypass its effect restrictions. Action plans, trusted approval capture, resource leases, the durable run controller, artifact checks and user review.
 
