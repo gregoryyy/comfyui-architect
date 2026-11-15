@@ -1,6 +1,6 @@
 # Baseline
 
-The upstream commit the fork is built on, and what has been checked against it. A newer baseline comes only through an upstream sync ([AGENTS](../../AGENTS.md#process)), and each sync adds a section on top. Status: 2026-11-15 15:19.
+The upstream commit the fork is built on, and what has been checked against it. A newer baseline comes only through an upstream sync ([AGENTS](../../AGENTS.md#process)), and each sync adds a section on top. Status: 2026-11-15 17:05.
 
 ## Current baseline: `707474d2` (v0.52.206)
 
@@ -31,6 +31,7 @@ Recorded on 2026-11-15 on the owner's macOS workstation, Node from the local ins
 
 ### Baseline facts for the fork
 
+- **The bridge leaves about half of all panel hellos unanswered** (6 of 10 within 5 s on 2026-11-15; answered ones take under 50 ms), so the panel's 1.2 s status probe flips between "running" and "port held by another process" ([research](../research/panel-connection.md#observed-with-the-panel-installed)). Cause not investigated.
 - **Size:** about 238,000 lines of TypeScript source and 304,000 lines of tests in 795 test files.
 - **Hotspot:** `src/orchestrator/panel-tools.ts`, 31,000 lines, touched by 143 of the last 500 source commits. Avoid editing it; conflicts there are the most likely on a sync.
 - **Activity:** 2,045 commits in August 2026, 61 in October, 1 in November up to the baseline.

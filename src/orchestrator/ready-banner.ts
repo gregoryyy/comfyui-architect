@@ -11,6 +11,7 @@
 
 import { openAiKeyProvider } from "../services/openai-provider-registry.js";
 import { processLocale, trFor } from "../i18n/index.js";
+import { withArchitectGreeting } from "../services/architect/panel.js";
 
 /**
  * The "🟢 comfyui-mcp agent ready — <label> …" greeting for a given backend, with
@@ -33,7 +34,7 @@ import { processLocale, trFor } from "../i18n/index.js";
  * that drops or swaps one changes what the line asserts — so each fallback carries
  * its marker and every translation is expected to reproduce it verbatim.
  */
-export function readyBannerText(
+function upstreamReadyBannerText(
   backend: string,
   label: string,
   customBaseUrl = "",
@@ -79,6 +80,18 @@ export function readyBannerText(
     default:
       return t("banner.ready.claude", "🟢 comfyui-mcp agent ready — {label} on your Claude subscription. Ask away.");
   }
+}
+
+// ComfyUI Architect (TODO 1.12): both greeting paths, the first banner and the #376
+// correction, come through here, so the fork's line is added once at this point. With
+// COMFYUI_ARCHITECT off the text is upstream's unchanged (spec AT-12).
+export function readyBannerText(
+  backend: string,
+  label: string,
+  customBaseUrl = "",
+  locale?: string,
+): string {
+  return withArchitectGreeting(upstreamReadyBannerText(backend, label, customBaseUrl, locale));
 }
 
 /**

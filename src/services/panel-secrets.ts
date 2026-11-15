@@ -2327,6 +2327,9 @@ export function buildComfyuiMcpEnv(base: Record<string, string>): Record<string,
     ...(process.env.COMFYUI_MCP_TOOL_ACTION_ALLOW !== undefined
       ? { COMFYUI_MCP_TOOL_ACTION_ALLOW: process.env.COMFYUI_MCP_TOOL_ACTION_ALLOW }
       : {}),
+    // ComfyUI Architect (TODO 1.12): the feature flag reaches the panel agent's tool
+    // server the same way, or the panel route never offers the architect_* tools.
+    ...(process.env.COMFYUI_ARCHITECT ? { COMFYUI_ARCHITECT: process.env.COMFYUI_ARCHITECT } : {}),
     // KEY NAMES only — never values.
     ...(managed.length ? { [MANAGED_SECRET_KEYS_ENV]: managed.join(",") } : {}),
     ...secrets,
