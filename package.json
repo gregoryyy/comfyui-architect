@@ -11,6 +11,7 @@
   },
   "files": [
     "dist",
+    "architect",
     "locales",
     "plugin",
     "packs",

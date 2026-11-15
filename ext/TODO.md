@@ -1,6 +1,6 @@
 # TODO
 
-The plan: milestones (`## 1.`), tasks (`1.1`) and subtasks (`1.1.1`) with checkboxes. Numbers never change; new work gets new numbers. *(decision)* marks a choice to settle before dependent work starts, *(variant)* an alternative built for comparison. When an item is done, tick it here and add an entry to [DONE](DONE.md); the process is in [AGENTS](../AGENTS.md#process). Phases beyond the current milestones are in [ROAD](ROAD.md), questions for the owner in [GAPS](GAPS.md). Status: 2026-11-15 17:05.
+The plan: milestones (`## 1.`), tasks (`1.1`) and subtasks (`1.1.1`) with checkboxes. Numbers never change; new work gets new numbers. *(decision)* marks a choice to settle before dependent work starts, *(variant)* an alternative built for comparison. When an item is done, tick it here and add an entry to [DONE](DONE.md); the process is in [AGENTS](../AGENTS.md#process). Phases beyond the current milestones are in [ROAD](ROAD.md), questions for the owner in [GAPS](GAPS.md). Status: 2026-11-15 18:28.
 
 Goal: the spec's first usable MVP, an approved candidate that executes locally and records its outcome (ROAD phase 2). Milestone 1 is spec Phase 0, milestone 2 spec Phase 1. Spec section numbers (§) refer to [SPEC](design/SPEC.md).
 
@@ -44,7 +44,7 @@ Exit (spec §20): the fork launches from an installed package, identifies itself
   - [x] 1.2.3 Upstream's tool surface (direct and compact) and panel surface at the baseline, as the reference for 1.5: 38 core tools plus 3 compact-mode tools, 96 panel tools, 160 retired names ([input/BASE](input/BASE.md))
   - [ ] 1.2.4 The stock panel's connection behaviour with autospawn off (GAPS A6) and with two servers present (A5). Read from the panel's code ([research/panel-connection.md](research/panel-connection.md)): the switch is the panel's "Autostart MCP" setting; its code doesn't read `COMFYUI_MCP_NO_AUTOSPAWN`. Run on 2026-11-15 with the panel linked into the reference install ([research](research/panel-connection.md#observed-with-the-panel-installed)): the panel finds the fork's server on 9199, a second server runs without the bridge (A5), and the panel's status probe flips because the server leaves about half of all hellos unanswered, on `707474d2` as well. Open: the browser side, the Agent tab with "Autostart MCP" off and Connect, which needs someone at the browser
 - [ ] 1.3 Fork identity, according to GAPS Q2 and Q3. 1.3.1–1.3.3 are blocked on GAPS Q11 (how far the rename reaches)
-  - [ ] 1.3.1 `package.json`: `name` `@gregoryyy/comfyui-architect`, `bin` `comfyui-architect`, `mcpName` `io.github.gregoryyy/comfyui-architect`, `repository` and `homepage` on `gregoryyy/comfyui-architect`, `version` 0.1.0; `architect/` in `files` (GAPS Q2, Q3)
+  - [ ] 1.3.1 `package.json`: `name` `@gregoryyy/comfyui-architect`, `bin` `comfyui-architect`, `mcpName` `io.github.gregoryyy/comfyui-architect`, `repository` and `homepage` on `gregoryyy/comfyui-architect`, `version` 0.1.0; `architect/` in `files` (GAPS Q2, Q3). `architect` is in `files` since milestone 2; the rest waits on GAPS Q11
   - [ ] 1.3.2 `PACKAGE_NAME` in `src/services/self-update.ts`, with a test that self-update never resolves upstream's package
   - [ ] 1.3.3 `server.json` and `.claude-plugin/marketplace.json`
   - [x] 1.3.4 `ext/input/BASE.md` and build metadata carry the upstream commit (spec §17.4): `src/fork-identity.ts`, checked against BASE by a test
@@ -65,12 +65,32 @@ Exit (spec §20): the fork launches from an installed package, identifies itself
 
 ## 2. One end-to-end planning slice (spec Phase 1)
 
-Exit (spec §20): a user can describe an image task, compare installed-asset candidates and obtain an editable graph with explicit constraints and provenance. No downloads, no automatic execution. Detailed when milestone 1 is done.
+Exit (spec §20): a user can describe an image task, compare installed-asset candidates and obtain an editable graph with explicit constraints and provenance. No downloads, no automatic execution. The design decisions are in [ARCH](ARCH.md#decision-log) (2026-11-15, milestone 2 rows). GAPS Q12 chose Z-Image Turbo and FLUX.1-schnell; the tests run on fixture recipes.
 
-- [ ] 2.1 Domain schemas with migration tests: `TaskSpec`, `EnvironmentSnapshot`, `Recipe`, `PlanCandidate` (spec §7.1), with image-specific fields in a kind-specific part, so video and audio later add a kind without a migration of the core records (AGENTS, scope decisions)
-- [ ] 2.2 `architect.db`: store, WAL, migrations, the planning tables (spec §15)
-- [ ] 2.3 Environment snapshot through the facade, with freshness and probe errors (spec §8.3)
-- [ ] 2.4 Local catalog and three curated recipes for the families chosen in GAPS Q5 (spec §8)
-- [ ] 2.5 `architect_inspect` and the planning actions of `architect_plan` (spec §16.1)
-- [ ] 2.6 Template binding and layered validation, one task to a validated export (spec §10)
-- [ ] 2.7 The skill `plugin/skills/comfyui-architect/` and the command `plugin/commands/architect.md`
+- [x] 2.1 Domain schemas with migration tests: `TaskSpec`, `EnvironmentSnapshot`, `Recipe`, `PlanCandidate` (spec §7.1), with image-specific fields in a kind-specific part, so video and audio later add a kind without a migration of the core records (AGENTS, scope decisions)
+  - [x] 2.1.1 `src/services/architect/schemas.ts`: `TaskSpecInput` and `TaskSpec` (kind-specific `media`), `Recipe` and `RecipeSlot`, `ApiGraph`, `CheckResult` and `ValidationReport`, `PlanCandidate`, `Plan` with the planning states, `PlanBlockers` (spec §9.5)
+  - [x] 2.1.2 `parseStored`: step-wise upgrades by `schemaVersion`, refusal of newer versions; tests for valid, missing, newer and unknown-property records of each kind
+- [x] 2.2 `architect.db`: store, WAL, migrations, the planning tables (spec §15)
+  - [x] 2.2.1 `ARCHITECT_DATA_DIR` resolution and `src/services/architect/store.ts`: open with WAL and foreign keys, numbered migrations in `schema_migrations`, transactional writes
+  - [x] 2.2.2 Repositories for tasks and task revisions, environments, catalog sources and recipes, plans and candidates; every read goes through `parseStored`
+  - [x] 2.2.3 Tests on a temporary directory: migrations idempotent, a reopened database keeps its records, a tampered payload is refused on read, two connections in WAL mode
+  - [x] 2.2.4 `ARCHITECT_DATA_DIR` reaches the panel agent's tool server (`buildComfyuiMcpEnv`, the TODO 1.12 seam)
+- [x] 2.3 Environment snapshot through the facade, with freshness and probe errors (spec §8.3)
+  - [x] 2.3.1 Facade: installed models by folder from upstream's `listLocalModelsWithCoverage`, keeping answered, unanswered and absent folders apart (#796)
+  - [x] 2.3.2 `installedModels` in the snapshot; freshness with a configurable maximum age; a stale or partial snapshot says so
+- [x] 2.4 Local catalog and three curated recipes for the families chosen in GAPS Q12 (spec §8)
+  - [x] 2.4.1 Recipe loader: shipped recipes from `architect/recipes/`, validated, content-hashed, recorded with their catalog source; an invalid file is reported, never skipped silently
+  - [x] 2.4.2 Retrieval: filter by kind and operation, then rank by installed-dependency overlap, at most 20 (spec §8.5, §9.2)
+  - [x] 2.4.3 Fixture recipes for tests (certification `fixture`)
+  - [x] 2.4.4 Three recipes for Z-Image Turbo and FLUX.1-schnell (GAPS Q12), shipped as `proposed` until the owner reviews them, each checked against the live node schemas of the Desktop install. On that install Z-Image Turbo plans to a feasible candidate; FLUX.1-schnell is blocked until GAPS Q13 settles how its all-in-one file is loaded
+- [x] 2.5 `architect_inspect` and the planning actions of `architect_plan` (spec §16.1)
+  - [x] 2.5.1 `architect_inspect`: `environment` with installed models, and `capabilities` (the catalog's recipes and their dependency status)
+  - [x] 2.5.2 `architect_plan`: `prepare`, `propose`, `get`, `validate`, `select`, `export`; agent-supplied bindings are checked against the snapshot, so a model file the target doesn't list is refused (spec §9.2)
+  - [x] 2.5.3 Candidate enumeration: bounded (24 expanded, 3 presented), hard constraints before ranking, blocked candidates and an unsatisfied-constraints report grouped by spec §9.5
+- [x] 2.6 Template binding and layered validation, one task to a validated export (spec §10)
+  - [x] 2.6.1 Compiler: recipe and bindings to an API graph, a role map and a canonical graph fingerprint (spec §10.2, §10.5)
+  - [x] 2.6.2 Validation layers against the live node schemas: contract, structure, native types, dependencies, policy; semantic types where the recipe annotates families, otherwise unknown; runtime not applicable without execution (spec §10.3)
+  - [x] 2.6.3 Export into `ARCHITECT_DATA_DIR/artifacts/<task-id>/<plan-id>/`: `task.json`, `plan.json`, `workflow.api.json`, `validation.json`, `dependencies.lock.json` (spec §15.1)
+- [x] 2.7 The skill `plugin/skills/comfyui-architect/` and the command `plugin/commands/architect.md`. Written in `architect/skills/` and `architect/commands/` and served as MCP prompts while the flag is on; a file in `plugin/` would change the flag-off surface and upstream's README counts ([ARCH](ARCH.md#decision-log))
+  - [x] 2.7.1 The skill: when to plan with Architect, the action order, what the agent may and may not supply (spec §9.2), and how to present candidates and blockers
+  - [x] 2.7.2 The command, and both registered as MCP prompts with the Architect tools, absent with the flag off

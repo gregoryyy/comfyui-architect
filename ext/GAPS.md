@@ -1,6 +1,6 @@
 # Gaps
 
-Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-15 17:05.
+Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-15 18:17.
 
 How this file works:
 - Answers are recorded with date, time and author: `**Answer** (2026-11-15 13:30, Gregor Heinrich): …`. Corrections of assumptions record the same in the **Correction** column. Short answers are fine.
@@ -51,7 +51,9 @@ Upstream is MIT. A different licence for `src/services/architect/` and `architec
 The spec certifies 12–20 recipe variants across 2–3 model families, "selected after inspecting the developer's available models and hardware" (§2.2). Upstream detected two installs on this machine on 2026-11-15: `~/ComfyUI-Installs/ComfyUI (1)/ComfyUI` (desktop installer, selected) and `~/Documents/opt/flux/ComfyUI`, with ComfyUI on port 8188.
 
 - **Proposed:** pick one install as the reference target, record its hardware and installed model families in a research note in TODO 1.2, then choose the families.
-- **Answer** (2026-11-15 13:45, Gregor Heinrich): The install under `~/Documents/opt/flux/ComfyUI`.
+- **Answer** (2026-11-15 18:17, Gregor Heinrich, through Q17): the Desktop install on port 8188, with its second model root `~/Documents/model/comfyui/models` (Q12).
+- *Earlier answers:* ~~(2026-11-15 13:45, Gregor Heinrich): The install under `~/Documents/opt/flux/ComfyUI`.~~
+- **Resolved** (2026-11-15 18:17, Opus 5.5 for Gregor Heinrich): the reference target from milestone 2 on is the Desktop install (Q17); [research/reference-target.md](research/reference-target.md) and [ARCH](ARCH.md) say so. The source install stays a second target for the live checks of milestone 1.
 - **Resolved** (2026-11-15 13:45, Opus 5.5 for Gregor Heinrich): TODO 1.1.3 and 1.2.1. Read as: the source install with its own venv. Upstream auto-selects the Desktop install, so tests set `COMFYUI_PATH`; its models sit three levels deep (`ComfyUI/ComfyUI/ComfyUI/models`, one MiniMax video LoRA, 1.8 GB), which TODO 1.2.1 checks first. Machine: Apple M5 Pro, 48 GB unified memory. The model families are chosen after that record.
 
 ### Q6. Should GitHub Actions run on the fork? — blocking for TODO 1.9
@@ -101,12 +103,66 @@ Q2 chose the package `@gregoryyy/comfyui-architect` and the command `comfyui-arc
 - **Proposed:** keep `comfyui-mcp` as the package, command and MCP server name while the fork runs from a source checkout and isn't published, and identify the fork through `src/fork-identity.ts`, `serverInfo.title` and the handshake line (done in milestone 1). Do the full rename, routed through one identity module, as its own milestone before the first publish. The alternative is the full rename now: a large change across upstream files and tests, with sync conflicts to match.
 - **Answer:**
 
-### Q12. Which image model families does the MVP certify first? — blocking for TODO 2.4
+### Q12. Which image model families does the MVP certify first?
 
 SPEC §2.2 certifies 12–20 recipe variants across 2–3 families. The reference machine (Apple M5 Pro, 48 GB unified memory) has no image-only family installed; the shared models folder holds video and audio models (LTX 2.5, MiniMax H3, MiniMax Music 3, YuE2), so every image family means downloads ([research/reference-target.md](research/reference-target.md)). Upstream ships skills and packs for Flux, Qwen-Image, Z-Image, ERNIE and others.
 
 - **Proposed:** two families with upstream skills and packs that run on 48 GB of unified memory, for example Flux and Qwen-Image, chosen by the owner with the download size in view.
+- **Answer** (2026-11-15 17:27, Gregor Heinrich): the models in `~/Documents/model/comfyui/models`. That folder is the Desktop install's second model root (`comfy.desktop_1` in its model-path configuration), which the first survey missed. Its image families are **Z-Image Turbo** (diffusion model, its Qwen 3 4B text encoder and the `ae` VAE: complete) and **FLUX.1-schnell** (diffusion model fp8 and the `ae` VAE; its T5-XXL and CLIP-L text encoders aren't installed). Its Wan 2.2 models are video (ROAD phase 6).
+- **Resolved** (2026-11-15 17:27, Opus 5.5 for Gregor Heinrich): the first recipes are for Z-Image Turbo and FLUX.1-schnell (TODO 2.4.4). They ship as `proposed`, the tier for recipes an agent wrote and the owner hasn't reviewed (spec §8.4: an agent can't certify its own recipe); the owner's review makes them `curated`. The FLUX.1-schnell recipe stays blocked on this machine until its text encoders are installed, which milestone 2 can't do. [research/reference-target.md](research/reference-target.md) is corrected.
+- **Correction** (2026-11-15 17:43, Opus 5.5): the FLUX.1-schnell file is Comfy-Org's all-in-one checkpoint. Its safetensors header holds the diffusion model (776 tensors), both text encoders (`text_encoders.clip_l`, 198; `text_encoders.t5xxl`, 220) and the VAE. So nothing has to be downloaded; the file sits in `diffusion_models/`, where `CheckpointLoaderSimple` doesn't look. How to run it here is Q13.
+
+### Q13. How should FLUX.1-schnell run on this machine?
+
+The installed `diffusion_models/flux1-schnell-fp8.safetensors` is an all-in-one checkpoint (Q12, correction). The shipped recipe loads the diffusion model with `UNETLoader` and expects separate T5-XXL and CLIP-L files, which aren't installed, so it's blocked. ComfyUI's own `flux_schnell` template loads the all-in-one file with `CheckpointLoaderSimple`, which lists only `checkpoints/`.
+
+- **Proposed:** add a second FLUX.1-schnell recipe that uses `CheckpointLoaderSimple`, and make the file visible in `checkpoints/` (a symlink, or moving it), which is a change to the owner's model folders the owner makes. The alternative is downloading the two separate encoders (about 5 GB), which needs approval and comes with managed acquisition (ROAD phase 3).
 - **Answer:**
+
+### Q14. Should a model file of an unverified family block a candidate?
+
+A recipe annotates the family each model slot expects, but the snapshot doesn't say which family a file is. A proposal or the enumeration of a slot without a default can bind any file of the folder; on the first live run that put a Gemma encoder into FLUX's T5 slot. The spec says an incompatible component can't be offset (§9.3), and a hard unknown blocks automatic action (§7.3).
+
+- **Proposed:** the family check is a hard unknown whenever the bound file isn't the recipe's default, so such a candidate stays diagnostic and can't be selected; for the default, which the recipe's author named, it stays a soft unknown until files carry verified family metadata.
+- **Answer:**
+- Milestone 2 implements the proposal, since it follows the design rules; a different answer changes one check.
+
+### Q15. May the agent's bindings override slots the task fills?
+
+Slots marked `fromTask` (prompt, width, height) take the task's value. An explicit binding used to win, so a 2048×2048 task with a 512×512 proposal planned as feasible, which AGENTS forbids ("no lower resolution … without the user's approval", spec §4.3).
+
+- **Proposed:** no. A binding that differs from the task's value fails the contract layer; a change goes through a new task revision.
+- **Answer:**
+- Milestone 2 implements the proposal.
+
+### Q16. How does a recipe declare the task fields it honours?
+
+A task sets the image count, format, dimensions and input assets; a recipe may not consume all of them (the shipped ones always save one PNG). Dropping one silently relaxes the task.
+
+- **Proposed:** a task field that no slot of the recipe consumes and that differs from what the recipe produces fails the contract layer, as unsupported (spec §9.5 `unsupported_operation`); recipes declare what they produce in their slots and outputs. A field nothing decides (an undeclared format, an output size the recipe doesn't set, an input asset before execution resolves assets) is a hard unknown, so the candidate is diagnostic. Later recipes add slots for count and format.
+- **Answer:**
+- Milestone 2 implements the proposal.
+
+### Q17. Is the Desktop install on port 8188 the reference target from milestone 2 on?
+
+Q5 chose the source install on port 8190. The recipes of milestone 2 were checked, and its live run made, against the Desktop install (ComfyUI 0.44.0 on 8188), whose second model root holds the families of Q12.
+
+- **Answer** (2026-11-15 18:17, Gregor Heinrich): yes.
+- **Resolved** (2026-11-15 18:17, Opus 5.5 for Gregor Heinrich): Q5's answer is updated; [research/reference-target.md](research/reference-target.md) names the Desktop install.
+
+### Q18. Is milestone 2's exit met with one feasible family?
+
+The exit asks to compare installed-asset candidates. On the reference machine only Z-Image Turbo text to image is feasible; FLUX.1-schnell stays blocked until Q13 is answered.
+
+- **Answer** (2026-11-15 18:17, Gregor Heinrich): yes.
+- **Resolved** (2026-11-15 18:17, Opus 5.5 for Gregor Heinrich): recorded in the milestone 2 entry of [DONE](DONE.md).
+
+### Q19. May the captured `/object_info` fixture keep the Desktop install's input-folder file names?
+
+`src/__tests__/architect/fixtures/object-info-desktop-0.44.0.json` is the Desktop install's `/object_info`, which lists the files in its input folder (template sample names) in the `LoadImage` choices. The repository is public.
+
+- **Answer** (2026-11-15 18:17, Gregor Heinrich): ok.
+- **Resolved** (2026-11-15 18:17, Opus 5.5 for Gregor Heinrich): the fixture stays as captured.
 
 ## Assumptions
 

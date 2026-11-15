@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { architectEnabled } from "../../services/architect/config.js";
-import { EnvironmentSnapshot, ResultEnvelope } from "../../services/architect/schemas.js";
+import { EnvironmentSnapshot, type InstalledModels, ResultEnvelope } from "../../services/architect/schemas.js";
 import { ArchitectService, nodeSchemaDigest } from "../../services/architect/service.js";
 import type { UpstreamFacade } from "../../services/architect/upstream.js";
 import type { ComfyUINodeDef, ObjectInfo, SystemStats } from "../../comfyui/types.js";
@@ -45,11 +45,23 @@ const OBJECT_INFO: ObjectInfo = Object.fromEntries(
   ["KSampler", "CheckpointLoaderSimple", "SaveImage"].map((n) => [n, nodeDef(n)]),
 );
 
+const MODELS: InstalledModels = {
+  folders: {
+    checkpoints: ["sd_xl_base_1.0.safetensors", "v1-5-pruned-emaonly.safetensors"],
+    loras: [],
+    vae: ["sdxl_vae.safetensors"],
+  },
+  unanswered: [],
+  absent: ["clip", "unet"],
+};
+
 function facade(overrides: Partial<UpstreamFacade> = {}): UpstreamFacade {
   return {
     comfyuiBaseUrl: () => "http://127.0.0.1:8188",
     systemStats: async () => STATS,
     objectInfo: async () => OBJECT_INFO,
+    isPaidNode: () => false,
+    installedModels: async () => MODELS,
     ...overrides,
   };
 }
@@ -94,6 +106,7 @@ describe("ArchitectService.inspectEnvironment", () => {
       probeErrors: [],
     });
     expect(snap.devices).toEqual([{ name: "mps", type: "mps", memoryTotal: 48 * 2 ** 30, memoryFree: 20 * 2 ** 30 }]);
+    expect(snap.installedModels).toEqual(MODELS);
   });
 
   it("digests node class names independently of their order", () => {
@@ -118,6 +131,14 @@ describe("ArchitectService.inspectEnvironment", () => {
     expect(snap.nodeSchemaDigest).toBeUndefined();
     expect(snap.probeErrors.map((e) => e.probe)).toEqual(["object_info"]);
   });
+
+  it("leaves installedModels absent when the models probe fails, never an empty listing", async () => {
+    const snap = await service(facade({ installedModels: refused })).inspectEnvironment();
+    expect(snap.installedModels).toBeUndefined();
+    expect(snap.probeErrors).toEqual([{ probe: "models", message: "connect ECONNREFUSED 127.0.0.1:8188" }]);
+    expect(snap.nodeClassCount).toBe(3);
+    expect(snap.devices).toHaveLength(1);
+  });
 });
 
 describe("ArchitectService.inspectEnvironmentEnvelope", () => {
@@ -127,7 +148,44 @@ describe("ArchitectService.inspectEnvironmentEnvelope", () => {
     expect(env.status).toBe("ok");
     expect(env.operationId).toBe("op-test");
     expect(env.summary).toContain("3 node classes");
+    expect(env.summary).toContain("3 model file(s) in 3 answered folder(s)");
+    expect(env.warnings).toEqual([]);
     expect(env.error).toBeUndefined();
+  });
+
+  it("returns partial when only the models probe fails, with the field absent and a warning", async () => {
+    const env = await service(facade({ installedModels: refused })).inspectEnvironmentEnvelope();
+    expect(env.status).toBe("partial");
+    expect(env.error).toBeUndefined();
+    expect(env.warnings).toEqual(["models: connect ECONNREFUSED 127.0.0.1:8188"]);
+    expect(env.summary).toContain("models could not be read");
+    expect(env.summary).not.toContain("model file(s)");
+    const snap = EnvironmentSnapshot.parse(env.data.environment);
+    expect(snap.installedModels).toBeUndefined();
+  });
+
+  it("returns partial with a warning per unanswered folder, even when every probe answered", async () => {
+    const models: InstalledModels = {
+      folders: { checkpoints: ["a.safetensors"] },
+      unanswered: [
+        { folder: "loras", reason: "HTTP 500" },
+        { folder: "vae", reason: "ComfyUI returned HTML instead of JSON" },
+      ],
+      absent: [],
+    };
+    const env = await service(facade({ installedModels: async () => models })).inspectEnvironmentEnvelope();
+    expect(env.status).toBe("partial");
+    expect(env.error).toBeUndefined();
+    expect(env.warnings).toEqual(["models/loras: HTTP 500", "models/vae: ComfyUI returned HTML instead of JSON"]);
+    expect(env.summary).toContain("2 model folder(s) did not answer");
+    expect(env.summary).toContain("unknown, not empty");
+  });
+
+  // Absent folders are a definite answer (#1015): they must not degrade a complete listing.
+  it("stays ok when folders are absent but none is unanswered", async () => {
+    const env = await service(facade()).inspectEnvironmentEnvelope();
+    expect(MODELS.absent.length).toBeGreaterThan(0);
+    expect(env.status).toBe("ok");
   });
 
   it("returns partial with warnings when one probe fails", async () => {
@@ -137,9 +195,21 @@ describe("ArchitectService.inspectEnvironmentEnvelope", () => {
     expect(env.summary).toContain("unknown, not empty");
   });
 
-  it("returns error with a stable, retryable code when the target can't be read at all", async () => {
+  it("stays partial, not error, while any one probe answers", async () => {
     const env = await service(facade({ systemStats: refused, objectInfo: refused })).inspectEnvironmentEnvelope();
+    expect(env.status).toBe("partial");
+    expect(env.error).toBeUndefined();
+    expect(env.summary).toContain("system_stats, object_info could not be read");
+    expect(env.summary).toContain("model file(s)");
+  });
+
+  it("returns error with a stable, retryable code when the target can't be read at all", async () => {
+    const env = await service(
+      facade({ systemStats: refused, objectInfo: refused, installedModels: refused }),
+    ).inspectEnvironmentEnvelope();
     expect(env.status).toBe("error");
+    expect(env.warnings).toHaveLength(3);
+    expect(EnvironmentSnapshot.parse(env.data.environment).installedModels).toBeUndefined();
     expect(env.error).toMatchObject({ code: "STALE_ENVIRONMENT", retryable: true });
     expect(env.summary).toContain("No snapshot");
     expect(env.summary).not.toContain("Partial");

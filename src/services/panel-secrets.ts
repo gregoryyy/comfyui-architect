@@ -52,6 +52,7 @@ import { logger } from "../utils/logger.js";
 import { downloadsAtRiskOfRespawn } from "./download-jobs.js";
 import { runningUnderTestRunner } from "./test-isolation-guard.js";
 import { OPENAI_KEY_PROVIDERS, providerModelHint } from "./openai-provider-registry.js";
+import { architectChildEnv } from "./architect/config.js";
 
 interface PanelSecrets {
   /** Env vars injected into the built-in comfyui MCP server's spawn env. */
@@ -2327,9 +2328,10 @@ export function buildComfyuiMcpEnv(base: Record<string, string>): Record<string,
     ...(process.env.COMFYUI_MCP_TOOL_ACTION_ALLOW !== undefined
       ? { COMFYUI_MCP_TOOL_ACTION_ALLOW: process.env.COMFYUI_MCP_TOOL_ACTION_ALLOW }
       : {}),
-    // ComfyUI Architect (TODO 1.12): the feature flag reaches the panel agent's tool
-    // server the same way, or the panel route never offers the architect_* tools.
-    ...(process.env.COMFYUI_ARCHITECT ? { COMFYUI_ARCHITECT: process.env.COMFYUI_ARCHITECT } : {}),
+    // ComfyUI Architect (TODO 1.12, 2.2.4): the feature flag and Architect's own settings
+    // reach the panel agent's tool server the same way, or the panel route never offers
+    // the architect_* tools, or writes its records to a different architect.db.
+    ...architectChildEnv(process.env),
     // KEY NAMES only — never values.
     ...(managed.length ? { [MANAGED_SECRET_KEYS_ENV]: managed.join(",") } : {}),
     ...secrets,

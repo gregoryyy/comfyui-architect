@@ -2,6 +2,58 @@
 
 The progress log, newest entry on top. Each entry: `## YYYY-MM-DD HH:MM — Title` (time from `date`), the TODO items and PR or commit, an `Agent:` line, then **Implementation notes**, **Deviations** and **Insights**. The plan is in [TODO](TODO.md).
 
+## 2026-11-15 18:28 — Milestone 2: one end-to-end planning slice
+
+TODO items: 2.1–2.7 with their subtasks; notes on 1.3.1. GAPS Q14–Q19 (new; Q17–Q19 answered). PR #7, branch `feat/milestone-2`.
+
+Agent: Opus 5.5, subagents: implementer ×4 (Opus 5.5: the store, the compiler and validation, the environment models, the first recipes), assurance ×1 (Opus 5.5, read-only review).
+
+### Implementation notes
+
+- Contracts in `src/services/architect/schemas.ts`: a kind-neutral `TaskSpec` whose `media` is a discriminated union (only `image` so far), `Recipe` with typed slots, `ValidationReport`, `PlanCandidate`, `Plan` and `PlanBlockers` (spec §9.5). Every stored record is read through `parseStored`, which refuses newer versions and unknown properties. A resource estimate can only be `unknown`, so no number can be invented before measured profiles exist.
+- `architect.db` (better-sqlite3, WAL, numbered migrations) lives in `ARCHITECT_DATA_DIR`, by default `<COMFYUI_MCP_DATA_DIR or ~/.comfyui-mcp>/architect`. A plan's task and environment are immutable once written.
+- The environment snapshot carries installed models by folder from upstream's `listLocalModelsWithCoverage`, with answered, unanswered and absent folders kept apart (#796), and a freshness check with `ARCHITECT_ENV_MAX_AGE_SECONDS`.
+- The catalog loads `architect/recipes/*.recipe.json`, validates and content-hashes each file and reports invalid ones. Retrieval filters by kind and operation and ranks by evidence tier, installed fit and id, at most 20.
+- The compiler binds slots into an API graph with a role map and a canonical fingerprint. Validation runs the contract, structure, native types, semantic types, dependencies, policy and runtime layers; any hard unknown keeps a candidate from being feasible.
+- The planner expands at most 24 candidates, shared equally across recipes, and presents 3: feasible before blocked, then tier, then dependency burden. A slot default names the file used; only slots without one are enumerated over the installed files. Blockers are grouped by spec §9.5.
+- `architect_plan` has `prepare`, `propose`, `get`, `validate`, `select` and `export`; `architect_inspect` gains `capabilities`. Export recompiles the graph, refuses it when the fingerprint differs from the validated one, and writes five files into `artifacts/<task-id>/<plan-id>/`.
+- Three recipes, all `proposed`: Z-Image Turbo text to image and image edit, FLUX.1-schnell text to image (GAPS Q12). Against the Desktop install on port 8188, a text-to-image task plans to a feasible Z-Image Turbo candidate, is selected and exports; FLUX.1-schnell is blocked with the two text-encoder files it expects. `scripts/architect/stdio-smoke.mjs --plan` repeats this.
+- The assurance review found five high, four medium and eleven low findings; all high and medium findings and six low ones are fixed in this branch, each with a negative test; L2 is recorded as deferred in ARCH, and L4 and L9–L11 stay open (Deviations):
+  - Ranking: a blocked candidate no longer goes ahead of a feasible one (H1).
+  - `validate` withdraws a selection whose candidate is no longer feasible. `select` and `export` recompute the verdict from the checks rather than trust a stored status (H2, L1).
+  - A binding can't override a slot the task fills (H3, GAPS Q15).
+  - Output count and format, an output size no slot sets, and task input assets are checked or stay hard unknowns. A recipe's output now declares `format` and `count`, so the shipped recipes are at revision 2 (H4, GAPS Q16).
+  - A model file other than the slot's default is a hard unknown for its family (H5, GAPS Q14). A model file must also be one the loader's live COMBO offers (M2).
+  - An unread model folder gives a diagnostic candidate, not a blocked one (M1, #796).
+  - Planning uses only the recipes of the current catalog load, and `prepare` and `propose` carry the catalog's load errors as warnings (M3).
+  - Smaller fixes:
+    - the user's text reaches the `/architect` prompt literally (L5);
+    - unexpected errors are `INTERNAL_ERROR`, not `OUTCOME_UNKNOWN` (L6);
+    - export refuses a symbolic link under `artifacts/`, and `ARCHITECT_DATA_DIR` must be absolute (L7);
+    - stale comments and tier lists are corrected (L8);
+    - an input the node class doesn't declare fails (L3).
+- The skill and the `/architect` command are served as the MCP prompts `architect` and `architect_skill`, with the flag on only.
+- Checks: build, lint, asset counts, vocabulary, unknown collapse, vocabulary export and `docs:gen` pass. `smoke-install` passes and the tarball contains `architect/`. 279 Architect tests pass. Upstream's suite, without the hanging `bridge-port-reclaim` file: 13 failures in five files, all among the 14 baseline failures in [BASE](input/BASE.md) (`services/ui-bridge` passed). A second run with the target on an unused port passes 12 of the 13; the failures it adds are in files that pass without the override.
+
+### Deviations
+
+- Three upstream files changed at new seams, recorded in [ARCH](ARCH.md#upstream-footprint): `src/boot.ts` (the Architect prompts; upstream's empty `prompts/list` handler is installed only when none were registered, because the SDK allows one handler per method), `src/services/panel-secrets.ts` (the forwarded Architect variables now come from `architectChildEnv`) and `package.json` (`architect` in `files`, ahead of the rest of TODO 1.3.1).
+- The skill and command aren't in `plugin/` (TODO 2.7): a file there would change the flag-off surface and upstream's README counts. They move when Architect is on by default.
+- The recipes ship as `proposed`, a tier added for agent-written recipes (spec §8.4), not `curated` as TODO 2.4 says, until the owner reviews them.
+- The export holds the API graph only; the UI graph waits for a later milestone. Its lock has no model hashes, node-pack revisions or full node-schema digest yet (ARCH; review L2).
+- `INTERNAL_ERROR` is added to spec §16.4's error codes (ARCH).
+- Left open from the review: blockers from structure and native-type checks still land in `missing_dependencies` (L4). `ARCHITECT_*` variables reach the panel's tool server with the flag off too, where nothing reads them (L9). `preferences`, `budgets` and `policyProfile` are accepted without a check saying they're ignored (L10). Tool IDs are plain strings, and the store's lookups are parameterised (L11).
+- Milestone 2's exit is met with one feasible family on the reference machine (GAPS Q18): Z-Image Turbo text to image. The image-to-image recipe is diagnostic until input assets resolve to files (ROAD phase 2).
+
+### Insights
+
+- 13 of the 14 baseline failures of upstream's suite come from the Desktop ComfyUI on port 8188. Those tests assume no Plugin Manager is reachable, and the Desktop answers the Manager v4 API. Moving the target to an unused port makes them pass but breaks other tests that assume the default target, so a clean local run needs the Desktop closed. The fourteenth is a 30 s timeout on this machine ([BASE](input/BASE.md)).
+
+- The first live run found three bugs the fixtures didn't: prompt and seed slots left unfilled, the planner binding files of the wrong family across a Cartesian product, and one recipe using up the whole candidate budget.
+- Several upstream tests read the source as text (names like `getEnvironment`, `"graph_*"` strings, `homedir()…comfyui-mcp` on one line, a 3,200-character window of `buildComfyuiMcpEnv`). Architect code that matches them fails upstream's gates, so names were chosen around them.
+- The FLUX.1-schnell file on the Desktop install is an all-in-one checkpoint with its own text encoders and VAE, but sits in `diffusion_models/`, where `CheckpointLoaderSimple` doesn't look. GAPS Q13 asks how to load it.
+- Agent definitions in `.claude/agents/` load only at session start; within the session they were run as general-purpose agents told to read their role file.
+
 ## 2026-11-15 17:06 — Milestone 1 live checks: reference install, panel route
 
 TODO items: 1.1.3, 1.12 (new), notes on 1.2.4, 1.10, 1.11. Branch `feat/milestone-1-live`.
