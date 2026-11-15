@@ -30,7 +30,7 @@ import { banner, labelRows, numberedSteps } from "./i18n/terminal-layout.js";
 import { STDIO_HANDSHAKE_INSTRUCTIONS } from "./handshake-instructions.js";
 // ComfyUI Architect (fork seam): the fork names itself in the handshake (spec §18.2).
 import { forkHandshakeLine, forkServerTitle } from "./fork-identity.js";
-import { architectEnabled } from "./services/architect/config.js";
+import { applyArchitectMode, architectEnabled } from "./services/architect/config.js";
 import { registerArchitectPrompts } from "./tools/architect.js";
 import { orchestratorLogPath } from "./services/orchestrator-log.js";
 import { probeSharp } from "./services/sharp-loader.js";
@@ -425,6 +425,17 @@ function isRemoteHttpsPod(u: string): boolean {
 }
 
 async function main() {
+  // ComfyUI Architect (fork seam, TODO 3.3.2, 3.4): with the flag on, `architect …` is the
+  // terminal approval channel, handled before upstream parses the command line; with it
+  // off, the command line is upstream's. Managed mode applies upstream's readonly tool
+  // preset here, before any tool registers or the panel's agent environment is built.
+  if (architectEnabled() && process.argv[2] === "architect") {
+    const { runArchitectCli } = await import("./services/architect/cli.js");
+    process.exitCode = await runArchitectCli(process.argv.slice(3));
+    return;
+  }
+  applyArchitectMode();
+
   const cli = parseCliArgs(process.argv);
 
   // `--help` / `-h`: print usage and exit BEFORE anything else. It must precede
