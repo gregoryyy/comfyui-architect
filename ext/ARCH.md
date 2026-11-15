@@ -48,6 +48,8 @@ Newest first. Each entry: date, decision, reason, where it's recorded.
 
 | Date | Decision | Reason | Recorded in |
 | --- | --- | --- | --- |
+| 2026-11-15 | Package, command and MCP server name stay `comfyui-mcp` while the fork runs from a source checkout and isn't published; the full rename, through one identity module, is its own milestone before the first publish | About 25 source files, the plugin launcher and 137 test files name `comfyui-mcp`; a partial rename leaves launchers that start upstream (GAPS Q11) | TODO 1.3, ROAD |
+| 2026-11-15 | The three first recipes are `curated` after the owner's review, recorded as `maintainer_review` evidence; `recipe-flux1-schnell.ckpt-t2i`, which loads the all-in-one checkpoint linked into `checkpoints/`, is `proposed` until reviewed | Spec §8.4; GAPS Q12, Q13 | TODO 2.4.4 |
 | 2026-11-15 | The contract layer holds a candidate to every task field: a slot filled from the task can't be overridden by a binding; output width, height, count and format pass only when a slot fills them or the recipe's output declares them (`outputs[].format`, `outputs[].count`), fail when the declaration differs, and stay hard unknowns otherwise; task input assets are hard unknowns until execution resolves them to target files | Nothing is relaxed silently (spec §4.3, §7.3, §10.3); GAPS Q15, Q16 | TODO 2.6.2 |
 | 2026-11-15 | A model file's family is a hard unknown unless it is the slot's default, which the recipe's author named; a model input must also be a file the loader's live COMBO offers | An incompatible component can't be offset (spec §9.3); a file in the right folder can still be one the loader doesn't list (GAPS Q13, Q14) | TODO 2.6.2 |
 | 2026-11-15 | Planning uses only the recipes of the current catalog load; `architect.db` keeps earlier revisions for the plans that name them. `select` and `export` recompute a candidate's verdict from its checks, and `validate` withdraws a selection whose candidate is no longer feasible | A stored record is data; a withdrawn or edited recipe mustn't be planned with | TODO 2.4.1, 2.5.2 |
@@ -83,4 +85,3 @@ Newest first. Each entry: date, decision, reason, where it's recorded.
 | Decision | Needed by | Tracked |
 | --- | --- | --- |
 | The kind of workflow after images | ROAD phase 6 | GAPS Q10, decided after the MVP |
-| How far the rename reaches, and with it the fork's package version (upstream's version checks apply to the panel's version, not the server's; A9) | TODO 1.3 | GAPS Q11 |

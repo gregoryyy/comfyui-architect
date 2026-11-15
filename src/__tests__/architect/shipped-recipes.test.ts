@@ -137,27 +137,34 @@ function shipped(id: string): Recipe {
 }
 
 describe("shipped recipes", () => {
-  it("loads the three first recipes with no errors", () => {
+  it("loads the shipped recipes with no errors", () => {
     expect(loaded.dirFound).toBe(true);
     expect(loaded.errors).toEqual([]);
     expect([...byId.keys()].sort()).toEqual([
+      "recipe-flux1-schnell.ckpt-t2i",
       "recipe-flux1-schnell.t2i",
       "recipe-zimage-turbo.img2img",
       "recipe-zimage-turbo.t2i",
     ]);
   });
 
-  it("ships every recipe as proposed: an agent wrote them and the owner hasn't reviewed them (spec §8.4)", () => {
-    for (const { recipe } of loaded.recipes) expect(recipe.certification, recipe.id).toBe("proposed");
+  it("ships a recipe as curated only with the owner's review on record, else as proposed (spec §8.4)", () => {
+    for (const { recipe } of loaded.recipes) {
+      const reviewed = recipe.evidence.some((e) => e.kind === "maintainer_review");
+      expect(recipe.certification, recipe.id).toBe(reviewed ? "curated" : "proposed");
+    }
+    expect(shipped("recipe-flux1-schnell.ckpt-t2i").certification).toBe("proposed");
+    expect(shipped("recipe-zimage-turbo.t2i").certification).toBe("curated");
   });
 
   it("names the operation each recipe solves", () => {
     expect(shipped("recipe-zimage-turbo.t2i").operations).toEqual(["text_to_image"]);
     expect(shipped("recipe-flux1-schnell.t2i").operations).toEqual(["text_to_image"]);
+    expect(shipped("recipe-flux1-schnell.ckpt-t2i").operations).toEqual(["text_to_image"]);
     expect(shipped("recipe-zimage-turbo.img2img").operations).toEqual(["image_edit"]);
   });
 
-  it.each(["recipe-zimage-turbo.t2i", "recipe-flux1-schnell.t2i", "recipe-zimage-turbo.img2img"])(
+  it.each(["recipe-zimage-turbo.t2i", "recipe-flux1-schnell.t2i", "recipe-flux1-schnell.ckpt-t2i", "recipe-zimage-turbo.img2img"])(
     "%s fits the node schemas of ComfyUI Desktop 0.44.0",
     (id) => {
       expect(schemaProblems(shipped(id), objectInfo)).toEqual([]);

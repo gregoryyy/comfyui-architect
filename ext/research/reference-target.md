@@ -1,6 +1,6 @@
 # Reference target: environment record
 
-The machine, ComfyUI installs, models and local LLMs that milestone 1 found on 2026-11-15, for GAPS Q5 (reference target) and Q9 (local planner), and as input to the choice of the first certified model families (TODO 1.2.1). Facts were read with `curl` against the running ComfyUI and Ollama, and from the file system. Status: 2026-11-15 18:17.
+The machine, ComfyUI installs, models and local LLMs that milestone 1 found on 2026-11-15, for GAPS Q5 (reference target) and Q9 (local planner), and as input to the choice of the first certified model families (TODO 1.2.1). Facts were read with `curl` against the running ComfyUI and Ollama, and from the file system. Status: 2026-11-15 18:49.
 
 ## Machine
 
@@ -49,6 +49,6 @@ Fifteen models are installed, among them `gemma4:31b-mlx`, `qwen3.8:27b-mlx`, `q
 
 ## Consequences
 
-- **Image families (GAPS Q12, answered):** Z-Image Turbo runs on the Desktop install as installed; FLUX.1-schnell needs either the all-in-one file visible in `checkpoints/` or separate encoders (GAPS Q13). The reference install on 8190 needs `extra_model_paths.yaml` pointing at the second root to see either.
+- **Image families (GAPS Q12, answered):** Z-Image Turbo runs on the Desktop install as installed. FLUX.1-schnell runs from its all-in-one file, which a symbolic link makes visible in `checkpoints/` (GAPS Q13, 2026-11-15 18:49: `checkpoints/flux1-schnell-fp8.safetensors` → `../diffusion_models/flux1-schnell-fp8.safetensors`); the Desktop's `CheckpointLoaderSimple` offers it. The reference install on 8190 needs `extra_model_paths.yaml` pointing at the second root to see either.
 - **The installed models fit video and audio,** the kinds ROAD phase 6 schedules after the MVP (GAPS Q10).
 - **The reference install has to run** for integration tests (TODO 1.1.3); its nested layout should be checked before relying on it.

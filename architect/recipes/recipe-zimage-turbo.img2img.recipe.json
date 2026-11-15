@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "recipe-zimage-turbo.img2img",
-  "revision": 2,
+  "revision": 3,
   "title": "Z-Image Turbo: image to image",
   "description": "Prompt-guided image to image with Z-Image Turbo: the source image is encoded to a latent and sampled again at a denoise below 1, so the prompt reshapes the image while lower denoise keeps more of its structure. It is not instruction editing: the model doesn't follow edit instructions, it renders the prompt starting from the source. The output has the source image's size. The source image slot takes a file name in ComfyUI's input folder.",
   "kind": "image",
@@ -255,7 +255,7 @@
       "SaveImage"
     ]
   },
-  "certification": "proposed",
+  "certification": "curated",
   "evidence": [
     {
       "kind": "upstream_pack",
@@ -268,6 +268,12 @@
       "source": "GET http://127.0.0.1:8188/object_info/<class>, ComfyUI Desktop 0.44.0; captured in src/__tests__/architect/fixtures/object-info-desktop-0.44.0.json",
       "observedAt": "2026-11-15T17:32:29+01:00",
       "note": "Every node class, input name and COMBO value is in the live schema; denoise bounds 0 to 1 come from KSampler. LoadImage.image is a COMBO of the files in ComfyUI's input folder, so the validator checks the slot's value against the target."
+    },
+    {
+      "kind": "maintainer_review",
+      "source": "Owner review, GAPS Q12 and PR #7 (2026-11-15 18:49)",
+      "observedAt": "2026-11-15T18:49:40+01:00",
+      "note": "The owner accepted the recipe as curated. Not yet run on a recorded matrix, so not certified (AT-03)."
     }
   ]
 }

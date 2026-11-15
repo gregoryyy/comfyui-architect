@@ -1,0 +1,222 @@
+{
+  "schemaVersion": 1,
+  "id": "recipe-flux1-schnell.ckpt-t2i",
+  "revision": 1,
+  "title": "FLUX.1-schnell: text to image from the all-in-one checkpoint",
+  "description": "Text to image with FLUX.1-schnell from Comfy-Org's all-in-one checkpoint, which holds the diffusion model, the T5-XXL and CLIP-L text encoders and the VAE; CheckpointLoaderSimple loads all four, as ComfyUI's own flux_schnell template does. Schnell is timestep-distilled: 4 steps at CFG 1.0, so the negative prompt is ignored; the template's empty negative CLIPTextEncode is kept. Width and height are multiples of 16 for EmptySD3LatentImage, about one megapixel. The checkpoint has to be in checkpoints/, where CheckpointLoaderSimple looks (GAPS Q13).",
+  "kind": "image",
+  "operations": [
+    "text_to_image"
+  ],
+  "graph": {
+    "1": {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": {
+        "ckpt_name": "flux1-schnell-fp8.safetensors"
+      },
+      "_meta": {
+        "title": "FLUX.1-schnell checkpoint"
+      }
+    },
+    "2": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "1",
+          1
+        ],
+        "text": ""
+      },
+      "_meta": {
+        "title": "Positive"
+      }
+    },
+    "3": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "1",
+          1
+        ],
+        "text": ""
+      },
+      "_meta": {
+        "title": "Negative (ignored at CFG 1)"
+      }
+    },
+    "4": {
+      "class_type": "EmptySD3LatentImage",
+      "inputs": {
+        "width": 1024,
+        "height": 1024,
+        "batch_size": 1
+      },
+      "_meta": {
+        "title": "Latent"
+      }
+    },
+    "5": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "positive": [
+          "2",
+          0
+        ],
+        "negative": [
+          "3",
+          0
+        ],
+        "latent_image": [
+          "4",
+          0
+        ],
+        "seed": 0,
+        "steps": 4,
+        "cfg": 1,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "denoise": 1
+      },
+      "_meta": {
+        "title": "Sampler"
+      }
+    },
+    "6": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "5",
+          0
+        ],
+        "vae": [
+          "1",
+          2
+        ]
+      },
+      "_meta": {
+        "title": "Decode"
+      }
+    },
+    "7": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "6",
+          0
+        ],
+        "filename_prefix": "architect/flux1-schnell-ckpt-t2i"
+      },
+      "_meta": {
+        "title": "Save"
+      }
+    }
+  },
+  "slots": [
+    {
+      "id": "checkpoint",
+      "label": "FLUX.1-schnell all-in-one checkpoint",
+      "valueType": "model_file",
+      "target": {
+        "node": "1",
+        "input": "ckpt_name"
+      },
+      "required": true,
+      "default": "flux1-schnell-fp8.safetensors",
+      "modelFolder": "checkpoints",
+      "modelFamily": "flux1-schnell"
+    },
+    {
+      "id": "prompt",
+      "label": "Prompt",
+      "valueType": "string",
+      "target": {
+        "node": "2",
+        "input": "text"
+      },
+      "required": true,
+      "fromTask": "intent"
+    },
+    {
+      "id": "width",
+      "label": "Width",
+      "valueType": "int",
+      "target": {
+        "node": "4",
+        "input": "width"
+      },
+      "required": true,
+      "default": 1024,
+      "fromTask": "media.output.width",
+      "min": 16,
+      "max": 16384
+    },
+    {
+      "id": "height",
+      "label": "Height",
+      "valueType": "int",
+      "target": {
+        "node": "4",
+        "input": "height"
+      },
+      "required": true,
+      "default": 1024,
+      "fromTask": "media.output.height",
+      "min": 16,
+      "max": 16384
+    },
+    {
+      "id": "seed",
+      "label": "Seed",
+      "valueType": "seed",
+      "target": {
+        "node": "5",
+        "input": "seed"
+      },
+      "required": true,
+      "default": 0
+    }
+  ],
+  "outputs": [
+    {
+      "role": "image",
+      "node": "7",
+      "format": "png",
+      "count": 1
+    }
+  ],
+  "dependencies": {
+    "nodeClasses": [
+      "CheckpointLoaderSimple",
+      "CLIPTextEncode",
+      "EmptySD3LatentImage",
+      "KSampler",
+      "VAEDecode",
+      "SaveImage"
+    ]
+  },
+  "certification": "proposed",
+  "evidence": [
+    {
+      "kind": "upstream_pack",
+      "source": "plugin/skills/flux-txt2img/SKILL.md at fork baseline 707474d2 (blob 3bc69dca)",
+      "observedAt": "2026-11-15T18:49:40+01:00",
+      "note": "The skill's FLUX.1 pattern: CFG 1.0 and the distilled 4-step settings (euler, simple). It loads the components separately; this recipe loads the all-in-one checkpoint instead, after the template below."
+    },
+    {
+      "kind": "documentation",
+      "source": "ComfyUI workflow template flux_schnell (comfyui-workflow-templates 0.11.103, GET http://127.0.0.1:8188/templates/flux_schnell.json)",
+      "observedAt": "2026-11-15T18:49:40+01:00",
+      "note": "The graph follows the template node for node: CheckpointLoaderSimple flux1-schnell-fp8.safetensors (MODEL 0, CLIP 1, VAE 2), positive and empty negative CLIPTextEncode, EmptySD3LatentImage 1024x1024 batch 1, KSampler 4 steps, CFG 1, euler, simple, denoise 1, VAEDecode with the checkpoint's VAE, SaveImage."
+    },
+    {
+      "kind": "documentation",
+      "source": "GET http://127.0.0.1:8188/object_info/<class>, ComfyUI Desktop 0.44.0, after linking the checkpoint into checkpoints/ (GAPS Q13)",
+      "observedAt": "2026-11-15T18:49:40+01:00",
+      "note": "CheckpointLoaderSimple offers flux1-schnell-fp8.safetensors; every class, input and COMBO value is in the live schema; EmptySD3LatentImage bounds width and height to 16..16384."
+    }
+  ]
+}

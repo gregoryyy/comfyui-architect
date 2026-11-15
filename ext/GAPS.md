@@ -1,6 +1,6 @@
 # Gaps
 
-Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-15 18:17.
+Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-15 20:21.
 
 How this file works:
 - Answers are recorded with date, time and author: `**Answer** (2026-11-15 13:30, Gregor Heinrich): …`. Corrections of assumptions record the same in the **Correction** column. Short answers are fine.
@@ -63,6 +63,8 @@ Actions is off on a new fork. Public repositories run it at no cost, but enablin
 - **Proposed:** enable Actions, and disable the two tag workflows (`gh workflow disable`) until the fork's identity and secrets exist.
 - **Answer** (2026-11-15 13:45, Gregor Heinrich): Enable Actions, and disable the tag workflows, as proposed.
 - **Resolved** (2026-11-15 13:45, Opus 5.5 for Gregor Heinrich): TODO 1.9: `release.yml` and `mcp-registry.yml` are disabled when Actions is enabled, until the fork's identity and secrets exist.
+- **Answer** (2026-11-15 18:49, Gregor Heinrich): enable Actions on the fork, run CI, and disable it again if it doesn't work on GitHub.
+- **Status** (2026-11-15 19:03, Opus 5.5): Actions is enabled with the two tag workflows disabled, but no run starts until the owner confirms the fork's workflows once in the Actions tab; then the next push to PR #8 runs CI (TODO 1.9).
 
 ### Q7. When does the companion panel fork start?
 
@@ -101,7 +103,10 @@ The product covers every kind of workflow, and the MVP certifies images only (ow
 Q2 chose the package `@gregoryyy/comfyui-architect` and the command `comfyui-architect`. Milestone 1 found that upstream names `comfyui-mcp` well beyond `package.json`, `self-update.ts`, `server.json` and the marketplace: in about 25 source files (the panel launcher, self-restart, agent setup that writes MCP client configs, the npx restart scope, broken-install detection, report-issue, runpod), the plugin launcher (`plugin/scripts/launch-server.mjs`, 18 mentions), `scripts/smoke-install.mjs` (9) and 137 test files. Renaming only the listed files leaves launchers that start upstream's package. `boot.ts` also runs self-update at startup, which from a global or npx install would replace the fork with upstream's `comfyui-mcp`; a source checkout isn't affected. The panel's launcher runs a fixed `npx -y comfyui-mcp@latest connect` (`src/services/panel-launcher.ts`), so with the panel's "Autostart MCP" on, it starts upstream whatever the fork is called, until the fork changes that command ([research/panel-connection.md](research/panel-connection.md)).
 
 - **Proposed:** keep `comfyui-mcp` as the package, command and MCP server name while the fork runs from a source checkout and isn't published, and identify the fork through `src/fork-identity.ts`, `serverInfo.title` and the handshake line (done in milestone 1). Do the full rename, routed through one identity module, as its own milestone before the first publish. The alternative is the full rename now: a large change across upstream files and tests, with sync conflicts to match.
-- **Answer:**
+- **Answer** (2026-11-15 18:49, Gregor Heinrich): keep `comfyui-mcp` as the package, as proposed.
+- **Resolved** (2026-11-15 18:49, Opus 5.5 for Gregor Heinrich): package, command and MCP server name stay `comfyui-mcp` while the fork runs from a source checkout and isn't published; the fork identifies itself through `src/fork-identity.ts`, `serverInfo.title` and the handshake line. The full rename, through one identity module, is its own milestone before the first publish ([ROAD](ROAD.md)); TODO 1.3.1–1.3.3 wait for it.
+- **Answer** (2026-11-15 20:21, Gregor Heinrich): keep `comfyui-mcp` for now; the rename comes together with a new README.md, command shorthands and the publishing preparation.
+- **Resolved** (2026-11-15 20:21, Opus 5.5 for Gregor Heinrich): the rename milestone also covers a new README.md, command shorthands and the publishing preparation ([ROAD](ROAD.md#unscheduled-ideas), TODO 1.3).
 
 ### Q12. Which image model families does the MVP certify first?
 
@@ -110,6 +115,8 @@ SPEC §2.2 certifies 12–20 recipe variants across 2–3 families. The referenc
 - **Proposed:** two families with upstream skills and packs that run on 48 GB of unified memory, for example Flux and Qwen-Image, chosen by the owner with the download size in view.
 - **Answer** (2026-11-15 17:27, Gregor Heinrich): the models in `~/Documents/model/comfyui/models`. That folder is the Desktop install's second model root (`comfy.desktop_1` in its model-path configuration), which the first survey missed. Its image families are **Z-Image Turbo** (diffusion model, its Qwen 3 4B text encoder and the `ae` VAE: complete) and **FLUX.1-schnell** (diffusion model fp8 and the `ae` VAE; its T5-XXL and CLIP-L text encoders aren't installed). Its Wan 2.2 models are video (ROAD phase 6).
 - **Resolved** (2026-11-15 17:27, Opus 5.5 for Gregor Heinrich): the first recipes are for Z-Image Turbo and FLUX.1-schnell (TODO 2.4.4). They ship as `proposed`, the tier for recipes an agent wrote and the owner hasn't reviewed (spec §8.4: an agent can't certify its own recipe); the owner's review makes them `curated`. The FLUX.1-schnell recipe stays blocked on this machine until its text encoders are installed, which milestone 2 can't do. [research/reference-target.md](research/reference-target.md) is corrected.
+- **Answer** (2026-11-15 18:49, Gregor Heinrich): the three recipes are accepted as `curated`.
+- **Resolved** (2026-11-15 18:49, Opus 5.5 for Gregor Heinrich): the three recipes are `curated` at revision 3, with a `maintainer_review` entry in their evidence. The checkpoint recipe of Q13, written afterwards, is `proposed` until reviewed.
 - **Correction** (2026-11-15 17:43, Opus 5.5): the FLUX.1-schnell file is Comfy-Org's all-in-one checkpoint. Its safetensors header holds the diffusion model (776 tensors), both text encoders (`text_encoders.clip_l`, 198; `text_encoders.t5xxl`, 220) and the VAE. So nothing has to be downloaded; the file sits in `diffusion_models/`, where `CheckpointLoaderSimple` doesn't look. How to run it here is Q13.
 
 ### Q13. How should FLUX.1-schnell run on this machine?
@@ -117,31 +124,33 @@ SPEC §2.2 certifies 12–20 recipe variants across 2–3 families. The referenc
 The installed `diffusion_models/flux1-schnell-fp8.safetensors` is an all-in-one checkpoint (Q12, correction). The shipped recipe loads the diffusion model with `UNETLoader` and expects separate T5-XXL and CLIP-L files, which aren't installed, so it's blocked. ComfyUI's own `flux_schnell` template loads the all-in-one file with `CheckpointLoaderSimple`, which lists only `checkpoints/`.
 
 - **Proposed:** add a second FLUX.1-schnell recipe that uses `CheckpointLoaderSimple`, and make the file visible in `checkpoints/` (a symlink, or moving it), which is a change to the owner's model folders the owner makes. The alternative is downloading the two separate encoders (about 5 GB), which needs approval and comes with managed acquisition (ROAD phase 3).
-- **Answer:**
+- **Answer** (2026-11-15 18:49, Gregor Heinrich): make it visible in `checkpoints/`.
+- **Resolved** (2026-11-15 18:49, Opus 5.5 for Gregor Heinrich): a symbolic link `checkpoints/flux1-schnell-fp8.safetensors` → `../diffusion_models/flux1-schnell-fp8.safetensors` in the second model root, and the recipe `recipe-flux1-schnell.ckpt-t2i`, which loads it with `CheckpointLoaderSimple` as ComfyUI's own `flux_schnell` template does. The `UNETLoader` recipe stays for an install with separate encoders.
+- **Answer** (2026-11-15 20:21, Gregor Heinrich): as proposed. Confirms the answer of 18:49: the second recipe and the file visible in `checkpoints/`.
 
 ### Q14. Should a model file of an unverified family block a candidate?
 
 A recipe annotates the family each model slot expects, but the snapshot doesn't say which family a file is. A proposal or the enumeration of a slot without a default can bind any file of the folder; on the first live run that put a Gemma encoder into FLUX's T5 slot. The spec says an incompatible component can't be offset (§9.3), and a hard unknown blocks automatic action (§7.3).
 
 - **Proposed:** the family check is a hard unknown whenever the bound file isn't the recipe's default, so such a candidate stays diagnostic and can't be selected; for the default, which the recipe's author named, it stays a soft unknown until files carry verified family metadata.
-- **Answer:**
-- Milestone 2 implements the proposal, since it follows the design rules; a different answer changes one check.
+- **Answer** (2026-11-15 18:49, Gregor Heinrich): follow the proposal and best knowledge of ComfyUI.
+- **Resolved** (2026-11-15 18:49, Opus 5.5 for Gregor Heinrich): implemented in milestone 2 ([ARCH](ARCH.md#decision-log)).
 
 ### Q15. May the agent's bindings override slots the task fills?
 
 Slots marked `fromTask` (prompt, width, height) take the task's value. An explicit binding used to win, so a 2048×2048 task with a 512×512 proposal planned as feasible, which AGENTS forbids ("no lower resolution … without the user's approval", spec §4.3).
 
 - **Proposed:** no. A binding that differs from the task's value fails the contract layer; a change goes through a new task revision.
-- **Answer:**
-- Milestone 2 implements the proposal.
+- **Answer** (2026-11-15 18:49, Gregor Heinrich): follow the proposal and best knowledge of ComfyUI.
+- **Resolved** (2026-11-15 18:49, Opus 5.5 for Gregor Heinrich): implemented in milestone 2 ([ARCH](ARCH.md#decision-log)).
 
 ### Q16. How does a recipe declare the task fields it honours?
 
 A task sets the image count, format, dimensions and input assets; a recipe may not consume all of them (the shipped ones always save one PNG). Dropping one silently relaxes the task.
 
 - **Proposed:** a task field that no slot of the recipe consumes and that differs from what the recipe produces fails the contract layer, as unsupported (spec §9.5 `unsupported_operation`); recipes declare what they produce in their slots and outputs. A field nothing decides (an undeclared format, an output size the recipe doesn't set, an input asset before execution resolves assets) is a hard unknown, so the candidate is diagnostic. Later recipes add slots for count and format.
-- **Answer:**
-- Milestone 2 implements the proposal.
+- **Answer** (2026-11-15 18:49, Gregor Heinrich): follow the proposal and best knowledge of ComfyUI.
+- **Resolved** (2026-11-15 18:49, Opus 5.5 for Gregor Heinrich): implemented in milestone 2 ([ARCH](ARCH.md#decision-log)).
 
 ### Q17. Is the Desktop install on port 8188 the reference target from milestone 2 on?
 
