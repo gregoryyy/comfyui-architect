@@ -20,17 +20,34 @@ import { isAbsolute, join } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
 import type Database from "better-sqlite3";
 import { z } from "zod";
+import { ARCHITECT_SCHEMA_VERSION } from "../../fork-identity.js";
 import { canonicalJson } from "./hash.js";
 import { MIGRATIONS, SCHEMA_MIGRATIONS_SQL } from "./migrations.js";
 import {
+  Acceptance,
+  ActionPlan,
+  ApprovalGrant,
+  ApprovalRequest,
+  type ApprovalRequestState,
   EnvironmentSnapshot,
+  EvaluationRecord,
   Plan,
   PlanCandidate,
   Recipe,
+  ResourceLease,
+  RunError,
+  RunEvent,
+  RunEventKind,
+  RunOutput,
+  RunPrincipal,
+  RunRecord,
+  RunState,
+  RunTimings,
   type StoredKind,
   StoredRecordError,
   TaskSpec,
   type WorkflowKind,
+  canTransition,
   parseStored,
 } from "./schemas.js";
 
@@ -59,6 +76,17 @@ export class StoreConflictError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "StoreConflictError";
+  }
+}
+
+/** A run transition the state machine of spec §15.3 doesn't allow: a bug in the caller. A race is a StoreConflictError. */
+export class IllegalTransitionError extends Error {
+  constructor(
+    readonly from: RunState,
+    readonly to: RunState,
+  ) {
+    super(`a run can't move from ${from} to ${to}`);
+    this.name = "IllegalTransitionError";
   }
 }
 
@@ -116,6 +144,74 @@ const CatalogSourceRow = z.object({
   last_refresh_at: z.string().nullable(),
 });
 const RecordIdentity = z.object({ id: z.string(), revision: z.number().optional() });
+const EventRow = z.object({ run_id: z.string(), seq: z.number().int(), payload: z.string() });
+const MaxSeqRow = z.object({ seq: z.number().int().nullable() });
+const LeaseRow = z.object({
+  pool: z.string(),
+  owner_id: z.string(),
+  run_id: z.string().nullable(),
+  acquired_at: z.string(),
+  heartbeat_at: z.string(),
+  expires_at: z.string(),
+});
+const LeaseTtl = z.number().int().positive();
+
+/**
+ * What a transition may change on a run besides its state. Identity, target, key and grant
+ * are fixed at creation; `timings` merges into the stored timings, `outputs` replaces them,
+ * and `error: null` clears an error (a run reconciled out of OUTCOME_UNKNOWN). Its fields
+ * carry no defaults, so a field the caller left out stays as stored.
+ */
+export const RunPatch = z
+  .object({
+    promptId: z.string().uuid().optional(),
+    outputs: z.array(RunOutput).optional(),
+    timings: RunTimings.optional(),
+    acceptance: Acceptance.optional(),
+    error: RunError.nullable().optional(),
+  })
+  .strict();
+export type RunPatch = z.input<typeof RunPatch>;
+
+/** The outcome of `acquireLease`: the pool's lease now held, or who holds it. */
+export type LeaseAcquisition =
+  | {
+      acquired: true;
+      lease: ResourceLease;
+      /** The expired lease of another holder this acquisition replaced, so the takeover is visible. */
+      tookOverFrom?: ResourceLease;
+    }
+  | { acquired: false; holder: ResourceLease };
+
+function leaseFromRow(value: unknown): ResourceLease | undefined {
+  const row = parseRow(LeaseRow, value);
+  return (
+    row &&
+    ResourceLease.parse({
+      pool: row.pool,
+      ownerId: row.owner_id,
+      ...(row.run_id === null ? {} : { runId: row.run_id }),
+      acquiredAt: row.acquired_at,
+      heartbeatAt: row.heartbeat_at,
+      expiresAt: row.expires_at,
+    })
+  );
+}
+
+/** Parse a run event's payload; besides `parseStored`, its run and seq must match its row. */
+function readEvent(row: z.infer<typeof EventRow>): RunEvent {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(row.payload);
+  } catch (err) {
+    throw new StoredRecordError("runEvent", `payload is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const event = parseStored("runEvent", raw);
+  if (event.runId !== row.run_id || event.seq !== row.seq) {
+    throw new StoredRecordError("runEvent", `payload of row ${row.run_id}#${row.seq} carries ${event.runId}#${event.seq}`);
+  }
+  return event;
+}
 const ContentHash = z.string().min(1);
 
 function parseRow<T>(schema: z.ZodType<T>, value: unknown): T | undefined {
@@ -239,6 +335,87 @@ function prepareStatements(db: Database.Database) {
     ),
     candidate: db.prepare("SELECT id, payload FROM plan_candidates WHERE id = ?"),
     candidatesForPlan: db.prepare("SELECT id, payload FROM plan_candidates WHERE plan_id = ? ORDER BY created_at, id"),
+
+    actionPlan: db.prepare("SELECT id, payload FROM action_plans WHERE id = ?"),
+    insertActionPlan: db.prepare(
+      `INSERT INTO action_plans
+         (id, plan_id, task_id, task_revision, candidate_id, environment_id, base_url, hash, created_at, expires_at, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+
+    approvalRequest: db.prepare("SELECT id, payload FROM approval_requests WHERE id = ?"),
+    insertApprovalRequest: db.prepare(
+      `INSERT INTO approval_requests (id, action_plan_id, action_plan_hash, state, created_at, expires_at, resolved_at, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    resolveApprovalRequest: db.prepare(
+      "UPDATE approval_requests SET state = ?, resolved_at = ?, payload = ? WHERE id = ? AND state = 'pending'",
+    ),
+
+    grant: db.prepare("SELECT id, payload FROM approval_grants WHERE id = ?"),
+    insertGrant: db.prepare(
+      `INSERT INTO approval_grants
+         (id, approval_request_id, action_plan_id, action_plan_hash, base_url, channel, issued_at, expires_at, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    usableGrant: db.prepare(
+      `SELECT id, payload FROM approval_grants
+       WHERE action_plan_id = ? AND action_plan_hash = ? AND base_url = ? AND consumed_at IS NULL AND expires_at > ?
+       ORDER BY issued_at DESC, rowid DESC LIMIT 1`,
+    ),
+    consumeGrant: db.prepare(
+      "UPDATE approval_grants SET consumed_at = ?, consumed_by_run_id = ?, payload = ? WHERE id = ? AND consumed_at IS NULL",
+    ),
+
+    run: db.prepare("SELECT id, payload FROM runs WHERE id = ?"),
+    runByIdempotencyKey: db.prepare("SELECT id, payload FROM runs WHERE idempotency_key = ?"),
+    // The state filter is a JSON array bound as one parameter, so the statement stays prepared.
+    listRuns: db.prepare(
+      `SELECT id, payload FROM runs
+       WHERE @states IS NULL OR state IN (SELECT value FROM json_each(@states))
+       ORDER BY created_at, id`,
+    ),
+    insertRun: db.prepare(
+      `INSERT INTO runs
+         (id, action_plan_id, plan_id, task_id, task_revision, candidate_id, base_url, idempotency_key, state, prompt_id,
+          grant_id, created_at, updated_at, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    updateRun: db.prepare(
+      "UPDATE runs SET state = ?, prompt_id = ?, updated_at = ?, payload = ? WHERE id = ? AND state = ?",
+    ),
+
+    maxEventSeq: db.prepare("SELECT MAX(seq) AS seq FROM run_events WHERE run_id = ?"),
+    insertEvent: db.prepare(
+      `INSERT INTO run_events (run_id, seq, at, kind, from_state, to_state, principal, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    eventsForRun: db.prepare("SELECT run_id, seq, payload FROM run_events WHERE run_id = ? ORDER BY seq"),
+
+    evaluation: db.prepare("SELECT id, payload FROM evaluations WHERE id = ?"),
+    insertEvaluation: db.prepare(
+      `INSERT INTO evaluations (id, run_id, criterion_id, evaluator_id, verdict, source, created_at, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    evaluationsForRun: db.prepare("SELECT id, payload FROM evaluations WHERE run_id = ? ORDER BY created_at, id"),
+
+    lease: db.prepare(
+      "SELECT pool, owner_id, run_id, acquired_at, heartbeat_at, expires_at FROM resource_leases WHERE pool = ?",
+    ),
+    putLease: db.prepare(
+      `INSERT INTO resource_leases (pool, owner_id, run_id, acquired_at, heartbeat_at, expires_at)
+       VALUES (@pool, @ownerId, @runId, @acquiredAt, @heartbeatAt, @expiresAt)
+       ON CONFLICT(pool) DO UPDATE SET
+         owner_id = excluded.owner_id,
+         run_id = excluded.run_id,
+         acquired_at = excluded.acquired_at,
+         heartbeat_at = excluded.heartbeat_at,
+         expires_at = excluded.expires_at`,
+    ),
+    heartbeatLease: db.prepare(
+      "UPDATE resource_leases SET heartbeat_at = ?, expires_at = ? WHERE pool = ? AND owner_id = ?",
+    ),
+    releaseLease: db.prepare("DELETE FROM resource_leases WHERE pool = ? AND owner_id = ?"),
   };
 }
 
@@ -289,6 +466,16 @@ export class ArchitectStore {
   /** Run `fn` in one transaction; nested calls become savepoints. `fn` must be synchronous. */
   transaction<T>(fn: () => T): T {
     return this.db.transaction(fn)();
+  }
+
+  /**
+   * Run `fn` in a transaction that takes the write lock before its first read. Every
+   * check-then-write on execution records uses it: in WAL mode a deferred transaction reads a
+   * snapshot that another connection's commit can overtake before this one writes, so the
+   * check would hold for a state that no longer exists.
+   */
+  private immediate<T>(fn: () => T): T {
+    return this.db.transaction(fn).immediate();
   }
 
   // -------------------------------------------------------------------------------------
@@ -536,5 +723,558 @@ export class ArchitectStore {
       const row = IdPayloadRow.parse(value);
       return readStored("candidate", row.payload, { id: row.id });
     });
+  }
+
+  // -------------------------------------------------------------------------------------
+  // Action plans and approval (spec §14.2; ARCH milestone 3, action plans and grants)
+
+  /**
+   * Store an action plan. It is what a request and a grant bind by hash, so it is
+   * immutable: the same plan again is a no-op, another one under the same id is refused.
+   * The plan, candidate and task revision it names must belong together.
+   */
+  putActionPlan(input: z.input<typeof ActionPlan>): ActionPlan {
+    const actionPlan = ActionPlan.parse(input);
+    const payload = canonicalJson(actionPlan);
+    return this.immediate(() => {
+      const existing = parseRow(IdPayloadRow, this.stmts.actionPlan.get(actionPlan.id));
+      if (existing) {
+        const stored = readStored("actionPlan", existing.payload, { id: existing.id });
+        if (canonicalJson(stored) === payload) return actionPlan;
+        throw new StoreConflictError(`action plan ${actionPlan.id} is already stored with different content`);
+      }
+      const plan = parseRow(PlanTargetRow, this.stmts.planTarget.get(actionPlan.planId));
+      if (plan && (plan.task_id !== actionPlan.taskId || plan.task_revision !== actionPlan.taskRevision)) {
+        throw new StoreConflictError(
+          `action plan ${actionPlan.id} names task ${actionPlan.taskId} revision ${actionPlan.taskRevision}, but plan ${actionPlan.planId} was made for ${plan.task_id} revision ${plan.task_revision}`,
+        );
+      }
+      const candidate = parseRow(CandidatePlanRow, this.stmts.candidatePlan.get(actionPlan.candidateId));
+      if (candidate && candidate.plan_id !== actionPlan.planId) {
+        throw new StoreConflictError(
+          `candidate ${actionPlan.candidateId} belongs to plan ${candidate.plan_id}, not ${actionPlan.planId}`,
+        );
+      }
+      // A plan or candidate that isn't stored at all is left to the foreign keys.
+      this.stmts.insertActionPlan.run(
+        actionPlan.id,
+        actionPlan.planId,
+        actionPlan.taskId,
+        actionPlan.taskRevision,
+        actionPlan.candidateId,
+        actionPlan.environmentId,
+        actionPlan.target.baseUrl,
+        actionPlan.hash,
+        utc(actionPlan.createdAt),
+        utc(actionPlan.expiresAt),
+        payload,
+      );
+      return actionPlan;
+    });
+  }
+
+  /** An action plan by id; undefined when not stored. */
+  getActionPlan(id: string): ActionPlan | undefined {
+    const row = parseRow(IdPayloadRow, this.stmts.actionPlan.get(id));
+    return row && readStored("actionPlan", row.payload, { id: row.id });
+  }
+
+  /**
+   * Open an approval request. It opens `pending` and changes only through
+   * `resolveApprovalRequest`; the same request again is a no-op. Its hash must be the
+   * stored action plan's, so a request can't ask approval for something the plan isn't.
+   */
+  putApprovalRequest(input: z.input<typeof ApprovalRequest>): ApprovalRequest {
+    const request = ApprovalRequest.parse(input);
+    const payload = canonicalJson(request);
+    return this.immediate(() => {
+      const existing = parseRow(IdPayloadRow, this.stmts.approvalRequest.get(request.id));
+      if (existing) {
+        const stored = readStored("approvalRequest", existing.payload, { id: existing.id });
+        if (canonicalJson(stored) === payload) return request;
+        throw new StoreConflictError(`approval request ${request.id} is already stored with different content`);
+      }
+      if (request.state !== "pending") {
+        throw new StoreConflictError(`approval request ${request.id} must open pending, not ${request.state}`);
+      }
+      const actionPlan = this.getActionPlan(request.actionPlanId);
+      if (!actionPlan) throw new StoreConflictError(`action plan ${request.actionPlanId} is not stored`);
+      if (actionPlan.hash !== request.actionPlanHash) {
+        throw new StoreConflictError(`approval request ${request.id} names a hash action plan ${actionPlan.id} doesn't have`);
+      }
+      this.stmts.insertApprovalRequest.run(
+        request.id,
+        request.actionPlanId,
+        request.actionPlanHash,
+        request.state,
+        utc(request.createdAt),
+        utc(request.expiresAt),
+        null,
+        payload,
+      );
+      return request;
+    });
+  }
+
+  /** An approval request by id; undefined when not stored. */
+  getApprovalRequest(id: string): ApprovalRequest | undefined {
+    const row = parseRow(IdPayloadRow, this.stmts.approvalRequest.get(id));
+    return row && readStored("approvalRequest", row.payload, { id: row.id });
+  }
+
+  /**
+   * Resolve a pending request. Only `pending` resolves, so a declined request can't later
+   * be granted and a granted one can't be taken back into a second grant; a request past
+   * its expiry can't be granted. Anything else is a StoreConflictError.
+   */
+  resolveApprovalRequest(id: string, state: Exclude<ApprovalRequestState, "pending">, at: Date): ApprovalRequest {
+    return this.immediate(() => {
+      const current = this.getApprovalRequest(id);
+      if (!current) throw new StoreConflictError(`approval request ${id} is not stored`);
+      if (current.state !== "pending") {
+        throw new StoreConflictError(`approval request ${id} is already ${current.state}`);
+      }
+      if (state === "granted" && at.getTime() >= Date.parse(current.expiresAt)) {
+        throw new StoreConflictError(`approval request ${id} expired at ${current.expiresAt}`);
+      }
+      const resolvedAt = at.toISOString();
+      const resolved = ApprovalRequest.parse({ ...current, state, resolvedAt });
+      const result = this.stmts.resolveApprovalRequest.run(state, resolvedAt, canonicalJson(resolved), id);
+      if (result.changes !== 1) throw new StoreConflictError(`approval request ${id} changed while it was resolved`);
+      return resolved;
+    });
+  }
+
+  /**
+   * Store a grant for a granted request. It must bind what its request and action plan
+   * bind (plan, hash, target) and may not allow more runs or wall time than the plan asks
+   * for. A new grant is unconsumed: consumption happens only in `createRunWithGrant`.
+   */
+  putGrant(input: z.input<typeof ApprovalGrant>): ApprovalGrant {
+    const grant = ApprovalGrant.parse(input);
+    const payload = canonicalJson(grant);
+    return this.immediate(() => {
+      const existing = parseRow(IdPayloadRow, this.stmts.grant.get(grant.id));
+      if (existing) {
+        const stored = readStored("approvalGrant", existing.payload, { id: existing.id });
+        if (canonicalJson(stored) === payload) return grant;
+        throw new StoreConflictError(`grant ${grant.id} is already stored with different content`);
+      }
+      if (grant.consumedAt !== undefined) {
+        throw new StoreConflictError(`grant ${grant.id} can't be stored as already consumed`);
+      }
+      const request = this.getApprovalRequest(grant.approvalRequestId);
+      if (!request) throw new StoreConflictError(`approval request ${grant.approvalRequestId} is not stored`);
+      if (request.state !== "granted") {
+        throw new StoreConflictError(`approval request ${request.id} is ${request.state}, not granted`);
+      }
+      if (request.actionPlanId !== grant.actionPlanId || request.actionPlanHash !== grant.actionPlanHash) {
+        throw new StoreConflictError(`grant ${grant.id} binds another action plan than request ${request.id}`);
+      }
+      const actionPlan = this.getActionPlan(grant.actionPlanId);
+      if (!actionPlan) throw new StoreConflictError(`action plan ${grant.actionPlanId} is not stored`);
+      if (actionPlan.target.baseUrl !== grant.target.baseUrl) {
+        throw new StoreConflictError(
+          `grant ${grant.id} names target ${grant.target.baseUrl}, the plan ${actionPlan.target.baseUrl}`,
+        );
+      }
+      if (
+        grant.limits.maxRuns > actionPlan.budgets.maxRuns ||
+        grant.limits.maxWallTimeSeconds > actionPlan.budgets.maxWallTimeSeconds
+      ) {
+        throw new StoreConflictError(`grant ${grant.id} allows more than action plan ${actionPlan.id} asks for`);
+      }
+      this.stmts.insertGrant.run(
+        grant.id,
+        grant.approvalRequestId,
+        grant.actionPlanId,
+        grant.actionPlanHash,
+        grant.target.baseUrl,
+        grant.channel,
+        utc(grant.issuedAt),
+        utc(grant.expiresAt),
+        payload,
+      );
+      return grant;
+    });
+  }
+
+  /** A grant by id; undefined when not stored. */
+  getGrant(id: string): ApprovalGrant | undefined {
+    const row = parseRow(IdPayloadRow, this.stmts.grant.get(id));
+    return row && readStored("approvalGrant", row.payload, { id: row.id });
+  }
+
+  /**
+   * The newest grant that could start a run of this action plan now: same plan, hash and
+   * target, unconsumed, not expired. Undefined when there is none. Tools never take a grant
+   * as input; they name an action plan and the store finds its grant (ARCH milestone 3).
+   */
+  findUsableGrant(query: {
+    actionPlanId: string;
+    actionPlanHash: string;
+    baseUrl: string;
+    now: Date;
+  }): ApprovalGrant | undefined {
+    const row = parseRow(
+      IdPayloadRow,
+      this.stmts.usableGrant.get(query.actionPlanId, query.actionPlanHash, query.baseUrl, query.now.toISOString()),
+    );
+    if (!row) return undefined;
+    const grant = readStored("approvalGrant", row.payload, { id: row.id });
+    // The row matched on its columns; a payload that says otherwise was edited, and
+    // returning it would hand out a grant for something else.
+    if (
+      grant.actionPlanId !== query.actionPlanId ||
+      grant.actionPlanHash !== query.actionPlanHash ||
+      grant.target.baseUrl !== query.baseUrl ||
+      grant.consumedAt !== undefined ||
+      query.now.getTime() >= Date.parse(grant.expiresAt)
+    ) {
+      throw new StoredRecordError("approvalGrant", `payload of row ${row.id} disagrees with its columns`);
+    }
+    return grant;
+  }
+
+  // -------------------------------------------------------------------------------------
+  // Runs and their events (spec §15.3, §15.4; ARCH milestone 3, run controller)
+
+  /**
+   * Create a run under a grant and consume the grant, in one transaction that takes the
+   * write lock first, so one grant never starts two runs, from this connection or another
+   * (spec §14.2). The run starts in PREPARING: it is created at start, when the user has
+   * already approved, so no stored run sits in AWAITING_APPROVAL. Refused with a
+   * StoreConflictError: a grant that is missing, consumed, expired, or bound to another
+   * action plan, hash or target; an expired action plan; a run whose identity or graph isn't
+   * its action plan's; an idempotency key that already has a run. The creation is the run's
+   * first event.
+   */
+  createRunWithGrant(args: {
+    run: z.input<typeof RunRecord>;
+    grantId: string;
+    now: Date;
+    principal?: RunPrincipal;
+    reason?: string;
+  }): { run: RunRecord; grant: ApprovalGrant; event: RunEvent } {
+    if (args.run.grantId !== undefined && args.run.grantId !== args.grantId) {
+      throw new StoreConflictError(`run ${args.run.id} names grant ${args.run.grantId}, not ${args.grantId}`);
+    }
+    const run = RunRecord.parse({ ...args.run, grantId: args.grantId });
+    if (run.state !== "PREPARING") {
+      throw new StoreConflictError(`run ${run.id} must start in PREPARING, not ${run.state}`);
+    }
+    const now = args.now.getTime();
+    return this.immediate(() => {
+      const grant = this.getGrant(args.grantId);
+      if (!grant) throw new StoreConflictError(`grant ${args.grantId} is not stored`);
+      if (grant.consumedByRunId !== undefined) {
+        throw new StoreConflictError(`grant ${grant.id} was already consumed by run ${grant.consumedByRunId}`);
+      }
+      if (now >= Date.parse(grant.expiresAt)) throw new StoreConflictError(`grant ${grant.id} expired at ${grant.expiresAt}`);
+      const actionPlan = this.getActionPlan(run.actionPlanId);
+      if (!actionPlan) throw new StoreConflictError(`action plan ${run.actionPlanId} is not stored`);
+      if (now >= Date.parse(actionPlan.expiresAt)) {
+        throw new StoreConflictError(`action plan ${actionPlan.id} expired at ${actionPlan.expiresAt}`);
+      }
+      if (grant.actionPlanId !== actionPlan.id || grant.actionPlanHash !== actionPlan.hash) {
+        throw new StoreConflictError(`grant ${grant.id} doesn't bind action plan ${actionPlan.id} as it is stored`);
+      }
+      if (grant.target.baseUrl !== run.target.baseUrl || actionPlan.target.baseUrl !== run.target.baseUrl) {
+        throw new StoreConflictError(`run ${run.id} targets ${run.target.baseUrl}, the grant ${grant.target.baseUrl}`);
+      }
+      if (
+        run.planId !== actionPlan.planId ||
+        run.taskId !== actionPlan.taskId ||
+        run.taskRevision !== actionPlan.taskRevision ||
+        run.candidateId !== actionPlan.candidateId ||
+        !actionPlan.effects.some((e) => e.kind === "local_render" && e.graphFingerprint === run.graphFingerprint)
+      ) {
+        throw new StoreConflictError(`run ${run.id} isn't what action plan ${actionPlan.id} describes`);
+      }
+      const prior = this.findRunByIdempotencyKey(run.idempotencyKey);
+      if (prior) throw new StoreConflictError(`idempotency key ${run.idempotencyKey} already maps to run ${prior.id}`);
+
+      const at = args.now.toISOString();
+      // The run first: the grant's consumed_by_run_id references it.
+      this.stmts.insertRun.run(
+        run.id,
+        run.actionPlanId,
+        run.planId,
+        run.taskId,
+        run.taskRevision,
+        run.candidateId,
+        run.target.baseUrl,
+        run.idempotencyKey,
+        run.state,
+        run.promptId ?? null,
+        args.grantId,
+        utc(run.createdAt),
+        utc(run.updatedAt),
+        canonicalJson(run),
+      );
+      const consumed = ApprovalGrant.parse({ ...grant, consumedAt: at, consumedByRunId: run.id });
+      const result = this.stmts.consumeGrant.run(utc(at), run.id, canonicalJson(consumed), grant.id);
+      if (result.changes !== 1) throw new StoreConflictError(`grant ${grant.id} was consumed concurrently`);
+      const event = this.insertEvent({
+        runId: run.id,
+        at,
+        kind: "transition",
+        to: run.state,
+        principal: args.principal ?? "controller",
+        reason: args.reason ?? `started under grant ${grant.id}`,
+      });
+      return { run, grant: consumed, event };
+    });
+  }
+
+  /** A run by id; undefined when not stored. */
+  getRun(id: string): RunRecord | undefined {
+    const row = parseRow(IdPayloadRow, this.stmts.run.get(id));
+    return row && readStored("run", row.payload, { id: row.id });
+  }
+
+  /** The run an idempotency key maps to; undefined when the key has none (spec §15.4). */
+  findRunByIdempotencyKey(key: string): RunRecord | undefined {
+    const row = parseRow(IdPayloadRow, this.stmts.runByIdempotencyKey.get(key));
+    return row && readStored("run", row.payload, { id: row.id });
+  }
+
+  /** Runs, oldest first; only those in `states` when given (the controller resumes non-final runs). */
+  listRuns(filter: { states?: readonly RunState[] } = {}): RunRecord[] {
+    const states = filter.states === undefined ? null : JSON.stringify(filter.states.map((s) => RunState.parse(s)));
+    return this.stmts.listRuns.all({ states }).map((value) => {
+      const row = IdPayloadRow.parse(value);
+      return readStored("run", row.payload, { id: row.id });
+    });
+  }
+
+  /**
+   * Move a run from `from` to `to` and record why, in one transaction: the current state
+   * must still be `from` (compare and set, so two controllers can't both advance a run),
+   * the state machine must allow the edge, and the `transition` event is written with the
+   * state, so it exists before anyone can announce the progress (spec §15.3). A changed
+   * state is a StoreConflictError, a forbidden edge an IllegalTransitionError. A patch may
+   * set the prompt ID once but never change it, since reconciliation keys on it.
+   */
+  transitionRun(args: {
+    runId: string;
+    from: RunState;
+    to: RunState;
+    principal: RunPrincipal;
+    reason: string;
+    patch?: RunPatch;
+    data?: Record<string, unknown>;
+    at: Date;
+  }): { run: RunRecord; event: RunEvent } {
+    if (!canTransition(args.from, args.to)) throw new IllegalTransitionError(args.from, args.to);
+    const patch = RunPatch.parse(args.patch ?? {});
+    const at = args.at.toISOString();
+    return this.immediate(() => {
+      const current = this.getRun(args.runId);
+      if (!current) throw new StoreConflictError(`run ${args.runId} is not stored`);
+      if (current.state !== args.from) {
+        throw new StoreConflictError(`run ${current.id} is ${current.state}, not ${args.from}`);
+      }
+      if (patch.promptId !== undefined && current.promptId !== undefined && patch.promptId !== current.promptId) {
+        throw new StoreConflictError(`run ${current.id} already has prompt ID ${current.promptId}`);
+      }
+      const { error: _previous, ...rest } = current;
+      const error = patch.error === undefined ? current.error : patch.error === null ? undefined : patch.error;
+      const next = RunRecord.parse({
+        ...rest,
+        ...(patch.promptId === undefined ? {} : { promptId: patch.promptId }),
+        ...(patch.outputs === undefined ? {} : { outputs: patch.outputs }),
+        ...(patch.acceptance === undefined ? {} : { acceptance: patch.acceptance }),
+        timings: { ...current.timings, ...patch.timings },
+        ...(error === undefined ? {} : { error }),
+        state: args.to,
+        updatedAt: at,
+      });
+      const result = this.stmts.updateRun.run(
+        next.state,
+        next.promptId ?? null,
+        utc(at),
+        canonicalJson(next),
+        next.id,
+        args.from,
+      );
+      if (result.changes !== 1) throw new StoreConflictError(`run ${current.id} changed while it was transitioned`);
+      const event = this.insertEvent({
+        runId: next.id,
+        at,
+        kind: "transition",
+        from: args.from,
+        to: args.to,
+        principal: args.principal,
+        reason: args.reason,
+        ...(args.data === undefined ? {} : { data: args.data }),
+      });
+      return { run: next, event };
+    });
+  }
+
+  /**
+   * Record an event that changes no state: a submission attempt before the network call
+   * (spec §15.4), its result, a reconciliation, a cancellation request, a note. Transitions
+   * go through `transitionRun`, which writes their event with the state.
+   */
+  appendRunEvent(args: {
+    runId: string;
+    kind: Exclude<RunEventKind, "transition">;
+    principal: RunPrincipal;
+    reason: string;
+    data?: Record<string, unknown>;
+    at: Date;
+  }): RunEvent {
+    const kind = RunEventKind.parse(args.kind);
+    if (kind === "transition") throw new StoreConflictError("a transition event is written by transitionRun");
+    return this.immediate(() => {
+      if (!this.getRun(args.runId)) throw new StoreConflictError(`run ${args.runId} is not stored`);
+      return this.insertEvent({
+        runId: args.runId,
+        at: args.at.toISOString(),
+        kind,
+        principal: args.principal,
+        reason: args.reason,
+        ...(args.data === undefined ? {} : { data: args.data }),
+      });
+    });
+  }
+
+  /** A run's events in order; empty when the run has none or isn't stored. */
+  listRunEvents(runId: string): RunEvent[] {
+    return this.stmts.eventsForRun.all(runId).map((value) => readEvent(EventRow.parse(value)));
+  }
+
+  /** Append an event with the run's next seq. Callers hold the write lock (`immediate`). */
+  private insertEvent(fields: Omit<z.input<typeof RunEvent>, "schemaVersion" | "seq">): RunEvent {
+    const last = parseRow(MaxSeqRow, this.stmts.maxEventSeq.get(fields.runId));
+    const event = RunEvent.parse({ ...fields, schemaVersion: ARCHITECT_SCHEMA_VERSION, seq: (last?.seq ?? 0) + 1 });
+    this.stmts.insertEvent.run(
+      event.runId,
+      event.seq,
+      utc(event.at),
+      event.kind,
+      event.from ?? null,
+      event.to ?? null,
+      event.principal,
+      canonicalJson(event),
+    );
+    return event;
+  }
+
+  // -------------------------------------------------------------------------------------
+  // Evaluations (spec §13.2)
+
+  /** Store an evaluation. A verdict once recorded doesn't change: the same one again is a no-op. */
+  putEvaluation(input: z.input<typeof EvaluationRecord>): EvaluationRecord {
+    const evaluation = EvaluationRecord.parse(input);
+    const payload = canonicalJson(evaluation);
+    return this.transaction(() => {
+      const existing = parseRow(IdPayloadRow, this.stmts.evaluation.get(evaluation.id));
+      if (existing) {
+        const stored = readStored("evaluation", existing.payload, { id: existing.id });
+        if (canonicalJson(stored) === payload) return evaluation;
+        throw new StoreConflictError(`evaluation ${evaluation.id} is already stored with different content`);
+      }
+      this.stmts.insertEvaluation.run(
+        evaluation.id,
+        evaluation.runId,
+        evaluation.criterionId,
+        evaluation.evaluatorId,
+        evaluation.verdict,
+        evaluation.source,
+        utc(evaluation.createdAt),
+        payload,
+      );
+      return evaluation;
+    });
+  }
+
+  /** A run's evaluations, oldest first. */
+  listEvaluations(runId: string): EvaluationRecord[] {
+    return this.stmts.evaluationsForRun.all(runId).map((value) => {
+      const row = IdPayloadRow.parse(value);
+      return readStored("evaluation", row.payload, { id: row.id });
+    });
+  }
+
+  // -------------------------------------------------------------------------------------
+  // Resource leases (spec §11.3; ARCH milestone 3, resources)
+
+  /** The lease on a pool; undefined when nobody holds it. */
+  getLease(pool: string): ResourceLease | undefined {
+    return leaseFromRow(this.stmts.lease.get(pool));
+  }
+
+  /**
+   * Take the lease on a pool for `ttlMs`. A free pool is taken. The same owner for the same
+   * run renews its lease; the same owner for another run is busy like anyone else, because
+   * one render runs per pool. Another holder's unexpired lease is busy; an expired one is
+   * taken over and returned as `tookOverFrom`, so the caller can record whose lease lapsed.
+   */
+  acquireLease(args: { pool: string; ownerId: string; runId?: string; now: Date; ttlMs: number }): LeaseAcquisition {
+    const ttl = LeaseTtl.parse(args.ttlMs);
+    const at = args.now.toISOString();
+    const lease = ResourceLease.parse({
+      pool: args.pool,
+      ownerId: args.ownerId,
+      ...(args.runId === undefined ? {} : { runId: args.runId }),
+      acquiredAt: at,
+      heartbeatAt: at,
+      expiresAt: new Date(args.now.getTime() + ttl).toISOString(),
+    });
+    return this.immediate((): LeaseAcquisition => {
+      const holder = this.getLease(lease.pool);
+      const write = (l: ResourceLease) =>
+        this.stmts.putLease.run({
+          pool: l.pool,
+          ownerId: l.ownerId,
+          runId: l.runId ?? null,
+          acquiredAt: utc(l.acquiredAt),
+          heartbeatAt: utc(l.heartbeatAt),
+          expiresAt: utc(l.expiresAt),
+        });
+      if (!holder) {
+        write(lease);
+        return { acquired: true, lease };
+      }
+      if (holder.ownerId === lease.ownerId && holder.runId === lease.runId) {
+        const renewed = { ...lease, acquiredAt: holder.acquiredAt };
+        write(renewed);
+        return { acquired: true, lease: renewed };
+      }
+      if (args.now.getTime() < Date.parse(holder.expiresAt)) return { acquired: false, holder };
+      write(lease);
+      return { acquired: true, lease, tookOverFrom: holder };
+    });
+  }
+
+  /**
+   * Extend the owner's lease by `ttlMs` from `now`. Only the owner may: another owner's
+   * heartbeat, or one for a pool nobody holds, is a StoreConflictError. A lapsed lease that
+   * nobody took over is still the owner's row, so its heartbeat extends it.
+   */
+  heartbeatLease(args: { pool: string; ownerId: string; now: Date; ttlMs: number }): ResourceLease {
+    const ttl = LeaseTtl.parse(args.ttlMs);
+    return this.immediate(() => {
+      const holder = this.getLease(args.pool);
+      if (!holder) throw new StoreConflictError(`pool ${args.pool} has no lease`);
+      if (holder.ownerId !== args.ownerId) {
+        throw new StoreConflictError(`pool ${args.pool} is leased by ${holder.ownerId}, not ${args.ownerId}`);
+      }
+      const next = ResourceLease.parse({
+        ...holder,
+        heartbeatAt: args.now.toISOString(),
+        expiresAt: new Date(args.now.getTime() + ttl).toISOString(),
+      });
+      this.stmts.heartbeatLease.run(utc(next.heartbeatAt), utc(next.expiresAt), args.pool, args.ownerId);
+      return next;
+    });
+  }
+
+  /** Release the owner's lease. Returns whether this owner held it; another owner's lease stays. */
+  releaseLease(args: { pool: string; ownerId: string }): boolean {
+    return this.stmts.releaseLease.run(args.pool, args.ownerId).changes === 1;
   }
 }
