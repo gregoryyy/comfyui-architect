@@ -57,11 +57,14 @@ async function session(flagOn) {
     check(info?.title?.startsWith("ComfyUI Architect") === true, `${label} serverInfo.title names the fork`);
     check(forkLine.includes(flagOn ? "Architect tools on" : "Architect tools off"), `${label} handshake line: ${forkLine || "missing"}`);
     const architect = tools.filter((n) => n.startsWith("architect_"));
+    const prompts = (await client.listPrompts()).prompts.map((p) => p.name);
     if (!flagOn) {
       check(architect.length === 0, `${label} no architect_* tools`);
+      check(prompts.length === 0, `${label} prompt list empty, as upstream's (${prompts.join(", ") || "none"})`);
       return { tools };
     }
     check(architect.includes("architect_inspect"), `${label} architect_inspect listed`);
+    check(prompts.includes("architect") && prompts.includes("architect_skill"), `${label} prompts: ${prompts.join(", ") || "none"}`);
     const res = await client.callTool({ name: "architect_inspect", arguments: { action: "environment" } });
     const text = res.content?.[0]?.type === "text" ? res.content[0].text : "";
     let envelope;

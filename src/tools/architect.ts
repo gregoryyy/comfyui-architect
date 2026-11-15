@@ -5,6 +5,9 @@
 // Phase 0 has one read-only tool, `architect_inspect`, with one action. Its description is
 // prompt text for models: English, exact, and not translated (STYLE, MCP tools).
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { architectEnabled } from "../services/architect/config.js";
@@ -48,5 +51,54 @@ export function registerArchitectTools(
 export function registerArchitectToolGroup(server: McpServer, env: NodeJS.ProcessEnv = process.env): boolean {
   if (!architectEnabled(env)) return false;
   registerArchitectTools(server);
+  return true;
+}
+
+/** The skill and command texts, shipped in `architect/` at the package root (TODO 2.7). */
+const ARCHITECT_TEXT_DIR = fileURLToPath(new URL("../../architect/", import.meta.url));
+
+/** A markdown file without its YAML front matter, or undefined when it can't be read. */
+function readMarkdownBody(relPath: string): string | undefined {
+  try {
+    const text = readFileSync(join(ARCHITECT_TEXT_DIR, relPath), "utf-8");
+    return text.replace(/^---\n[\s\S]*?\n---\n+/, "");
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * MCP prompts for the skill and the `/architect` command (TODO 2.7), only while the flag is
+ * on. Files in `plugin/` would be visible with the flag off and change upstream's README
+ * counts (spec AT-12), so the texts reach clients this way until Architect is on by
+ * default. Returns whether any prompt was registered: upstream's boot installs its empty
+ * prompts/list handler only when none was, because the SDK allows one handler per method.
+ */
+export function registerArchitectPrompts(server: McpServer, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (!architectEnabled(env)) return false;
+  const skill = readMarkdownBody("skills/comfyui-architect/SKILL.md");
+  const command = readMarkdownBody("commands/architect.md");
+  if (skill === undefined || command === undefined) return false;
+  server.registerPrompt(
+    "architect",
+    {
+      title: "Plan a workflow with ComfyUI Architect",
+      description: "Plan a ComfyUI workflow for a task from installed models and curated recipes, without downloads or renders.",
+      argsSchema: { task: z.string().describe("What to make, in the user's words.") },
+    },
+    ({ task }) => ({
+      messages: [
+        { role: "user" as const, content: { type: "text" as const, text: `${command.replace("$ARGUMENTS", task)}\n\n---\n\n${skill}` } },
+      ],
+    }),
+  );
+  server.registerPrompt(
+    "architect_skill",
+    {
+      title: "ComfyUI Architect: how to plan",
+      description: "The planning guide for the architect_* tools: call order, what an agent may supply, how to read verdicts and blockers.",
+    },
+    () => ({ messages: [{ role: "user" as const, content: { type: "text" as const, text: skill } }] }),
+  );
   return true;
 }

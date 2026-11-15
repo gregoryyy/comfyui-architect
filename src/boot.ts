@@ -31,6 +31,7 @@ import { STDIO_HANDSHAKE_INSTRUCTIONS } from "./handshake-instructions.js";
 // ComfyUI Architect (fork seam): the fork names itself in the handshake (spec §18.2).
 import { forkHandshakeLine, forkServerTitle } from "./fork-identity.js";
 import { architectEnabled } from "./services/architect/config.js";
+import { registerArchitectPrompts } from "./tools/architect.js";
 import { orchestratorLogPath } from "./services/orchestrator-log.js";
 import { probeSharp } from "./services/sharp-loader.js";
 
@@ -313,9 +314,13 @@ async function createConfiguredServer(toolMode: ToolMode = "compact"): Promise<M
     ListResourceTemplatesRequestSchema,
     async () => ({ resourceTemplates: [] }),
   );
-  server.server.setRequestHandler(ListPromptsRequestSchema, async () => ({
-    prompts: [],
-  }));
+  // ComfyUI Architect (TODO 2.7): with the flag on, the Architect prompts own prompts/list;
+  // the SDK allows one handler per method, so upstream's empty list is installed otherwise.
+  if (!registerArchitectPrompts(server)) {
+    server.server.setRequestHandler(ListPromptsRequestSchema, async () => ({
+      prompts: [],
+    }));
+  }
 
   return server;
 }
