@@ -1,6 +1,6 @@
 # ComfyUI Architect: the idea
 
-Purpose, intended users, added value and approach, including what is new and what isn't. The design input is the [spec v1.0](input/comfy-architect-system-spec.md), open questions are in [GAPS](GAPS.md), the plan is in [TODO](TODO.md). Status: 2026-11-15 13:23.
+Purpose, intended users, added value and approach, including what is new and what isn't. The design is in [SPEC](design/SPEC.md), from the input [spec v1.0](input/comfy-architect-system-spec.md); open questions are in [GAPS](GAPS.md), the plan is in [TODO](TODO.md). Status: 2026-11-15 13:46.
 
 ## Purpose
 

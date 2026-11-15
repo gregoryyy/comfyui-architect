@@ -1,6 +1,6 @@
 # Style
 
-The project's standard for code, tool and interface conventions, written output, and the writing style of all prose. It applies to the Architect code, to `ext/`, to `AGENTS.md`, and to commit bodies, PR text, DONE entries and agents' replies. Upstream's own files keep upstream's style; an edit to one matches the code around it. The process is in [AGENTS](../AGENTS.md#process) until `SDLC.md` exists. Status: 2026-11-15 13:29.
+The project's standard for code, tool and interface conventions, written output, and the writing style of all prose. It applies to the Architect code, to `ext/`, to `AGENTS.md`, and to commit bodies, PR text, DONE entries and agents' replies. Upstream's own files keep upstream's style; an edit to one matches the code around it. The process is in [AGENTS](../AGENTS.md#process) until `SDLC.md` exists. Status: 2026-11-15 13:46.
 
 ## Code
 
@@ -64,16 +64,17 @@ Prose follows the [writing style](#writing-style) below. This section covers lay
 ### Documents
 
 - Upper-case file names only for central documents (`README`, `AGENTS`, `IDEA`, `ARCH`, `SEC`, `GAPS`, `SDLC`, `STYLE`, `SBOM`, `TODO`, `ROAD`, `DONE`, `design/SPEC`); everything else lower case with hyphens. `ext/input/` holds bootstrap material: the spec v1.0 is frozen, BOOT stays as moved, and BASE gains a section per upstream sync.
-- Each central document opens with one paragraph on what it covers and links to its neighbours, then a status line with a timestamp to the minute (`Status: 2026-11-15 13:29.`, local time). Take every timestamp from the clock (`date '+%Y-%m-%d %H:%M'`), never estimate it.
+- Each central document opens with one paragraph on what it covers and links to its neighbours, then a status line with a timestamp to the minute (`Status: 2026-11-15 13:46.`, local time). Take every timestamp from the clock (`date '+%Y-%m-%d %H:%M'`), never estimate it.
 - Sentence-case headings, short paragraphs, tables for comparisons, bold lead-ins for list items that carry a term. Say what is decided, proposed and open.
-- `§` refers to the spec's sections; IDs from other documents carry their document (`GAPS Q2`, `TODO 1.3`).
+- `§` refers to the sections of [SPEC](design/SPEC.md); IDs from other documents carry their document (`GAPS Q2`, `TODO 1.3`).
 - ASCII diagrams on a fixed grid, at most 100 columns; Mermaid for flows, kept simple.
 
 ### Commits and pull requests
 
 - **Commit subject:** conventional commits as upstream uses them (`feat(architect): …`, `fix(architect): …`, `docs(ext): …`), up to about 72 characters. **Body:** what and why, wrapped prose. **Trailer** `Refs:` with the TODO items or GAPS entries served (`Refs: TODO 1.3.2, GAPS Q2`). Agent-made commits end with the attribution line the agent is configured with.
 - **Commits meant for upstream** contain nothing Architect-specific, so they can be cherry-picked onto a branch from `upstream/main`.
-- **PR title:** like a commit subject. **PR description:** what and why, the TODO items, tests run including upstream's suite, security impact. PRs are opened on the fork.
+- **PR title:** like a commit subject. **PR description:** what and why, the TODO items, tests run including upstream's suite, security impact, and open questions with their GAPS numbers. PRs are opened on the fork.
+- **PR text is neutral and in the third person** (owner, 2026-11-15). It describes the change; it doesn't address the owner or the reader (no "you", no "for the owner", no requests), and it carries no agent signature or generated-by line.
 
 ### DONE entries
 

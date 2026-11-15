@@ -2,13 +2,13 @@
 
 ComfyUI Architect turns a natural-language task (an image, video, audio, a 3D asset or a pipeline combining them), its quality targets, the installed models and templates, and the machine's compute and memory limits into an executable, tested ComfyUI workflow. Rather than emitting graph JSON, it retrieves known-good workflow patterns, compares feasible alternatives and explains their trade-offs, asking for approval before downloads, installs or paid work. It extends a fork of [`artokun/comfyui-mcp`](https://github.com/artokun/comfyui-mcp) and reuses its provider backends, workflow tooling, model management and execution. It adds a planning and evaluation layer.
 
-The project's documents are in [ext/](ext/README.md), which plays the role `docs/` plays elsewhere; upstream's `docs/` is its published documentation site. The design input is the [spec v1.0](ext/input/comfy-architect-system-spec.md), the idea in [ext/IDEA.md](ext/IDEA.md), the plan in [ext/TODO.md](ext/TODO.md), the phases in [ext/ROAD.md](ext/ROAD.md), progress in [ext/DONE.md](ext/DONE.md), questions for the owner in [ext/GAPS.md](ext/GAPS.md), the pinned upstream in [ext/input/BASE.md](ext/input/BASE.md), and how the project was set up in [ext/input/BOOT.md](ext/input/BOOT.md).
+The project's documents are in [ext/](ext/README.md), which plays the role `docs/` plays elsewhere; upstream's `docs/` is its published documentation site. The design is in [ext/design/SPEC.md](ext/design/SPEC.md), a working copy of the frozen [spec v1.0](ext/input/comfy-architect-system-spec.md); the idea in [ext/IDEA.md](ext/IDEA.md), the plan in [ext/TODO.md](ext/TODO.md), the phases in [ext/ROAD.md](ext/ROAD.md), progress in [ext/DONE.md](ext/DONE.md), questions for the owner in [ext/GAPS.md](ext/GAPS.md), the pinned upstream in [ext/input/BASE.md](ext/input/BASE.md), and how the project was set up in [ext/input/BOOT.md](ext/input/BOOT.md).
 
 ## Current status
 
-Setup. The fork exists (`gregoryyy/comfyui-mcp`, from upstream `707474d2`, v0.52.206); no Architect code exists yet. The next milestone is TODO 1, spec Phase 0: a reproducible baseline, the fork's package identity and a feature flag that keeps Architect off by default.
+Setup. The fork exists (`gregoryyy/comfyui-architect`, from upstream `707474d2`, v0.52.206); no Architect code exists yet. The next milestone is TODO 1, spec Phase 0: a reproducible baseline, the fork's package identity and a feature flag that keeps Architect off by default.
 
-- The spec is input, frozen in `ext/input/`. Until GAPS Q1 is answered, it's the design authority, and spec section numbers (§) refer to it. Don't edit it; propose changes in the document that derives from it.
+- The design authority is `ext/design/SPEC.md`, a working copy of the input spec v1.0 (GAPS Q1); spec section numbers (§) refer to it. Design changes go there, never into `ext/input/`.
 - Before proposing an architecture or technology choice, check it against the design rules below and the spec.
 - Prefer settling contracts and decisions in `ext/` before writing code for a new component.
 
@@ -59,6 +59,7 @@ ext/ROAD.md                   phases with gates (spec §20), unscheduled ideas
 ext/DONE.md                   progress log, newest first
 ext/STYLE.md                  code, tool and interface conventions, written output, writing style
 ext/input/BASE.md             the pinned upstream commit and its checks; a section per upstream sync
+ext/design/SPEC.md            the design authority, a working copy of the input spec (GAPS Q1)
 ext/input/                    bootstrap input: the spec v1.0 (frozen), BOOT, BASE
 src/services/architect/       the Architect domain (planned, spec §17.1)
 src/tools/architect.ts        the architect_* MCP tools (planned)
@@ -78,12 +79,12 @@ New dependencies need a reason, an acceptable licence (upstream is MIT) and a no
 ## Process
 
 Until `ext/SDLC.md` exists, this is the process:
-- `main` on the fork changes only through PRs from `feat/…`, `fix/…`, `chore/…`, `docs/…` or `sync/…` branches. PRs are opened on `gregoryyy/comfyui-mcp`, never on upstream.
+- `main` on the fork changes only through PRs from `feat/…`, `fix/…`, `chore/…`, `docs/…` or `sync/…` branches. PRs are opened on `gregoryyy/comfyui-architect`, never on upstream.
 - Work comes from TODO.md (tasks `1.1`, subtasks `1.1.1`; numbers never change). Reference the items in the PR and in a `Refs:` trailer on each commit.
 - Done means: tests (policy, approval and lifecycle behaviour always with negative cases), passing checks, upstream's suite still passing, current docs, security impact stated, TODO item ticked, and a DONE.md entry on top (`## YYYY-MM-DD HH:MM — Title`, TODO items and PR, an `Agent:` line, then implementation notes, deviations, insights).
 - What only the owner can decide goes into GAPS.md as a question; answers carry date, time and author, and a changed answer keeps the earlier ones. Never act on a blocking question without the owner's reply.
 - **Only the owner merges.** No `gh pr merge`, no push to `main`.
-- **Upstream syncs** go through a `sync/upstream-YYYY-MM-DD` branch: merge `upstream/main`, run upstream's suite and the Architect tests, regenerate generated files, open a PR, record the new baseline in input/BASE.md. Merge, don't rebase: `main` is public.
+- **Upstream syncs** go through a `sync/upstream-YYYY-MM-DD` branch: merge `upstream/main`, run upstream's suite and the Architect tests, rebuild the generated files, open a PR, record the new baseline in input/BASE.md. Merge, don't rebase: `main` is public.
 - **Upstream contributions** are the owner's decision, never part of TODO mode. Keep commits that could go upstream (generic fixes, extension hooks) separate from Architect commits so they can be cherry-picked onto a branch from `upstream/main`.
 - **TODO mode:** when the owner sends "TODO mode: …", work through the remaining milestones as [BOOT](ext/input/BOOT.md#todo-mode) describes; stop at blockers.
 - **Model size and reasoning effort** are chosen per task, by what an error would cost: the largest model at high effort for designs, policy and grants, security, seams in upstream files and reviews; a smaller one for mechanical work. The table is in [BOOT](ext/input/BOOT.md#claude-code-subagents-and-hooks).
@@ -108,4 +109,5 @@ The spec's §14 is the basis until `ext/SEC.md` exists; every PR states its secu
 ## Commits
 
 - Commit or push only when asked.
+- PR text is neutral and in the third person: it describes the change, doesn't address the owner or the reader, and carries no agent signature or generated-by line ([STYLE](ext/STYLE.md#commits-and-pull-requests)).
 - Conventional commits, as upstream uses them: `feat(architect): …`, `fix(architect): …`, `docs(ext): …`; subjects of 72 characters or fewer; explain *why* in the body when it isn't obvious; a `Refs:` trailer with the TODO items or GAPS entries served.
