@@ -7,9 +7,21 @@
 //
 // Kept free of Architect-specific logic so it can be offered upstream as-is (GAPS Q8).
 
-import { getObjectInfo, getSystemStats } from "../../comfyui/client.js";
+import {
+  enqueuePrompt,
+  fetchImage,
+  getHistory,
+  getObjectInfo,
+  getQueueVerified,
+  getSystemStats,
+  type HistoryEntry,
+  interrupt,
+} from "../../comfyui/client.js";
 import type { ComfyUINodeDef, ObjectInfo, SystemStats } from "../../comfyui/types.js";
 import { isApiNode, isExternalServiceNode } from "../api-nodes.js";
+import { resolveOllamaHost, unloadAllOllama } from "../ollama-vram.js";
+import { type CancelQueuedResult, cancelQueuedJob } from "../queue-manager.js";
+import { WorkflowExecutionError } from "../../utils/errors.js";
 import { getComfyUIBaseUrl } from "../../config.js";
 import {
   type LocalModel,
@@ -36,7 +48,35 @@ export interface UpstreamFacade {
    * a credential), so Architect's policy check matches what upstream already warns about.
    */
   isPaidNode(def: ComfyUINodeDef): boolean;
+  /**
+   * POST /prompt with a client-chosen prompt id. Classifies the outcome instead of throwing,
+   * because only ComfyUI answering with a refusal proves the job wasn't queued: a lost or
+   * unreadable response leaves it open (spec §15.4).
+   */
+  submitPrompt(graph: Record<string, unknown>, promptId: string): Promise<SubmitOutcome>;
+  /** The prompt ids running and pending. Throws when /queue can't be read: never "empty". */
+  queue(): Promise<{ running: string[]; pending: string[] }>;
+  /** /history for one prompt id; undefined when ComfyUI has no entry. Throws when unreadable. */
+  history(promptId: string): Promise<HistoryEntry | undefined>;
+  /** Remove a pending prompt, reading /queue on both sides (upstream's verified cancel). */
+  dequeue(promptId: string): Promise<CancelQueuedResult>;
+  /** POST /interrupt with a prompt id: ComfyUI stops the running job only if it has that id. */
+  interruptPrompt(promptId: string): Promise<void>;
+  /** An output file's bytes, through /view. */
+  outputFile(ref: { filename: string; subfolder: string; type: "output" | "temp" }): Promise<{ bytes: Buffer; mimeType: string }>;
+  /** The Ollama host upstream would talk to (OLLAMA_HOST or the default). */
+  ollamaHost(): string;
+  /** Ask Ollama to unload every resident model; returns the names it asked about. */
+  unloadOllama(host: string): Promise<string[]>;
 }
+
+/** What a POST /prompt established. */
+export type SubmitOutcome =
+  | { kind: "accepted"; promptId: string; rejectedOutputs?: string }
+  /** ComfyUI answered and refused the prompt (its validation, `node_errors`). */
+  | { kind: "rejected"; message: string }
+  /** Nothing settles whether the job was queued: no response, or one that can't be read. */
+  | { kind: "unknown"; message: string };
 
 /** The facade over upstream's live services. */
 export function createUpstreamFacade(): UpstreamFacade {
@@ -46,6 +86,31 @@ export function createUpstreamFacade(): UpstreamFacade {
     objectInfo: () => getObjectInfo(),
     installedModels: async () => installedModelsFromListing(await listLocalModelsWithCoverage()),
     isPaidNode: (def) => isApiNode(def) || isExternalServiceNode(def),
+    submitPrompt: async (graph, promptId) => {
+      try {
+        const r = await enqueuePrompt(graph, undefined, { promptId });
+        return { kind: "accepted", promptId: r.prompt_id, ...(r.rejectedOutputs ? { rejectedOutputs: r.rejectedOutputs } : {}) };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // Only a WorkflowExecutionError is ComfyUI's own refusal with its validation body.
+        // Every other failure, a generic non-2xx included, could come from something between
+        // us and ComfyUI, so it stays open and is reconciled by prompt id.
+        return err instanceof WorkflowExecutionError ? { kind: "rejected", message } : { kind: "unknown", message };
+      }
+    },
+    queue: async () => {
+      const q = await getQueueVerified();
+      return { running: q.queue_running.map((item) => item[1]), pending: q.queue_pending.map((item) => item[1]) };
+    },
+    history: async (promptId) => (await getHistory(promptId))[promptId],
+    dequeue: (promptId) => cancelQueuedJob(promptId),
+    interruptPrompt: (promptId) => interrupt(promptId),
+    outputFile: async (ref) => {
+      const r = await fetchImage(ref.filename, ref.type, ref.subfolder);
+      return { bytes: Buffer.from(r.base64, "base64"), mimeType: r.mimeType };
+    },
+    ollamaHost: () => resolveOllamaHost(),
+    unloadOllama: (host) => unloadAllOllama(host),
   };
 }
 
