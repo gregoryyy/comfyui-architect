@@ -5,11 +5,14 @@
 // layer (spec §10.3): whether the recipe fits the task and whether every slot value is
 // well-typed. Whether the graph runs on the target is the validator's job (validate.ts).
 
-import { createHash } from "node:crypto";
+import { canonicalJson, sha256Hex } from "./hash.js";
 import type { ApiGraph, CheckResult, PlanCandidate, Recipe, RecipeSlot, TaskSpec } from "./schemas.js";
 
 /** Slot ID to value, as a `PlanCandidate` stores it. Values come from the agent or the user. */
 export type Bindings = PlanCandidate["bindings"];
+
+/** Re-exported for callers that already import it from here. */
+export { canonicalJson };
 
 /** What `compileRecipe` returns. `graph` and `fingerprint` are absent when a hard check failed. */
 export interface CompileResult {
@@ -30,27 +33,9 @@ function check(id: string, verdict: CheckResult["verdict"], hard: boolean, messa
   return { id, layer: "contract", verdict, hard, message, enforcedBy: ENFORCED_BY, ...(nodeId ? { nodeId } : {}) };
 }
 
-/**
- * JSON with object keys sorted at every level and no whitespace, so two graphs that differ
- * only in key order serialise, and hash, the same. Array order is kept: it is meaningful
- * (a link is `[node, outputIndex]`).
- */
-export function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    // JSON.stringify answers undefined for undefined and functions; graphs hold neither,
-    // and writing "null" keeps the output valid JSON if one slips through.
-    return JSON.stringify(value) ?? "null";
-  }
-  if (Array.isArray(value)) return `[${value.map((v) => canonicalJson(v)).join(",")}]`;
-  const entries = Object.entries(value)
-    .filter(([, v]) => v !== undefined)
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
-}
-
 /** The canonical graph hash a candidate and its export carry (spec §10.5). */
 export function graphFingerprint(graph: ApiGraph): string {
-  return createHash("sha256").update(canonicalJson(graph)).digest("hex");
+  return sha256Hex(canonicalJson(graph));
 }
 
 /**
