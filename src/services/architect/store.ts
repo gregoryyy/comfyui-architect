@@ -344,6 +344,8 @@ function prepareStatements(db: Database.Database) {
     ),
 
     approvalRequest: db.prepare("SELECT id, payload FROM approval_requests WHERE id = ?"),
+    pendingRequests: db.prepare("SELECT id, payload FROM approval_requests WHERE state = 'pending' AND expires_at > ? ORDER BY created_at, id"),
+    requestsForActionPlan: db.prepare("SELECT id, payload FROM approval_requests WHERE action_plan_id = ? ORDER BY created_at DESC, id DESC"),
     insertApprovalRequest: db.prepare(
       `INSERT INTO approval_requests (id, action_plan_id, action_plan_hash, state, created_at, expires_at, resolved_at, payload)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -819,6 +821,20 @@ export class ArchitectStore {
   /** An approval request by id; undefined when not stored. */
   getApprovalRequest(id: string): ApprovalRequest | undefined {
     const row = parseRow(IdPayloadRow, this.stmts.approvalRequest.get(id));
+    return row && readStored("approvalRequest", row.payload, { id: row.id });
+  }
+
+  /** Requests still waiting for the user, oldest first: what the terminal command lists. */
+  listPendingRequests(now: Date): ApprovalRequest[] {
+    return this.stmts.pendingRequests.all(now.toISOString()).map((value) => {
+      const row = IdPayloadRow.parse(value);
+      return readStored("approvalRequest", row.payload, { id: row.id });
+    });
+  }
+
+  /** The newest approval request opened for an action plan, whatever its state. */
+  latestRequestFor(actionPlanId: string): ApprovalRequest | undefined {
+    const row = parseRow(IdPayloadRow, this.stmts.requestsForActionPlan.get(actionPlanId));
     return row && readStored("approvalRequest", row.payload, { id: row.id });
   }
 

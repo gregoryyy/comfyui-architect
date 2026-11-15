@@ -87,6 +87,11 @@ export class ArchitectPlanning {
 
   constructor(private readonly deps: PlanningDeps) {}
 
+  /** The store planning writes to; execution shares it, so both see one database connection. */
+  get store(): ArchitectStore {
+    return this.deps.store;
+  }
+
   /** Load every recipe source into the store. Runs once per instance unless forced. */
   syncCatalog(force = false): CatalogSyncResult {
     if (this.synced && !force) return this.synced;
@@ -354,6 +359,29 @@ export class ArchitectPlanning {
     requireFeasible(candidate);
     if (plan.state === "SUPERSEDED") throw new PlanningError("GRAPH_CONFLICT", `plan ${plan.id} is SUPERSEDED`, "Call prepare for a new plan.");
     return store.putPlan({ ...plan, state: "SELECTED", selectedCandidateId: candidate.id, updatedAt: now().toISOString() });
+  }
+
+  /**
+   * The selected candidate of a plan and its graph, compiled again and checked against the
+   * validated fingerprint, for execution (TODO 3.3). The same checks export makes, so a run
+   * never starts from a candidate that export would refuse.
+   */
+  selectedForRun(planId: string) {
+    const { plan, task } = this.requirePlan(planId);
+    if (plan.state !== "SELECTED" || !plan.selectedCandidateId) {
+      throw new PlanningError("MISSING_INPUT", `plan ${plan.id} has no selected candidate`, "Ask the user to choose a candidate, then call select.");
+    }
+    const candidate = this.requireCandidate(plan, plan.selectedCandidateId);
+    requireFeasible(candidate);
+    const { recipe, graph, fingerprint } = this.compiledGraph(candidate, task);
+    return { plan, task, candidate, recipe, graph, fingerprint };
+  }
+
+  /** A candidate's graph, compiled again; refuses one that no longer matches its fingerprint. */
+  graphOfCandidate(candidateId: string, task: TaskSpec) {
+    const candidate = this.deps.store.getCandidate(candidateId);
+    if (!candidate) throw new PlanningError("GRAPH_CONFLICT", `candidate ${candidateId} is not stored`, "Prepare a new run.");
+    return this.compiledGraph(candidate, task);
   }
 
   /** Write the selected candidate's files under `artifacts/<task-id>/<plan-id>/` (spec §15.1). */
