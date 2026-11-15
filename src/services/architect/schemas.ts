@@ -716,6 +716,9 @@ export type RunOutput = z.infer<typeof RunOutput>;
 /**
  * Why a run failed or is uncertain. `COMFYUI_ERROR` marks an error ComfyUI itself reported
  * (a node or execution error); its message is ComfyUI's text and stays data (spec §14.4).
+ * The run controller writes `EXECUTION_FAILED` for both a refusal at submission and an
+ * execution error in the history, since the result envelope's code takes only
+ * `ArchitectErrorCode`; it doesn't write `COMFYUI_ERROR`.
  */
 export const RunError = z
   .object({
