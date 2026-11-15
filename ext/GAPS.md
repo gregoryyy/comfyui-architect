@@ -1,6 +1,6 @@
 # Gaps
 
-Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-15 21:09.
+Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-15 22:17.
 
 How this file works:
 - Answers are recorded with date, time and author: `**Answer** (2026-11-15 13:30, Gregor Heinrich): …`. Corrections of assumptions record the same in the **Correction** column. Short answers are fine.
@@ -195,6 +195,20 @@ With `COMFYUI_ARCHITECT=1` today, the agent still has upstream's `enqueue_workfl
 - **Proposed:** two levels. `COMFYUI_ARCHITECT=1` (assist) keeps upstream's tools as they are, and grants govern Architect's own runs; AT-05 is tested for those. `COMFYUI_ARCHITECT=managed` hides upstream's effectful tools and actions through the existing registration filter, on direct, compact and panel routes, so every effect goes through `architect_run`. Both levels in milestone 3.
 - **Answer** (2026-11-15 21:09, Gregor Heinrich): two levels, as proposed.
 - **Resolved** (2026-11-15 21:09, Opus 5.5 for Gregor Heinrich): `COMFYUI_ARCHITECT=1` is assist, `COMFYUI_ARCHITECT=managed` hides upstream's effectful tools on every route (TODO 3.4).
+
+### Q22. Can a run be started from the ComfyUI panel's agent before the panel has its own approval?
+
+Milestone 3's review found that upstream's panel agents run with shells that approve their own commands (Claude with `bypassPermissions`, Codex with automatic approval), and that the panel route has no dialog, since its Codex agent accepts every elicitation. The terminal command is then the only channel, and the panel's agent could run it with a pseudo-terminal and type the hash. Spec §14.2 says the approval command must stay out of the agent's shell surface, which the fork can't arrange for upstream's panel backends.
+
+- **Proposed:** `architect_run start` is refused on the panel route until ROAD phase 4 gives the panel an approval of its own (see Q7); planning and preparing stay available there, and the run is started from an external client. Milestone 3 implements this. The alternative is to withhold `architect_run` from the panel agent altogether.
+- **Answer:** 2026-11-15 22:24, Gregor Heinrich: make the panel's permission assumption configurable in Architect. Implemented as the operator setting `ARCHITECT_PANEL_RUNS`: unset or `off` keeps start refused on the panel route (the default); `terminal` lets a run start there with a grant the user issued, which on that route only the terminal command can, and still shows no dialog there, since the panel's Codex agent accepts every elicitation. Setting it accepts that the panel's agent could answer the terminal command itself. The setting comes from the environment the panel's server starts with, forwarded by `architectChildEnv`; no tool sets it.
+
+### Q23. Which Ollama models may Architect unload before a render?
+
+With `ARCHITECT_MANAGE_RESIDENCY=1` (off by default), milestone 3 unloads every model resident in a loopback Ollama before a render on the same machine. Spec §11.3 allows releasing only "agent-owned model residency that the user has authorized" and not a model another client is using.
+
+- **Proposed:** keep the switch off by default; when on, unload only the configured local planner model, and block (`RESOURCE_BUSY`) on any other resident model. Until answered, the milestone 3 behaviour stays and is recorded as a deviation in ARCH.
+- **Answer:** 2026-11-15 22:36, Gregor Heinrich: "for a render, check the memory demand and what's already occupied by other models, one configuration option is to unload other models as needed for the run and after rendering load them back. if possible ask the user before unloading." Implemented as follows. With `ARCHITECT_MANAGE_RESIDENCY` off (the default), a model resident in the pool blocks the render, as before. With `1`, `prepare` reads which Ollama models hold the pool and how much memory each holds, and the action plan names the ones to unload as an effect (`release_residency`) that the hash covers. The approval is the question to the user: the dialog and the terminal show each model and its size, and say it is loaded back after the render. The controller unloads only the models the user approved, verifies, and loads them back once the render has finished, with the keep-alive they had; a model loaded after the approval isn't unloaded and blocks the render until the plan is prepared and approved again. Memory demand is `unknown` until resource profiles exist (spec §11.2), so "as needed" means every resident model in the pool for now; with an estimate, only as many as the render needs are named. Reloading is best effort: a failure is recorded on the run and doesn't change its outcome.
 
 ## Assumptions
 

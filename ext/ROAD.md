@@ -14,7 +14,7 @@ Phases with a goal and a measured gate each, and ideas that aren't scheduled. Th
 
 **Gate:** three curated recipes compile and validate; a task fixture produces up to three candidates with recorded rejection reasons; malformed proposals never pass validation (AT-01); deliberate conflicts are blocked with the right reason (AT-02).
 
-## 2. Managed execution and evidence (first usable MVP) (next)
+## 2. Managed execution and evidence (first usable MVP) (in review)
 
 **Goal:** an approved candidate executes locally, survives reconnect and restart, records its outcome, and can't bypass its effect restrictions. Action plans, trusted approval capture, resource leases, the durable run controller, artifact checks and user review.
 

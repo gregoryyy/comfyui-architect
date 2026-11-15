@@ -6,7 +6,7 @@ The project's documents are in [ext/](ext/README.md), which plays the role `docs
 
 ## Current status
 
-Milestone 2 (spec Phase 1) is done (PRs #7, #8): with `COMFYUI_ARCHITECT` on, `architect_plan` takes a task to validated candidates from the recipe catalog and the installed models, and exports the chosen graph, with no downloads or renders. Z-Image Turbo and FLUX.1-schnell both plan to feasible candidates on the reference machine; three recipes are `curated`, the checkpoint recipe for FLUX.1-schnell is `proposed`. The package keeps the name `comfyui-mcp` until a rename milestone before the first publish, which also brings command shorthands and the publishing preparation (GAPS Q11). The fork's README is `README.md`; upstream's is `README_BASE.md`. Panel work waits for the panel phase (ROAD phase 4). Still open from milestone 1: the first CI run, which waits on the owner confirming the fork's workflows in the Actions tab. Next is spec Phase 2, managed execution (ROAD phase 2), which TODO doesn't detail yet.
+Milestone 3 (spec Phase 2, managed execution) is in review: with `COMFYUI_ARCHITECT` on, `architect_run` renders a selected candidate locally once the user approves it in a client dialog or with the terminal command `comfyui-mcp architect approve`, follows the job with a durable controller, checks the outputs and records the user's verdict; `COMFYUI_ARCHITECT=managed` withholds upstream's effectful tools (GAPS Q20, Q21); `ARCHITECT_PANEL_RUNS` and `ARCHITECT_MANAGE_RESIDENCY` set what the panel may start and which Ollama models may be unloaded (GAPS Q22, Q23). Milestone 2 (planning) is done. The package keeps the name `comfyui-mcp` until a rename milestone before the first publish, which also brings command shorthands and the publishing preparation (GAPS Q11). The fork's README is `README.md`; upstream's is `README_BASE.md`. Panel work waits for the panel phase (ROAD phase 4). Still open from milestone 1: the first CI run, which waits on the owner confirming the fork's workflows in the Actions tab. Next is ROAD phase 3, broader recipes and approved downloads, which TODO doesn't detail yet.
 
 - The design authority is `ext/design/SPEC.md`, a working copy of the input spec v1.0 (GAPS Q1); spec section numbers (§) refer to it. Design changes go there, never into `ext/input/`.
 - Before proposing an architecture or technology choice, check it against the design rules below and the spec.
@@ -70,13 +70,17 @@ ext/input/BASE.md             the pinned upstream commit and its checks; a secti
 ext/design/SPEC.md            the design authority, a working copy of the input spec (GAPS Q1)
 ext/input/                    bootstrap input: the spec v1.0 (frozen), BOOT, BASE
 src/fork-identity.ts          the fork's identity and pinned upstream baseline
-src/services/architect/       the Architect domain: config (flag, forwarded variables), schemas (contracts, parseStored),
+src/services/architect/       the Architect domain: config (modes, forwarded variables; imports nothing), mode (managed mode), schemas (contracts, parseStored),
                               upstream facade, service (environment), environment (freshness), store and migrations
                               (architect.db), hash, catalog, compile, validate, planner, planning (the architect_plan
-                              workflow and export), panel (greeting)
-src/tools/architect.ts        the architect_* MCP tools (architect_inspect, architect_plan) and the MCP prompts
+                              workflow and export), admission (action plans, grants, the effect gate), execution (the
+                              architect_run workflow), controller (runs), resources (leases, Ollama residency),
+                              evaluation and media-probe (output checks), cli (the terminal approval channel), panel
+src/tools/architect.ts        the architect_* MCP tools (architect_inspect, architect_plan) and the MCP prompts;
+                              architect-run.ts registers architect_run and its approval dialogs
 src/__tests__/architect/      Architect tests; fixtures/ holds fixture recipes and node schemas
-scripts/architect/            Architect scripts: stdio-smoke.mjs, what an MCP client sees with the flag off and on
+scripts/architect/            Architect scripts: stdio-smoke.mjs, what an MCP client sees with the flag off and on;
+                              --plan plans and --run renders on the target
 ext/research/                 research notes; index in its README
 architect/recipes/            shipped recipes, *.recipe.json
 architect/skills/, architect/commands/   the skill and the /architect command, served as MCP prompts while the
@@ -87,7 +91,7 @@ Everything else is upstream's. Update this layout in the same change when code l
 
 ## Stack
 
-Upstream's: TypeScript (ESM) on Node 22, Zod as the runtime authority for contracts (types inferred from schemas), Vitest, better-sqlite3, YAML, the MCP SDK. Build and checks with upstream's npm scripts: `npm ci`, `npm run lint` (`tsc --noEmit`), `npm run build`, `npm test` (`scripts/run-checks.mjs`). CI additionally runs `node scripts/asset-counts.mjs --check`, `npm run check:vocabulary`, `npm run check:unknown-collapse`, `npm run vocab:export -- --check` and `npm run docs:gen` as a no-op. Run the relevant ones before declaring work done, and report failures as they are; a failure that also occurs on the baseline is recorded as a baseline failure, not attributed to the change.
+Upstream's: TypeScript (ESM) on Node 22, Zod as the runtime authority for contracts (types inferred from schemas), Vitest, better-sqlite3, YAML, the MCP SDK. Build and checks with upstream's npm scripts: `npm ci`, `npm run lint` (`tsc --noEmit`), `npm run build`, `npm test` (`scripts/run-checks.mjs`). CI additionally runs `node scripts/asset-counts.mjs --check`, `npm run check:vocabulary`, `npm run check:unknown-collapse`, `npm run vocab:export -- --check` and `npm run docs:gen` as a no-op. Run the relevant ones before declaring work done, and report failures as they are; a failure that also occurs on the baseline is recorded as a baseline failure, not attributed to the change. Where `lsof` hangs on the machine, `bridge-port-reclaim.test.ts` blocks its worker for good (it calls `lsof` synchronously, so no test timeout fires); run the suite with `--exclude src/__tests__/services/bridge-port-reclaim.test.ts` and say so in the PR.
 
 New dependencies need a reason, an acceptable licence (upstream is MIT) and a note in the PR; prefer what upstream already ships.
 

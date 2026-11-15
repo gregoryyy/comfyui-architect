@@ -1,6 +1,6 @@
 # Security
 
-Assets, threats with their consequences for the design, controls by phase, and how each control is verified. The policy and approval model is [SPEC](design/SPEC.md) §14; this file adds what the fork and the local deployment bring with them, and tracks the controls as work. Every PR states its security impact against it ([SDLC](SDLC.md#definition-of-done)). Status: 2026-11-15 14:43.
+Assets, threats with their consequences for the design, controls by phase, and how each control is verified. The policy and approval model is [SPEC](design/SPEC.md) §14; this file adds what the fork and the local deployment bring with them, and tracks the controls as work. Every PR states its security impact against it ([SDLC](SDLC.md#definition-of-done)). Status: 2026-11-15 22:17.
 
 ## Scope
 
@@ -43,7 +43,7 @@ Phases are [ROAD](ROAD.md)'s.
 | --- | --- | --- |
 | 0 Fork and seams | Feature flag off by default; upstream behaviour unchanged when off; the facade as the only path into upstream; no secrets in the repository; Actions with the publishing workflows disabled | T10, T8 |
 | 1 Planning slice | Read-only tools only: no downloads, installs, executions or canvas changes; untrusted-content handling in the catalog import; path checks on workflow roots | T2, T9 |
-| 2 Managed execution | Grants bound to action-plan hashes; effect admission on every route; owned-job cancellation; idempotency and `OUTCOME_UNKNOWN`; privacy profiles enforced before any provider call | T1, T5, T6, T7, T12 |
+| 2 Managed execution | Grants bound to action-plan hashes, issued only by a client dialog (form elicitation) or the terminal command `comfyui-mcp architect approve`, which needs a TTY and the typed short hash; no run starts on the panel route, whose agents approve their own shell commands and whose Codex agent accepts every elicitation, unless the operator sets `ARCHITECT_PANEL_RUNS=terminal`, and even then no dialog is shown there (GAPS Q22); only loopback targets with ComfyUI 0.3.57 or newer, which interrupts by prompt id; effect admission on every route, rebuilding the plan against a fresh snapshot; managed mode (`COMFYUI_ARCHITECT=managed`) withholds upstream's effectful tools; Ollama models are unloaded for a render only when `ARCHITECT_MANAGE_RESIDENCY=1` and the approved action plan names them, and are loaded back after it (GAPS Q23); owned-job cancellation; idempotency and `OUTCOME_UNKNOWN`; privacy profiles enforced before any provider call (with the first remote provider) | T1, T5, T6, T7, T12 |
 | 3 Acquisition | Download manifests with source, size, destination and hash; custom-node installs as a separate approval with pinned versions and snapshots | T3, T4 |
 | 4 Panel UX | Approval prompts that show the concrete effect; grants issued only from the panel's authenticated interaction, never from text the model produced | T1 |
 | 5 Optimization | Local learning data inspectable and deletable; telemetry sharing off by default | T5 |
@@ -53,7 +53,9 @@ Phases are [ROAD](ROAD.md)'s.
 | Control | Verified by |
 | --- | --- |
 | No unapproved effect on any route | Acceptance test AT-05 across direct tools, compact `call_tool` and panel actions ([EVAL](EVAL.md)) |
-| Grants can't be forged or replayed | Negative tests: a model-supplied grant, a grant for another plan hash, an expired or consumed grant |
+| Grants can't be forged or replayed | Negative tests (`execution.test.ts`, `run-routes.test.ts`, `execution-store.test.ts`): no tool parameter carries an approval; a wrong or missing typed hash; a grant for another action plan or target; an expired, declined or consumed grant; a changed environment between grant and start; a terminal without a TTY; a concurrent second consumption from another connection |
+| Managed mode withholds upstream's effects | `config.test.ts` checks through upstream's own filter that rendering, install, queue and panel tools are withheld and the Architect tools aren't |
+| Only approved Ollama models are unloaded | `execution.test.ts`: the unload list is in the approval and the hash, an edited list doesn't parse, a later residency change doesn't widen it; `resources.test.ts`: off means no unload request, a model the user didn't approve blocks instead, the approved ones are loaded back |
 | Untrusted content stays data | Injection fixtures in workflow notes, model cards and node docs; the planner's output must not change |
 | No egress under `local-private` | AT-09: no outbound provider or catalog request in the test run |
 | No duplicate renders | AT-06: a dropped response after submission ends in `OUTCOME_UNKNOWN`, not a second submission |
@@ -64,5 +66,6 @@ Phases are [ROAD](ROAD.md)'s.
 ## Known issues
 
 - **Host agents** (Claude Code, Codex) have their own tools that the fork can't restrict (T11).
+- **Approvals and a same-account agent** (milestone 3). On the panel route no run starts unless the operator sets `ARCHITECT_PANEL_RUNS=terminal`, which accepts that the panel's agent, whose shell approves its own commands, could answer the terminal command itself (GAPS Q22). An agent with a shell on the user's account can run the terminal approve command with a pseudo-terminal and type the hash, and in Claude Code an `Elicitation` hook in the user's settings can accept a dialog without showing it. The approval channels raise the bar; they are not a boundary against such an agent. The strict setup restricts the host as well (SPEC §14.3): a Bash deny rule for `comfyui-mcp architect`, `allowManagedHooksOnly` in managed settings, and the sandbox ([research/approval-channel.md](research/approval-channel.md)). Each grant records its channel and issuer.
 - **Custom nodes** can do anything their Python process can; only an OS or container boundary contains them (T3).
 - **Offline mode** is enforced in the application only; a real no-egress guarantee needs OS-level network controls (SPEC §12.2).
