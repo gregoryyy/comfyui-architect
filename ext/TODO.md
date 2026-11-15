@@ -1,6 +1,6 @@
 # TODO
 
-The plan: milestones (`## 1.`), tasks (`1.1`) and subtasks (`1.1.1`) with checkboxes. Numbers never change; new work gets new numbers. *(decision)* marks a choice to settle before dependent work starts, *(variant)* an alternative built for comparison. When an item is done, tick it here and add an entry to [DONE](DONE.md); the process is in [AGENTS](../AGENTS.md#process). Phases beyond the current milestones are in [ROAD](ROAD.md), questions for the owner in [GAPS](GAPS.md). Status: 2026-11-15 13:46.
+The plan: milestones (`## 1.`), tasks (`1.1`) and subtasks (`1.1.1`) with checkboxes. Numbers never change; new work gets new numbers. *(decision)* marks a choice to settle before dependent work starts, *(variant)* an alternative built for comparison. When an item is done, tick it here and add an entry to [DONE](DONE.md); the process is in [AGENTS](../AGENTS.md#process). Phases beyond the current milestones are in [ROAD](ROAD.md), questions for the owner in [GAPS](GAPS.md). Status: 2026-11-15 14:43.
 
 Goal: the spec's first usable MVP, an approved candidate that executes locally and records its outcome (ROAD phase 2). Milestone 1 is spec Phase 0, milestone 2 spec Phase 1. Spec section numbers (§) refer to [SPEC](design/SPEC.md).
 
@@ -10,25 +10,25 @@ The steps of [BOOT](input/BOOT.md), on 2026-11-15.
 
 - [x] 0.1 Collect the input: the spec v1.0 in `ext/input/`
 - [x] 0.2 Assess it and state the idea: [IDEA](IDEA.md), [GAPS](GAPS.md); the fork assessment in the first DONE entry
-- [ ] 0.3 Design concept and security
+- [x] 0.3 Design concept and security
   - [x] 0.3.1 `AGENTS.md`, `CLAUDE.md` at the root, force-added past upstream's `.gitignore`
   - [x] 0.3.2 The design authority according to GAPS Q1: [SPEC](design/SPEC.md), a working copy of the input spec
-  - [ ] 0.3.3 `ext/SEC.md` from spec §14, plus what the fork brings: the public repository, upstream's HTTP transport and tunnel, the panel bridge, custom nodes
-- [ ] 0.4 Plan
+  - [x] 0.3.3 [SEC](SEC.md): from spec §14, plus what the fork brings: the public repository, upstream's HTTP transport and tunnel, the panel bridge, custom nodes
+- [x] 0.4 Plan
   - [x] 0.4.1 This file, [ROAD](ROAD.md), [DONE](DONE.md), [BASE](input/BASE.md)
-  - [ ] 0.4.2 `ext/ARCH.md` with the decision log, and `ext/EVAL.md` from spec §19, as GAPS Q1 decides
-- [ ] 0.5 Readable and buildable
+  - [x] 0.4.2 [ARCH](ARCH.md) with the decision log, and [EVAL](EVAL.md) from spec §19, as GAPS Q1 decides
+- [x] 0.5 Readable and buildable
   - [x] 0.5.1 `ext/README.md`, [BOOT](input/BOOT.md)
-  - [ ] 0.5.2 Process and conventions
-    - [ ] 0.5.2.1 `ext/SDLC.md` (AGENTS holds the process until then)
+  - [x] 0.5.2 Process and conventions
+    - [x] 0.5.2.1 [SDLC](SDLC.md)
     - [x] 0.5.2.2 [STYLE](STYLE.md): code, tools and interfaces, written output, and the writing style from Lakeshore
-    - [ ] 0.5.2.3 `ext/SBOM.md`
-  - [ ] 0.5.3 `.github/pull_request_template.md` with the definition of done
+    - [x] 0.5.2.3 [SBOM](SBOM.md)
+  - [x] 0.5.3 `.github/pull_request_template.md` with the definition of done
 - [x] 0.6 Version control: public fork `gregoryyy/comfyui-architect` (forked as `comfyui-mcp`, renamed 2026-11-15) with `origin` and `upstream`, `gh` defaulting to the fork, noreply commit identity
-- [ ] 0.7 Remaining setup items
+- [x] 0.7 Remaining setup items
   - [x] 0.7.1 Owner answers the blocking GAPS questions: Q1 (design authority), Q2 (package name), Q3 (versions), Q5 (target), Q6 (Actions)
   - [x] 0.7.2 Licence of the additions according to GAPS Q4: MIT, the fork's copyright line in `LICENSE`
-  - [ ] 0.7.3 Automatic deletion of merged branches in the fork's settings
+  - [x] 0.7.3 Automatic deletion of merged branches in the fork's settings (2026-11-15)
 
 ## 1. Reproducible fork and seam audit (spec Phase 0)
 

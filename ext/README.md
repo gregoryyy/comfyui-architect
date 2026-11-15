@@ -16,7 +16,7 @@ The project follows gregoryyy's agentic coding project structure, as adapted in 
 
 | Path | Content |
 | --- | --- |
-| `ext/` | Project documents: this README, [BOOT](input/BOOT.md), [IDEA](IDEA.md), [GAPS](GAPS.md), [TODO](TODO.md), [ROAD](ROAD.md), [DONE](DONE.md), [STYLE](STYLE.md), [SPEC](design/SPEC.md) (the design), [BASE](input/BASE.md), and the [spec](input/comfyui-architect-system-spec.md) as input |
+| `ext/` | Project documents: this README, [BOOT](input/BOOT.md), [IDEA](IDEA.md), [GAPS](GAPS.md), [TODO](TODO.md), [ROAD](ROAD.md), [DONE](DONE.md), [SEC](SEC.md), [ARCH](ARCH.md), [EVAL](EVAL.md), [SDLC](SDLC.md), [SBOM](SBOM.md), [STYLE](STYLE.md), [SPEC](design/SPEC.md) (the design), [BASE](input/BASE.md), and the [spec](input/comfyui-architect-system-spec.md) as input |
 | `src/services/architect/` | The Architect domain: task specs, catalog, planner, constraints, policy, resources, run controller, evaluation, store |
 | `src/services/architect/upstream.ts` | The one facade through which the Architect code calls upstream services |
 | `src/tools/architect.ts` | The MCP tools `architect_inspect`, `architect_plan`, `architect_run`, `architect_library` |

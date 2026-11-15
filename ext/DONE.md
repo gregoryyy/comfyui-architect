@@ -2,6 +2,32 @@
 
 The progress log, newest entry on top. Each entry: `## YYYY-MM-DD HH:MM — Title` (time from `date`), the TODO items and PR or commit, an `Agent:` line, then **Implementation notes**, **Deviations** and **Insights**. The plan is in [TODO](TODO.md).
 
+## 2026-11-15 14:43 — Milestone 0 complete: SEC, ARCH, EVAL, SDLC, SBOM, PR template
+
+TODO items: 0.3.3, 0.4.2, 0.5.2.1, 0.5.2.3, 0.5.3, 0.7.3. Branch `docs/milestone-0`, built on `docs/gaps-answers` (PR #2).
+
+Agent: Opus 5.5, subagents: none.
+
+### Implementation notes
+
+- [SEC](SEC.md): assets, twelve threats with their design consequences, controls by ROAD phase, and how each control is verified; built on SPEC §14 with what the fork adds (public repository, upstream's transport and tunnel, custom nodes, model files).
+- [ARCH](ARCH.md): a map of SPEC's architecture, the decision log of 2026-11-15 (fork, public, `ext/`, name, kind-neutral contracts, SPEC as authority, identity, versions, licence, reference target, Actions, panel timing, seams, planner), and four open decisions.
+- [EVAL](EVAL.md): seven claims from IDEA mapped to four evaluations (the acceptance suite, security negative tests, the comparison with stock upstream, planner model qualification), with every number marked as a proposed target.
+- [SDLC](SDLC.md): work items, branches and PRs, definition of done, testing, upstream sync, upstream contributions, TODO mode, decisions, versions and releases. AGENTS's process section now summarizes it.
+- [SBOM](SBOM.md): rules, licence policy, toolchain, and the major dependencies with licences read from the installed packages.
+- `.github/pull_request_template.md` with the definition of done; a new file, since upstream has none.
+- Merged branches are deleted automatically (`delete_branch_on_merge`, set through the GitHub API).
+
+### Deviations
+
+- None from the plan. ARCH holds only the map, the decision log and open decisions, as GAPS Q1 decided.
+
+### Insights
+
+- Every direct dependency is permissive (MIT, Apache-2.0, BSD-2-Clause, ISC) except the optional Claude Agent SDK, which is under vendor terms and installed on the user's machine, not redistributed.
+- The development machine runs Node 26.13.0 and npm 11.20.0; CI pins Node 22. A difference between local and CI results may come from that.
+- ARCH's open decisions include one found while writing it: upstream code that compares the package version (panel compatibility, update gates) may react to the fork's 0.1.0. Milestone 1 checks it before changing `package.json`.
+
 ## 2026-11-15 14:26 — ComfyUI Architect in the input spec too
 
 TODO item: 0.1. Branch `docs/gaps-answers`.
