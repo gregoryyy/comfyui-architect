@@ -6,4 +6,5 @@ Each note opens with what it covers, which GAPS entries or TODO items it serves,
 
 | Note | Serves | Date |
 | --- | --- | --- |
+| [panel-connection.md](panel-connection.md) | GAPS A5, A6, A9, Q11; TODO 1.2.4, 1.10 | 2026-11-15 |
 | [reference-target.md](reference-target.md) | GAPS Q5, Q9, Q10; TODO 1.2.1, 1.2.2 | 2026-11-15 |

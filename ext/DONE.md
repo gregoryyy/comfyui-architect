@@ -16,7 +16,7 @@ Agent: Opus 5.5, subagents: none.
 - `src/services/architect/`: the flag, the Zod schemas (`EnvironmentSnapshot`, the result envelope, the error codes of spec §16.4), the upstream facade and the service. A failed probe leaves its fields absent and is listed in `probeErrors`, never reported as zero (#796).
 - `architect_inspect` (action `environment`) registers through upstream's registrar, so the tool-surface policy and compact `call_tool` cover it; a test withholds it with `COMFYUI_MCP_TOOL_DENY`.
 - Against the Desktop ComfyUI on port 8188, an MCP client over stdio sees 41 tools with the flag off and 42 with it on; `architect_inspect` returns ComfyUI 0.44.0, 1,049 node classes and one `mps` device with 48 GB.
-- [research/reference-target.md](research/reference-target.md) records the machine, both ComfyUI installs, the installed models and the Ollama models.
+- [research/reference-target.md](research/reference-target.md) records the machine, both ComfyUI installs, the installed models and the Ollama models; [research/panel-connection.md](research/panel-connection.md) records how the stock panel finds and starts a server, read from its code (GAPS A5, A6, A9).
 
 ### Deviations
 
@@ -30,6 +30,7 @@ Agent: Opus 5.5, subagents: none.
 - Upstream pins some wiring as source text: `handshake-instructions.test.ts` expects `instructions:` followed by `STDIO_HANDSHAKE_INSTRUCTIONS` in `boot.ts`. A template literal failed it; concatenation keeps the output and the test. A seam has to keep the source form such tests read as well as the behaviour.
 - The full suite doesn't finish locally: `bridge-port-reclaim.test.ts` hangs on the baseline as well. The 14 baseline failures and the hang are recorded in BASE; CI on Node 22 may differ.
 - No workflow has run on the fork yet, including on PRs #2 and #3, although Actions is enabled. A fork's workflows start only after the owner enables them in the Actions tab.
+- The panel's code doesn't read `COMFYUI_MCP_NO_AUTOSPAWN`, the variable SPEC v1.0 names for development (GAPS A6). The switch is the panel's "auto-start MCP" setting, and its launcher always runs `npx -y comfyui-mcp@latest connect`, so with auto-start on the panel can only start upstream. SPEC §3.2 and §18.2 are corrected; Q11 notes the launcher.
 - No image model is installed on either ComfyUI; the installed models are for video and audio. The first certified image families (GAPS Q12) need downloads.
 
 ## 2026-11-15 14:43 — Milestone 0 complete: SEC, ARCH, EVAL, SDLC, SBOM, PR template
