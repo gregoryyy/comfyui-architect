@@ -296,6 +296,8 @@ export const Certification = z.enum([
   "fixture",
   /** Annotated and reviewed by a maintainer, not yet run on a recorded matrix. */
   "curated",
+  /** Written or annotated by an agent, not yet reviewed: spec §8.4 forbids self-certifying. */
+  "proposed",
   /** Passed its graph-contract and run tests on a recorded matrix (AT-03). */
   "certified",
 ]);
@@ -420,7 +422,7 @@ export const PlanCandidate = z
     resourceEstimate: z.object({ status: z.literal("unknown"), reason: z.string() }).strict(),
     ranking: z
       .object({
-        /** Ordered evidence tier, best first: certified, curated, fixture. */
+        /** Ordered evidence tier, best first: certified, curated, proposed, fixture. */
         tier: Certification,
         explanation: z.string(),
       })

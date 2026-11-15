@@ -69,7 +69,7 @@ export function loadRecipeDir(dir: string): RecipeLoadResult {
   return { recipes, errors, dirFound: true };
 }
 
-const TIER_ORDER = { certified: 0, curated: 1, fixture: 2 } as const;
+const TIER_ORDER = { certified: 0, curated: 1, proposed: 2, fixture: 3 } as const;
 
 export interface RetrievedRecipe {
   recipe: Recipe;

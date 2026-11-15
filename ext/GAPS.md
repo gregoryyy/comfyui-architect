@@ -101,12 +101,13 @@ Q2 chose the package `@gregoryyy/comfyui-architect` and the command `comfyui-arc
 - **Proposed:** keep `comfyui-mcp` as the package, command and MCP server name while the fork runs from a source checkout and isn't published, and identify the fork through `src/fork-identity.ts`, `serverInfo.title` and the handshake line (done in milestone 1). Do the full rename, routed through one identity module, as its own milestone before the first publish. The alternative is the full rename now: a large change across upstream files and tests, with sync conflicts to match.
 - **Answer:**
 
-### Q12. Which image model families does the MVP certify first? — blocking for TODO 2.4
+### Q12. Which image model families does the MVP certify first?
 
 SPEC §2.2 certifies 12–20 recipe variants across 2–3 families. The reference machine (Apple M5 Pro, 48 GB unified memory) has no image-only family installed; the shared models folder holds video and audio models (LTX 2.5, MiniMax H3, MiniMax Music 3, YuE2), so every image family means downloads ([research/reference-target.md](research/reference-target.md)). Upstream ships skills and packs for Flux, Qwen-Image, Z-Image, ERNIE and others.
 
 - **Proposed:** two families with upstream skills and packs that run on 48 GB of unified memory, for example Flux and Qwen-Image, chosen by the owner with the download size in view.
-- **Answer:**
+- **Answer** (2026-11-15 17:27, Gregor Heinrich): the models in `~/Documents/model/comfyui/models`. That folder is the Desktop install's second model root (`comfy.desktop_1` in its model-path configuration), which the first survey missed. Its image families are **Z-Image Turbo** (diffusion model, its Qwen 3 4B text encoder and the `ae` VAE: complete) and **FLUX.1-schnell** (diffusion model fp8 and the `ae` VAE; its T5-XXL and CLIP-L text encoders aren't installed). Its Wan 2.2 models are video (ROAD phase 6).
+- **Resolved** (2026-11-15 17:27, Opus 5.5 for Gregor Heinrich): the first recipes are for Z-Image Turbo and FLUX.1-schnell (TODO 2.4.4). They ship as `proposed`, the tier for recipes an agent wrote and the owner hasn't reviewed (spec §8.4: an agent can't certify its own recipe); the owner's review makes them `curated`. The FLUX.1-schnell recipe stays blocked on this machine until its text encoders are installed, which milestone 2 can't do. [research/reference-target.md](research/reference-target.md) is corrected.
 
 ## Assumptions
 

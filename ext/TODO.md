@@ -65,7 +65,7 @@ Exit (spec §20): the fork launches from an installed package, identifies itself
 
 ## 2. One end-to-end planning slice (spec Phase 1)
 
-Exit (spec §20): a user can describe an image task, compare installed-asset candidates and obtain an editable graph with explicit constraints and provenance. No downloads, no automatic execution. The design decisions are in [ARCH](ARCH.md#decision-log) (2026-11-15, milestone 2 rows). The exit needs at least one shipped recipe, so it waits on GAPS Q12; everything else runs on fixture recipes.
+Exit (spec §20): a user can describe an image task, compare installed-asset candidates and obtain an editable graph with explicit constraints and provenance. No downloads, no automatic execution. The design decisions are in [ARCH](ARCH.md#decision-log) (2026-11-15, milestone 2 rows). GAPS Q12 chose Z-Image Turbo and FLUX.1-schnell; the tests run on fixture recipes.
 
 - [ ] 2.1 Domain schemas with migration tests: `TaskSpec`, `EnvironmentSnapshot`, `Recipe`, `PlanCandidate` (spec §7.1), with image-specific fields in a kind-specific part, so video and audio later add a kind without a migration of the core records (AGENTS, scope decisions)
   - [ ] 2.1.1 `src/services/architect/schemas.ts`: `TaskSpecInput` and `TaskSpec` (kind-specific `media`), `Recipe` and `RecipeSlot`, `ApiGraph`, `CheckResult` and `ValidationReport`, `PlanCandidate`, `Plan` with the planning states, `PlanBlockers` (spec §9.5)
@@ -82,7 +82,7 @@ Exit (spec §20): a user can describe an image task, compare installed-asset can
   - [ ] 2.4.1 Recipe loader: shipped recipes from `architect/recipes/`, validated, content-hashed, recorded with their catalog source; an invalid file is reported, never skipped silently
   - [ ] 2.4.2 Retrieval: filter by kind and operation, then rank by installed-dependency overlap, at most 20 (spec §8.5, §9.2)
   - [ ] 2.4.3 Fixture recipes for tests (certification `fixture`)
-  - [ ] 2.4.4 Three curated recipes. Blocked on GAPS Q12
+  - [ ] 2.4.4 Three recipes for Z-Image Turbo and FLUX.1-schnell (GAPS Q12), shipped as `proposed` until the owner reviews them, each checked against the live node schemas of the Desktop install
 - [ ] 2.5 `architect_inspect` and the planning actions of `architect_plan` (spec §16.1)
   - [ ] 2.5.1 `architect_inspect`: `environment` with installed models, and `capabilities` (the catalog's recipes and their dependency status)
   - [ ] 2.5.2 `architect_plan`: `prepare`, `propose`, `get`, `validate`, `select`, `export`; agent-supplied bindings are checked against the snapshot, so a model file the target doesn't list is refused (spec §9.2)

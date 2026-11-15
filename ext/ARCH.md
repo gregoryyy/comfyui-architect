@@ -47,6 +47,7 @@ Newest first. Each entry: date, decision, reason, where it's recorded.
 
 | Date | Decision | Reason | Recorded in |
 | --- | --- | --- | --- |
+| 2026-11-15 | A fourth evidence tier, `proposed`, between `curated` and `fixture`: a recipe an agent wrote or annotated and the owner hasn't reviewed. The first recipes, for Z-Image Turbo and FLUX.1-schnell, ship as `proposed` | Spec §8.4: an agent can't certify its own recipe; GAPS Q12 | TODO 2.4.4 |
 | 2026-11-15 | The skill and the command live in `architect/skills/comfyui-architect/SKILL.md` and `architect/commands/architect.md` and reach clients as MCP prompts registered with the Architect tools, so only while the flag is on; they move into `plugin/skills/` and `plugin/commands/` when Architect is on by default | A file in `plugin/skills/` or `plugin/commands/` is visible with the flag off and changes the counts in upstream's README and `docs/plugin.mdx` (`asset-counts --check`), against AT-12; `boot.ts` already declares the prompts capability | TODO 2.7 |
 | 2026-11-15 | Exports go to `ARCHITECT_DATA_DIR/artifacts/<task-id>/<plan-id>/`; the compiled graph isn't stored, it's compiled again from recipe and bindings on `get` and `export` and must match the candidate's fingerprint | Plan IDs are unique where task revisions aren't (several plans per revision); recompiling keeps one source of truth and detects a recipe that changed underneath | TODO 2.6.3 |
 | 2026-11-15 | Milestone 2 contracts in `src/services/architect/schemas.ts`: `TaskSpec` carries the kind-specific part in `media`, a union discriminated by `kind` with only `image` so far; `Recipe` slots write node inputs and say where values come from (`fromTask`, model folder); `PlanCandidate` keeps bindings, compiled-graph fingerprint, role map, layered validation report, dependency delta and an unknown resource estimate; `parseStored` reads stored records with step-wise upgrades and refuses newer versions | Kind-neutral core records (AGENTS); spec §7, §9, §10; a resource number nobody measured would be invented (spec §9.3) | TODO 2.1 |
@@ -75,6 +76,5 @@ Newest first. Each entry: date, decision, reason, where it's recorded.
 
 | Decision | Needed by | Tracked |
 | --- | --- | --- |
-| The first certified model families (2–3); until then milestone 2 runs on fixture recipes and ships none | TODO 2.4 | GAPS Q12 |
 | The kind of workflow after images | ROAD phase 6 | GAPS Q10, decided after the MVP |
 | How far the rename reaches, and with it the fork's package version (upstream's version checks apply to the panel's version, not the server's; A9) | TODO 1.3 | GAPS Q11 |
