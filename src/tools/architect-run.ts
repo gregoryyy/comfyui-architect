@@ -87,7 +87,8 @@ function approvalDialog(server: McpServer, ctx: RunToolContext): ApprovalDialog 
           message: `ComfyUI Architect asks you to approve a run.\n\n${describeActionPlan(ctx.store, actionPlan)}\n\nOnly you can answer this.`,
           requestedSchema: {
             type: "object",
-            properties: { decision: { type: "string", title: "Decision", enum: ["approve", "decline"] } },
+            // Decline first: a client that pre-fills the first option must not approve.
+            properties: { decision: { type: "string", title: "Decision", enum: ["decline", "approve"] } },
             required: ["decision"],
           },
         },
@@ -113,7 +114,7 @@ function verdictDialog(server: McpServer): VerdictDialog | undefined {
           requestedSchema: {
             type: "object",
             properties: {
-              verdict: { type: "string", title: "Verdict", enum: ["accept", "reject"] },
+              verdict: { type: "string", title: "Verdict", enum: ["reject", "accept"] },
               note: { type: "string", title: "Note (optional)" },
             },
             required: ["verdict"],
@@ -144,7 +145,8 @@ export function registerArchitectRunTool(server: McpServer, context: () => RunTo
       "and an approval request; tell the user what will run. " +
       'action:"start" with `actionPlanId` starts the run when the user has approved: where the client supports it, the user is asked ' +
       "in a dialog; otherwise the reply says APPROVAL_REQUIRED and names a terminal command the user runs themselves. You can't " +
-      "approve for the user, and you must not run that command. Starting the same action plan again returns the same run, never a second render. " +
+      "approve for the user, and you must not run that command. From the ComfyUI panel's agent, start is refused unless the operator allowed it: plan there, run from an external client. " +
+      "Starting the same action plan again returns the same run, never a second render. " +
       'action:"status" with `runId` reconciles with ComfyUI and returns the state, outputs, checks and three separate verdicts: ' +
       "execution, acceptance and the user's. OUTCOME_UNKNOWN means a submission's result was lost: never prepare and start the same plan " +
       "again to retry; report it and keep calling status. " +
@@ -165,6 +167,10 @@ export function registerArchitectRunTool(server: McpServer, context: () => RunTo
     },
     async (args) => {
       try {
+        // Arguments first: a malformed call never builds the run context or touches a store.
+        const required = { prepare: "planId", start: "actionPlanId", status: "runId", cancel: "runId", evaluate: "runId", finalize: "runId" } as const;
+        const field = required[args.action];
+        need(args[field], field, args.action);
         const ctx = context();
         const x = ctx.execution;
         switch (args.action) {

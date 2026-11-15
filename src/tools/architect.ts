@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { ARCHITECT_SCHEMA_VERSION } from "../fork-identity.js";
+import { requireFeasible } from "../services/architect/admission.js";
 import { ARCHITECT_RESIDENCY_ENV, architectEnabled } from "../services/architect/config.js";
 import { RunController } from "../services/architect/controller.js";
 import { ArchitectExecution } from "../services/architect/execution.js";
@@ -135,6 +136,8 @@ function defaultRunContext(planning: PlanningFactory, upstream: UpstreamFacade):
         if (!task) throw new PlanningError("GRAPH_CONFLICT", `task ${run.taskId} r${run.taskRevision} is not stored`, "Prepare a new run.");
         return task;
       },
+      // A run that waited for its resources is validated again before it's submitted.
+      revalidate: (run) => requireFeasible(p, run.planId, run.candidateId),
     });
     const execution = new ArchitectExecution({
       store,
@@ -144,6 +147,9 @@ function defaultRunContext(planning: PlanningFactory, upstream: UpstreamFacade):
       newId,
       driver: controller,
       dataDir: architectDataDir(),
+      dependencyLock: (candidateId, task) => p.dependencyLock(candidateId, task),
+      // What a render would unload, read at prepare so the approval names it (GAPS Q23).
+      releasable: (baseUrl) => resources.releasable(baseUrl),
     });
     ctx = { execution, store, now, newId };
     processRunContext = ctx;
@@ -161,7 +167,21 @@ export function registerArchitectTools(
 ): void {
   const upstream = createUpstreamFacade();
   const planning = planningFactory ?? defaultPlanningFactory(service, upstream);
-  registerArchitectRunTool(server, runContext ?? defaultRunContext(planning, upstream));
+  const context = runContext ?? defaultRunContext(planning, upstream);
+  registerArchitectRunTool(server, context);
+  if (!runContext) {
+    // Build the run context at start rather than at the first architect_run call, so runs
+    // left unfinished by an earlier process are reconciled and their leases kept without
+    // waiting for the agent (spec §15.3: the browser connection isn't the job's source of
+    // truth). A failure here (an unusable data directory) is reported by the first call.
+    setImmediate(() => {
+      try {
+        context();
+      } catch {
+        // The first architect_* call reports it with its own error envelope.
+      }
+    }).unref();
+  }
 
   server.tool(
     "architect_inspect",

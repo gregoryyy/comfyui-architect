@@ -9,7 +9,7 @@ import type { SystemStats } from "../../../comfyui/types.js";
 import type { AdmissionDeps } from "../../../services/architect/admission.js";
 import { ArchitectExecution, type RunDriver } from "../../../services/architect/execution.js";
 import { ArchitectPlanning, type RecipeSource } from "../../../services/architect/planning.js";
-import type { InstalledModels, TaskSpecInput } from "../../../services/architect/schemas.js";
+import type { InstalledModels, ReleaseResidencyEffect, TaskSpecInput } from "../../../services/architect/schemas.js";
 import { ArchitectService } from "../../../services/architect/service.js";
 import { ArchitectStore } from "../../../services/architect/store.js";
 import type { UpstreamFacade } from "../../../services/architect/upstream.js";
@@ -54,10 +54,11 @@ export async function setup() {
     clock += ms;
   };
   let baseUrl = BASE;
+  let version: string | undefined = "0.44.0";
   let models: InstalledModels = fixtureSnapshot().installedModels ?? { folders: {}, unanswered: [], absent: [] };
   const upstream = {
     comfyuiBaseUrl: () => baseUrl,
-    systemStats: async () => STATS,
+    systemStats: async () => ({ ...STATS, system: { ...STATS.system, comfyui_version: version } }),
     objectInfo: async () => fixtureObjectInfo(),
     installedModels: async () => models,
     isPaidNode: () => false,
@@ -75,8 +76,14 @@ export async function setup() {
     reconcile: vi.fn(async (runId: string) => store.getRun(runId)!),
     cancel: vi.fn(async (runId: string) => store.getRun(runId)!),
   };
-  const admission: AdmissionDeps = { store, planning, baseUrl: () => baseUrl, now, newId };
-  const execution = new ArchitectExecution({ ...admission, driver, dataDir });
+  let releasable: ReleaseResidencyEffect | undefined;
+  const admission: AdmissionDeps = { store, planning, baseUrl: () => baseUrl, now, newId, releasable: async () => releasable };
+  const execution = new ArchitectExecution({
+    ...admission,
+    driver,
+    dataDir,
+    dependencyLock: (candidateId, task) => planning.dependencyLock(candidateId, task),
+  });
   return {
     store,
     planning,
@@ -92,6 +99,13 @@ export async function setup() {
     },
     setModels: (m: InstalledModels) => {
       models = m;
+    },
+    setVersion: (v: string | undefined) => {
+      version = v;
+    },
+    /** What Ollama holds in the pool, as the resource coordinator would report it (GAPS Q23). */
+    setReleasable: (e: ReleaseResidencyEffect | undefined) => {
+      releasable = e;
     },
   };
 }

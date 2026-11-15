@@ -3,6 +3,10 @@
 // Kept here rather than in src/config.ts so the upstream file stays untouched. Two
 // settings are read where their rule lives: the data directory in store.ts and the
 // snapshot's maximum age in environment.ts; ARCHITECT_ENV_KEYS lists all of them.
+//
+// No imports: upstream's panel-secrets.ts imports this file, so anything it imported would
+// load into every upstream test that mocks a module this one doesn't need. Managed mode,
+// which reads upstream's tool filter, is in mode.ts.
 
 /** Environment variable that switches the Architect tools on. Off by default. */
 export const ARCHITECT_FLAG_ENV = "COMFYUI_ARCHITECT";
@@ -14,6 +18,15 @@ export const ARCHITECT_FLAG_ENV = "COMFYUI_ARCHITECT";
  * through the terminal command only (GAPS Q20, ARCH 2026-11-15).
  */
 export const ARCHITECT_ROUTE_ENV = "ARCHITECT_ROUTE";
+
+/**
+ * Whether a run may start on the panel route (GAPS Q22). Unset or `off`: refused, because
+ * upstream's panel agents run shells that approve their own commands and could complete
+ * the terminal approval themselves. `terminal`: allowed with a grant the user issued, which
+ * on that route only the terminal command can, never a dialog. An operator setting, read
+ * from the environment the panel's server starts with; no tool sets it.
+ */
+export const ARCHITECT_PANEL_RUNS_ENV = "ARCHITECT_PANEL_RUNS";
 
 /** Lets Architect unload a loopback Ollama's resident models before a render (spec §18.1). */
 export const ARCHITECT_RESIDENCY_ENV = "ARCHITECT_MANAGE_RESIDENCY";
@@ -45,38 +58,14 @@ export function architectEnabled(env: NodeJS.ProcessEnv = process.env): boolean 
   return architectMode(env) !== "off";
 }
 
-/** Upstream's operator preset that withholds mutating, executing and panel tools (#873). */
-export const MANAGED_TOOL_PRESET = "readonly";
-const TOOL_PRESET_ENV = "COMFYUI_MCP_TOOL_PRESET";
-
-/**
- * Applies managed mode before upstream registers its tools: sets upstream's `readonly`
- * preset, which its registrar decorator applies to the direct and compact routes and its
- * tool-policy forwarding passes to the panel agent's server. Reusing that filter keeps one
- * boundary instead of two (ARCH 2026-11-15). Throws when an operator set another preset,
- * since managed mode with a looser preset would claim a boundary it doesn't have.
- * Returns whether it set the preset. Does nothing outside managed mode.
- */
-export function applyArchitectMode(env: NodeJS.ProcessEnv = process.env): boolean {
-  if (architectMode(env) !== "managed") return false;
-  const preset = env[TOOL_PRESET_ENV];
-  if (preset === undefined || preset.trim() === "") {
-    env[TOOL_PRESET_ENV] = MANAGED_TOOL_PRESET;
-    return true;
-  }
-  if (preset.trim() !== MANAGED_TOOL_PRESET) {
-    throw new Error(
-      `${ARCHITECT_FLAG_ENV}=managed needs ${TOOL_PRESET_ENV}=${MANAGED_TOOL_PRESET} or no preset, ` +
-        `but ${TOOL_PRESET_ENV}="${preset}" is set. Managed mode withholds upstream's effectful tools; ` +
-        `remove the preset, set it to ${MANAGED_TOOL_PRESET}, or use ${ARCHITECT_FLAG_ENV}=1.`,
-    );
-  }
-  return false;
-}
-
 /** Whether this server runs for the panel's agent (see ARCHITECT_ROUTE_ENV). */
 export function onPanelRoute(env: NodeJS.ProcessEnv = process.env): boolean {
   return env[ARCHITECT_ROUTE_ENV] === "panel";
+}
+
+/** Whether the operator allowed runs on the panel route (see ARCHITECT_PANEL_RUNS_ENV). */
+export function panelRunsAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[ARCHITECT_PANEL_RUNS_ENV]?.trim().toLowerCase() === "terminal";
 }
 
 /**
@@ -89,6 +78,7 @@ export const ARCHITECT_ENV_KEYS = [
   "ARCHITECT_DATA_DIR",
   "ARCHITECT_ENV_MAX_AGE_SECONDS",
   ARCHITECT_RESIDENCY_ENV,
+  ARCHITECT_PANEL_RUNS_ENV,
 ] as const;
 
 /**

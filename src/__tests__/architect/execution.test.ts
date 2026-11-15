@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { existsSync, readFileSync } from "node:fs";
-import { ApprovalError, declineRequest, issueGrant, shortHash } from "../../services/architect/admission.js";
+import { existsSync, mkdirSync, readFileSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ApprovalError, declineRequest, issueGrant, printable, shortHash } from "../../services/architect/admission.js";
 import { runArchitectCli, type CliIo } from "../../services/architect/cli.js";
 import { acceptanceOf, recordUserVerdict } from "../../services/architect/execution.js";
-import type { EvaluationRecord } from "../../services/architect/schemas.js";
+import { ActionPlan, type EvaluationRecord } from "../../services/architect/schemas.js";
 import type { ArchitectStore } from "../../services/architect/store.js";
 import { setup } from "./fixtures/approval-harness.js";
 
@@ -108,6 +110,79 @@ describe("action plans and grants (SEC T1)", () => {
     expect(s.store.listRuns()).toEqual([]);
   });
 
+  it("refuses a target that isn't on this machine (no remote or cloud render in this milestone)", async () => {
+    const s = await setup();
+    s.setBaseUrl("http://192.168.1.20:8188");
+    // The task's renderLocation is local, so planning's policy check refuses it first;
+    // admission refuses it again for a task that would allow a remote render.
+    await expectApprovalError(s.execution.prepare({ planId: s.planId }), "APPROVAL_INVALIDATED");
+    expect(s.store.listRuns()).toEqual([]);
+  });
+
+  it("refuses a ComfyUI that can't interrupt by prompt id, or that doesn't report its version", async () => {
+    for (const version of ["0.3.56", undefined]) {
+      const s = await setup();
+      s.setVersion(version);
+      const r = await s.execution.prepare({ planId: s.planId });
+      issueGrant(s, { requestId: r.approvalRequest.id, channel: "terminal", issuer: "terminal", confirmHash: r.shortHash });
+      await expectApprovalError(s.execution.start({ actionPlanId: r.actionPlan.id }), "APPROVAL_INVALIDATED");
+      expect(s.store.listRuns()).toEqual([]);
+    }
+  });
+
+  it("won't prepare a plan again while it has an unfinished run, so a lost outcome can't render twice", async () => {
+    const s = await setup();
+    const r = await s.execution.prepare({ planId: s.planId });
+    issueGrant(s, { requestId: r.approvalRequest.id, channel: "terminal", issuer: "terminal", confirmHash: r.shortHash });
+    const { run } = await s.execution.start({ actionPlanId: r.actionPlan.id });
+    const err = await expectApprovalError(s.execution.prepare({ planId: s.planId }), "GRAPH_CONFLICT");
+    expect(err.message).toContain(run.id);
+  });
+
+  it("names the Ollama models it would unload in the approval, with their sizes, and binds them in the hash (GAPS Q23)", async () => {
+    const s = await setup();
+    const plain = await s.execution.prepare({ planId: s.planId });
+    expect(plain.actionPlan.effects.map((e) => e.kind)).toEqual(["local_render"]);
+    s.setReleasable({ kind: "release_residency", host: "http://127.0.0.1:11434", models: [{ name: "qwen3:32b", sizeBytes: 21_500_000_000 }], reload: true });
+    declineRequest(s, plain.approvalRequest.id);
+    const r = await s.execution.prepare({ planId: s.planId });
+    expect(r.actionPlan.effects.map((e) => e.kind)).toEqual(["local_render", "release_residency"]);
+    expect(r.actionPlan.hash).not.toBe(plain.actionPlan.hash);
+    const text = (await import("../../services/architect/admission.js")).describeActionPlan(s.store, r.actionPlan);
+    expect(text).toContain("unload from Ollama at http://127.0.0.1:11434 before the render, and load back after it: qwen3:32b (21.5 GB)");
+  });
+
+  it("starts with the models the user approved even when Ollama's residency changed since; the approved list is what runs", async () => {
+    const s = await setup();
+    s.setReleasable({ kind: "release_residency", host: "http://127.0.0.1:11434", models: [{ name: "qwen3:32b", sizeBytes: 1 }], reload: true });
+    const r = await s.execution.prepare({ planId: s.planId });
+    issueGrant(s, { requestId: r.approvalRequest.id, channel: "terminal", issuer: "terminal", confirmHash: r.shortHash });
+    // Another model arrived: the approval isn't widened to it, and isn't invalidated either;
+    // the resource coordinator blocks on the unapproved model at run time.
+    s.setReleasable({ kind: "release_residency", host: "http://127.0.0.1:11434", models: [{ name: "llama3:70b", sizeBytes: 2 }], reload: true });
+    const started = await s.execution.start({ actionPlanId: r.actionPlan.id });
+    const plan = s.store.getActionPlan(started.run.actionPlanId)!;
+    expect(plan.effects.find((e) => e.kind === "release_residency")).toMatchObject({ models: [{ name: "qwen3:32b" }] });
+  });
+
+  it("a stored action plan whose unload list was edited doesn't parse against its hash", async () => {
+    const s = await setup();
+    s.setReleasable({ kind: "release_residency", host: "http://127.0.0.1:11434", models: [{ name: "qwen3:32b", sizeBytes: 1 }], reload: true });
+    const r = await s.execution.prepare({ planId: s.planId });
+    const edited = { ...r.actionPlan, effects: r.actionPlan.effects.map((e) => (e.kind === "release_residency" ? { ...e, models: [...e.models, { name: "other:7b", sizeBytes: 1 }] } : e)) };
+    expect(ActionPlan.safeParse(edited).success).toBe(false);
+  });
+
+  it("the approval text has no control characters and names the run a bounded probe", async () => {
+    expect(printable("a\u001b[2Jb\u0007c")).toBe("a?[2Jb?c");
+    const s = await setup();
+    const r = await s.execution.prepare({ planId: s.planId });
+    const { describeActionPlan } = await import("../../services/architect/admission.js");
+    const text = describeActionPlan(s.store, r.actionPlan);
+    expect(text).toContain("bounded probe");
+    expect(text).not.toMatch(/[\u0000-\u0008\u000b-\u001f]/);
+  });
+
   it("a dialog the user approves grants through elicitation; a declined dialog leaves the request for the terminal", async () => {
     const s = await setup();
     const declined = await s.execution.prepare({ planId: s.planId });
@@ -194,14 +269,67 @@ describe("verdicts (AT-08)", () => {
     expect(user).toEqual([expect.objectContaining({ channel: "elicitation", verdict: "pass", criterionId: "user_review" })]);
   });
 
+  it("a later verdict on a completed run updates its acceptance and records why", async () => {
+    const s = await setup();
+    const runId = await runAwaitingReview(s, ["pass"]);
+    expect((await s.execution.evaluate({ runId }, async () => ({ verdict: "accept", issuer: "mcp-client:test" }))).run.acceptance).toBe("passed");
+    const r = await s.execution.evaluate({ runId }, async () => ({ verdict: "reject", issuer: "mcp-client:test", note: "hands look wrong" }));
+    expect(r.run).toMatchObject({ state: "COMPLETED", acceptance: "failed" });
+    expect(s.store.listRunEvents(runId).filter((e) => e.kind === "note").at(-1)?.data).toMatchObject({ previousAcceptance: "passed", acceptance: "failed" });
+  });
+
+  it("an agent-relayed verdict doesn't change a completed run's acceptance", async () => {
+    const s = await setup();
+    const runId = await runAwaitingReview(s, ["pass"]);
+    await s.execution.evaluate({ runId }, async () => ({ verdict: "accept", issuer: "mcp-client:test" }));
+    const r = await s.execution.evaluate({ runId, reportedVerdict: "reject" });
+    expect(r.run.acceptance).toBe("passed");
+  });
+
+  it("a run stopped before submission reads not_run, not failed", async () => {
+    const s = await setup();
+    const r = await s.execution.prepare({ planId: s.planId });
+    issueGrant(s, { requestId: r.approvalRequest.id, channel: "terminal", issuer: "terminal", confirmHash: r.shortHash });
+    const { run } = await s.execution.start({ actionPlanId: r.actionPlan.id });
+    s.store.transitionRun({
+      runId: run.id,
+      from: "PREPARING",
+      to: "FAILED",
+      principal: "controller",
+      reason: "test",
+      patch: { error: { code: "RESOURCE_ESTIMATE_UNKNOWN", message: "Ollama didn't answer" } },
+      at: s.now(),
+    });
+    const status = await s.execution.status({ runId: run.id });
+    expect(status.verdicts.execution).toBe("not_run");
+  });
+
+  it("finalize refuses to write through a symbolic link under artifacts/", async () => {
+    const s = await setup();
+    const runId = await runAwaitingReview(s, ["pass"]);
+    const run = s.store.getRun(runId)!;
+    const outside = join(tmpdir(), `architect-outside-${Date.now()}`);
+    mkdirSync(outside, { recursive: true });
+    mkdirSync(join(s.dataDir, "artifacts", run.taskId), { recursive: true });
+    symlinkSync(outside, join(s.dataDir, "artifacts", run.taskId, run.planId));
+    expect(() => s.execution.finalize({ runId })).toThrow(/not a plain directory/);
+    expect(existsSync(join(outside, "runs"))).toBe(false);
+  });
+
   it("finalize writes run.json with the lineage and evaluation.json", async () => {
     const s = await setup();
     const runId = await runAwaitingReview(s, ["pass"]);
     recordUserVerdict(s, { runId, verdict: "accept", channel: "terminal", issuer: "terminal" });
     const r = s.execution.finalize({ runId });
-    expect(r.files.map((f) => f.split("/").pop())).toEqual(["run.json", "evaluation.json"]);
+    expect(r.files.map((f) => f.split("/").pop())).toEqual(["run.json", "evaluation.json", "dependencies.lock.json"]);
     const written = JSON.parse(readFileSync(r.files[0], "utf-8"));
-    expect(written.lineage).toMatchObject({ plan: s.planId, promptId: "4f1c7a52-2d6b-4a8e-9a3f-0c2b7e5d9a10", grant: { channel: "terminal" } });
+    expect(written.lineage).toMatchObject({
+      plan: s.planId,
+      promptId: "4f1c7a52-2d6b-4a8e-9a3f-0c2b7e5d9a10",
+      grant: { channel: "terminal" },
+      dependencyLock: { file: "dependencies.lock.json", sha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
+    });
+    expect(JSON.parse(readFileSync(r.files[2], "utf-8")).graphFingerprint).toBe(written.lineage.graphFingerprint);
     expect(written.verdicts).toMatchObject({ execution: "passed", acceptance: "passed", userVerdict: "accepted" });
     expect(existsSync(r.files[1])).toBe(true);
   });

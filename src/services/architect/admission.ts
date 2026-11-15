@@ -10,6 +10,7 @@
 //   gives another hash and the old grant no longer applies (APPROVAL_INVALIDATED).
 // - One grant starts one run: the store consumes it in the transaction that creates the run.
 
+import { ARCHITECT_PANEL_RUNS_ENV, onPanelRoute, panelRunsAllowed } from "./config.js";
 import { canonicalJson } from "./hash.js";
 import type { ArchitectPlanning } from "./planning.js";
 import {
@@ -18,11 +19,14 @@ import {
   type ApprovalGrant,
   type ApprovalRequest,
   type ApiGraph,
+  type Effect,
   type Recipe,
+  type ReleaseResidencyEffect,
   type TaskSpec,
   actionPlanHash,
 } from "./schemas.js";
-import type { ArchitectStore } from "./store.js";
+import { architectDataDir, type ArchitectStore } from "./store.js";
+import { isLoopbackHostname } from "./validate.js";
 
 /** How long an action plan, and a grant made for it, stays usable. */
 export const DEFAULT_ACTION_PLAN_TTL_MS = 30 * 60 * 1000;
@@ -32,7 +36,7 @@ export const DEFAULT_MAX_WALL_TIME_SECONDS = 1800;
 /** A refusal on the effect path, with a stable code (spec §16.4) and a safe next step. */
 export class ApprovalError extends Error {
   constructor(
-    readonly code: "APPROVAL_REQUIRED" | "APPROVAL_INVALIDATED" | "MISSING_INPUT" | "STALE_ENVIRONMENT",
+    readonly code: "APPROVAL_REQUIRED" | "APPROVAL_INVALIDATED" | "MISSING_INPUT" | "STALE_ENVIRONMENT" | "GRAPH_CONFLICT",
     message: string,
     readonly nextStep: string,
     readonly data?: Record<string, unknown>,
@@ -47,9 +51,34 @@ export function shortHash(hash: string): string {
   return hash.slice(0, 8);
 }
 
-/** The terminal command that approves a request; shown wherever an approval is missing. */
-export function approveCommand(requestId: string): string {
-  return `COMFYUI_ARCHITECT=1 comfyui-mcp architect approve ${requestId}`;
+/**
+ * ComfyUI 0.3.57 added the prompt id to /interrupt; an older server stops whatever runs,
+ * which may be someone else's job (spec §14.5). Below it, or with no version reported,
+ * no run starts.
+ */
+export const MIN_COMFYUI_VERSION = [0, 3, 57] as const;
+
+function versionAtLeast(version: string | undefined, min: readonly number[]): boolean | undefined {
+  const m = version?.match(/^v?(\d+)\.(\d+)\.(\d+)/);
+  if (!m) return undefined;
+  const v = [Number(m[1]), Number(m[2]), Number(m[3])];
+  for (let i = 0; i < 3; i++) if (v[i] !== min[i]) return v[i] > min[i];
+  return true;
+}
+
+/**
+ * The terminal command that approves a request, as this server would run it: the same
+ * entry point and data directory, so it works from a clone where `comfyui-mcp` on PATH
+ * would be upstream's package.
+ */
+export function approveCommand(requestId: string, subcommand: "approve" | "review" = "approve"): string {
+  const entry = process.argv[1] ? `node ${JSON.stringify(process.argv[1])}` : "comfyui-mcp";
+  return `COMFYUI_ARCHITECT=1 ARCHITECT_DATA_DIR=${JSON.stringify(architectDataDir())} ${entry} architect ${subcommand} ${requestId}`;
+}
+
+/** Text from records and ComfyUI, shown in a terminal or dialog: no control characters. */
+export function printable(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, "?");
 }
 
 export interface AdmissionDeps {
@@ -60,17 +89,30 @@ export interface AdmissionDeps {
   now: () => Date;
   newId: () => string;
   actionPlanTtlMs?: number;
+  /**
+   * The Ollama models to unload for a render, when the user lets Architect manage them
+   * (ARCHITECT_MANAGE_RESIDENCY=1; GAPS Q23): what Ollama holds in the target's pool now.
+   * Undefined when management is off, nothing is resident, or the pool isn't shared.
+   */
+  releasable?: (baseUrl: string) => Promise<ReleaseResidencyEffect | undefined>;
 }
 
 /** What the action plan binds, built from a selected candidate (everything the hash covers). */
-function binding(ctx: { plan: { id: string }; task: TaskSpec; candidate: { id: string }; recipe: Recipe; fingerprint: string }, baseUrl: string) {
+function binding(
+  ctx: { plan: { id: string }; task: TaskSpec; candidate: { id: string }; recipe: Recipe; fingerprint: string },
+  baseUrl: string,
+  residency: ReleaseResidencyEffect | undefined,
+) {
   return {
     planId: ctx.plan.id,
     taskId: ctx.task.id,
     taskRevision: ctx.task.revision,
     candidateId: ctx.candidate.id,
     target: { baseUrl },
-    effects: [{ kind: "local_render" as const, graphFingerprint: ctx.fingerprint, outputNodes: ctx.recipe.outputs.map((o) => o.node) }],
+    effects: [
+      { kind: "local_render" as const, graphFingerprint: ctx.fingerprint, outputNodes: ctx.recipe.outputs.map((o) => o.node) },
+      ...(residency ? [residency] : []),
+    ] satisfies Effect[],
     budgets: { maxRuns: 1, maxWallTimeSeconds: ctx.task.budgets.maxWallTimeSeconds ?? DEFAULT_MAX_WALL_TIME_SECONDS },
   };
 }
@@ -85,7 +127,10 @@ export async function prepareActionPlan(deps: AdmissionDeps, planId: string): Pr
   const ctx = await freshSelection(deps, planId);
   const created = now();
   const expiresAt = new Date(created.getTime() + (deps.actionPlanTtlMs ?? DEFAULT_ACTION_PLAN_TTL_MS)).toISOString();
-  const bound = binding(ctx, deps.baseUrl());
+  const baseUrl = deps.baseUrl();
+  // The models to unload are read now and shown in the approval, so the user is asked
+  // before any of them is unloaded (GAPS Q23).
+  const bound = binding(ctx, baseUrl, await deps.releasable?.(baseUrl));
   const actionPlan = store.putActionPlan({
     schemaVersion: 1,
     id: `actions-${newId()}`,
@@ -108,16 +153,24 @@ export async function prepareActionPlan(deps: AdmissionDeps, planId: string): Pr
 }
 
 /** Validate the selected candidate again; refuse when the selection didn't survive. */
-async function freshSelection(deps: AdmissionDeps, planId: string) {
-  const before = deps.planning.selectedForRun(planId);
-  const checked = await deps.planning.validate({ planId, candidateId: before.candidate.id });
+/**
+ * Validate a candidate against a fresh snapshot and require it feasible. Used at admission
+ * and by the controller before submitting a run that waited for its resources (spec §15.3).
+ */
+export async function requireFeasible(planning: Pick<AdmissionDeps["planning"], "validate">, planId: string, candidateId: string): Promise<void> {
+  const checked = await planning.validate({ planId, candidateId });
   if (checked.candidate.status !== "feasible") {
     throw new ApprovalError(
       "APPROVAL_INVALIDATED",
-      `candidate ${before.candidate.id} is ${checked.candidate.status} against the current environment: ${checked.candidate.blocking.join("; ") || "see its validation"}`,
+      `candidate ${candidateId} is ${checked.candidate.status} against the current environment: ${checked.candidate.blocking.join("; ") || "see its validation"}`,
       "Report the blockers to the user and plan again; never relax a requirement without their approval.",
     );
   }
+}
+
+async function freshSelection(deps: AdmissionDeps, planId: string) {
+  const before = deps.planning.selectedForRun(planId);
+  await requireFeasible(deps.planning, planId, before.candidate.id);
   // Read again: validation stored a fresh report and environment for the candidate.
   return deps.planning.selectedForRun(planId);
 }
@@ -171,6 +224,22 @@ export function declineRequest(deps: Pick<AdmissionDeps, "store" | "now">, reque
   return deps.store.resolveApprovalRequest(requestId, "declined", deps.now());
 }
 
+function gigabytes(bytes: number): string {
+  return `${(bytes / 1e9).toFixed(1)} GB`;
+}
+
+function describeEffect(e: Effect): string {
+  switch (e.kind) {
+    case "local_render":
+      return `Effect: local_render of graph ${shortHash(e.graphFingerprint)}`;
+    case "release_residency":
+      return (
+        `Effect: unload from Ollama at ${e.host} before the render, and load back after it: ` +
+        `${e.models.map((m) => `${m.name} (${gigabytes(m.sizeBytes)})`).join(", ")}`
+      );
+  }
+}
+
 /** What an approval channel shows the user before they decide. */
 export function describeActionPlan(store: ArchitectStore, actionPlan: ActionPlan): string {
   const task = store.getTask(actionPlan.taskId, actionPlan.taskRevision);
@@ -180,12 +249,13 @@ export function describeActionPlan(store: ArchitectStore, actionPlan: ActionPlan
     `Task: ${task ? JSON.stringify(task.intent) : actionPlan.taskId} (${task ? `${task.media.kind}, ${task.media.operation}` : "?"})`,
     `Candidate: ${candidate ? `${candidate.recipeId} r${candidate.recipeRevision}` : actionPlan.candidateId}`,
     ...(candidate ? [`Models: ${Object.entries(candidate.bindings).filter(([, v]) => typeof v === "string" && /\.(safetensors|ckpt|pt|pth|bin|gguf)$/i.test(String(v))).map(([k, v]) => `${k}=${String(v)}`).join(", ") || "none"}`] : []),
-    `Effect: ${actionPlan.effects.map((e) => `${e.kind} of graph ${shortHash(e.graphFingerprint)}`).join("; ")}`,
+    ...actionPlan.effects.map(describeEffect),
     `Target: ${actionPlan.target.baseUrl}`,
     `Limits: ${actionPlan.budgets.maxRuns} run, at most ${actionPlan.budgets.maxWallTimeSeconds} s`,
+    `Memory and time: unknown; nothing has been measured for this recipe here, so this run is the bounded probe that measures it`,
     `Expires: ${actionPlan.expiresAt}`,
   ];
-  return lines.join("\n");
+  return lines.map(printable).join("\n");
 }
 
 /**
@@ -201,6 +271,18 @@ export async function admitEffect(
   elicit?: (actionPlan: ActionPlan, request: ApprovalRequest) => Promise<ApprovalGrant | undefined>,
 ): Promise<{ actionPlan: ActionPlan; grant: ApprovalGrant; graph: ApiGraph; task: TaskSpec }> {
   const { store, now } = deps;
+  // The panel's agents run with shells that approve themselves (upstream's backends), and
+  // the terminal is the only channel there, so the agent could complete the approval on
+  // its own. No run starts on that route unless the operator accepted that with
+  // ARCHITECT_PANEL_RUNS=terminal, until the panel has an approval of its own (ROAD
+  // phase 4; GAPS Q22). Even then no dialog is shown there (architect-run.ts).
+  if (onPanelRoute() && !panelRunsAllowed()) {
+    throw new ApprovalError(
+      "APPROVAL_REQUIRED",
+      "runs can't be started from the ComfyUI panel's agent: it has no approval channel the agent can't answer itself",
+      `Plan here; start the run from an external MCP client, where the user approves in a dialog or their own terminal. The operator can allow runs here with ${ARCHITECT_PANEL_RUNS_ENV}=terminal.`,
+    );
+  }
   const actionPlan = store.getActionPlan(actionPlanId);
   if (!actionPlan) throw new ApprovalError("MISSING_INPUT", `action plan ${actionPlanId} is not stored`, "Call architect_run prepare.");
   const at = now();
@@ -216,7 +298,11 @@ export async function admitEffect(
     );
   }
   const ctx = await freshSelection(deps, actionPlan.planId);
-  const rebuilt = actionPlanHash(binding(ctx, baseUrl));
+  requireLocalCapableTarget(store, baseUrl, ctx.candidate.environmentId);
+  // The residency effect is the one the user approved, not a fresh reading: a model that
+  // left Ollama since doesn't invalidate the approval, and one that arrived since isn't
+  // unloaded (the controller blocks on it).
+  const rebuilt = actionPlanHash(binding(ctx, baseUrl, actionPlan.effects.find((e): e is ReleaseResidencyEffect => e.kind === "release_residency")));
   if (rebuilt !== actionPlan.hash) {
     throw new ApprovalError(
       "APPROVAL_INVALIDATED",
@@ -241,6 +327,35 @@ export async function admitEffect(
     }
   }
   return { actionPlan, grant, graph: ctx.graph, task: ctx.task };
+}
+
+/**
+ * The effect is a local render: the target must be on this machine (a remote or cloud
+ * target can disclose data or spend money, which this milestone has no approval for), and
+ * its ComfyUI must interrupt by prompt id. Checked against the snapshot the candidate was
+ * just validated on; an unreported version is a hard unknown and blocks (spec §7.3).
+ */
+function requireLocalCapableTarget(store: ArchitectStore, baseUrl: string, environmentId: string): void {
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname;
+  } catch {
+    throw new ApprovalError("APPROVAL_INVALIDATED", `the target ${baseUrl} isn't a URL`, "Configure a local ComfyUI target.");
+  }
+  if (!isLoopbackHostname(host)) {
+    throw new ApprovalError("APPROVAL_INVALIDATED", `the target ${baseUrl} isn't on this machine; this version renders locally only`, "Point the server at a local ComfyUI, or render with upstream's tools.");
+  }
+  const version = store.getSnapshot(environmentId)?.comfyuiVersion;
+  const ok = versionAtLeast(version, MIN_COMFYUI_VERSION);
+  if (ok !== true) {
+    throw new ApprovalError(
+      "APPROVAL_INVALIDATED",
+      ok === undefined
+        ? "the target didn't report its ComfyUI version, so it can't be shown to cancel only its own job"
+        : `ComfyUI ${version} interrupts every running job, not one by its id; ${MIN_COMFYUI_VERSION.join(".")} or newer is needed`,
+      "Update ComfyUI, then prepare the run again.",
+    );
+  }
 }
 
 /** The action plan's request if it's still waiting. */

@@ -13,7 +13,7 @@
 
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline/promises";
-import { ApprovalError, describeActionPlan, issueGrant, shortHash } from "./admission.js";
+import { ApprovalError, describeActionPlan, issueGrant, printable, shortHash } from "./admission.js";
 import { recordUserVerdict } from "./execution.js";
 import { ArchitectStore } from "./store.js";
 
@@ -124,8 +124,10 @@ async function review({ store, io, now, newId }: CliDeps, runId: string): Promis
   const run = store.getRun(runId);
   if (!run) throw new ApprovalError("MISSING_INPUT", `No run ${runId}.`, "Check the run ID.");
   io.write(`\nRun ${run.id}: ${run.state}\n`);
-  for (const o of run.outputs) io.write(`  output: ${o.type}/${o.subfolder ? `${o.subfolder}/` : ""}${o.filename}\n`);
-  for (const r of store.listEvaluations(run.id).filter((e) => e.source === "automatic")) io.write(`  ${r.criterionId}: ${r.verdict} (${r.explanation})\n`);
+  // File names and explanations come from ComfyUI and the records: no control characters
+  // reach the terminal, so nothing can redraw what the user is asked to judge.
+  for (const o of run.outputs) io.write(`  output: ${printable(`${o.type}/${o.subfolder ? `${o.subfolder}/` : ""}${o.filename}`)}\n`);
+  for (const r of store.listEvaluations(run.id).filter((e) => e.source === "automatic")) io.write(`  ${printable(`${r.criterionId}: ${r.verdict} (${r.explanation})`)}\n`);
   const answer = (await io.ask("\nAccept these outputs? Type accept or reject (anything else cancels): ")).trim().toLowerCase();
   if (answer !== "accept" && answer !== "reject") {
     io.write("No verdict recorded.\n");

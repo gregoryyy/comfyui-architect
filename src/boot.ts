@@ -30,7 +30,8 @@ import { banner, labelRows, numberedSteps } from "./i18n/terminal-layout.js";
 import { STDIO_HANDSHAKE_INSTRUCTIONS } from "./handshake-instructions.js";
 // ComfyUI Architect (fork seam): the fork names itself in the handshake (spec §18.2).
 import { forkHandshakeLine, forkServerTitle } from "./fork-identity.js";
-import { applyArchitectMode, architectEnabled } from "./services/architect/config.js";
+import { architectEnabled } from "./services/architect/config.js";
+import { applyArchitectMode } from "./services/architect/mode.js";
 import { registerArchitectPrompts } from "./tools/architect.js";
 import { orchestratorLogPath } from "./services/orchestrator-log.js";
 import { probeSharp } from "./services/sharp-loader.js";

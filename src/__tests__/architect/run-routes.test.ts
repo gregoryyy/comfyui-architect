@@ -1,7 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -10,24 +7,27 @@ import { issueGrant } from "../../services/architect/admission.js";
 import { ARCHITECT_FLAG_ENV } from "../../services/architect/config.js";
 import { ResultEnvelope } from "../../services/architect/schemas.js";
 import { registerArchitectRunTool } from "../../tools/architect-run.js";
+import { ToolCatalog } from "../../tools/catalog.js";
 import { setup } from "./fixtures/approval-harness.js";
 
 // AT-05: no unapproved effect succeeds on any route. The direct tool, the compact
 // call_tool route and the panel agent's server all reach architect_run's one handler,
 // and its gate; approval comes only from a dialog the user answers or the terminal.
 
-const saved = { route: process.env.ARCHITECT_ROUTE, flag: process.env[ARCHITECT_FLAG_ENV] };
+const saved = { route: process.env.ARCHITECT_ROUTE, flag: process.env[ARCHITECT_FLAG_ENV], panelRuns: process.env.ARCHITECT_PANEL_RUNS };
 afterEach(() => {
   if (saved.route === undefined) delete process.env.ARCHITECT_ROUTE;
   else process.env.ARCHITECT_ROUTE = saved.route;
   if (saved.flag === undefined) delete process.env[ARCHITECT_FLAG_ENV];
   else process.env[ARCHITECT_FLAG_ENV] = saved.flag;
+  if (saved.panelRuns === undefined) delete process.env.ARCHITECT_PANEL_RUNS;
+  else process.env.ARCHITECT_PANEL_RUNS = saved.panelRuns;
 });
 
 type Harness = Awaited<ReturnType<typeof setup>>;
 
 /** A client connected to architect_run; `answer` is what its dialog returns, if it has one. */
-async function connect(s: Harness, answer?: "approve" | "decline") {
+async function connect(s: Harness, answer?: "approve" | "decline" | "empty") {
   const server = new McpServer({ name: "t", version: "0" });
   registerArchitectRunTool(server, () => ({ execution: s.execution, store: s.store, now: s.now, newId: s.newId }));
   const client = new Client({ name: "test-client", version: "1" }, { capabilities: answer ? { elicitation: { form: {} } } : {} });
@@ -35,7 +35,8 @@ async function connect(s: Harness, answer?: "approve" | "decline") {
   if (answer) {
     client.setRequestHandler(ElicitRequestSchema, async (req) => {
       asked(req.params.message);
-      return { action: "accept", content: { decision: answer } };
+      // "empty" is Codex's automatic answer: accept with no content.
+      return answer === "empty" ? { action: "accept", content: {} } : { action: "accept", content: { decision: answer } };
     });
   }
   const [a, b] = InMemoryTransport.createLinkedPair();
@@ -103,23 +104,72 @@ describe("architect_run across routes (AT-05)", () => {
     expect(s.store.listRuns()).toEqual([]);
   });
 
-  it("compact route: call_tool reaches the same handler through upstream's catalog", async () => {
-    process.env[ARCHITECT_FLAG_ENV] = "1";
-    // The catalog's own context opens a store: keep it out of the user's data directory.
-    const dataDir = mkdtempSync(join(tmpdir(), "architect-routes-"));
-    const savedDir = process.env.ARCHITECT_DATA_DIR;
-    process.env.ARCHITECT_DATA_DIR = dataDir;
-    const { collectToolCatalog } = await import("../../tools/index.js");
-    const tool = (await collectToolCatalog()).get("architect_run");
-    expect(tool?.category).toBe("architect");
-    // Without a store behind it the default context can't prepare; what matters here is
-    // that the catalog entry is the policy-filtered registration of architect_run and
-    // that a start without an action plan is refused, never executed.
-    const res = await tool!.handler({ action: "start" });
-    const envelope = ResultEnvelope.parse(JSON.parse((res.content as { type: string; text: string }[])[0].text));
-    expect(envelope.error?.code).toBe("MISSING_INPUT");
-    if (savedDir === undefined) delete process.env.ARCHITECT_DATA_DIR;
-    else process.env.ARCHITECT_DATA_DIR = savedDir;
-    rmSync(dataDir, { recursive: true, force: true });
+  it("panel route: even a grant the terminal issued doesn't start a run there", async () => {
+    process.env.ARCHITECT_ROUTE = "panel";
+    const s = await setup();
+    const { call } = await connect(s);
+    const prepared = await call({ action: "prepare", planId: s.planId });
+    const request = prepared.data.approvalRequest as { id: string };
+    issueGrant(s, { requestId: request.id, channel: "terminal", issuer: "terminal", confirmHash: prepared.data.shortHash as string });
+    const refused = await call({ action: "start", actionPlanId: (prepared.data.actionPlan as { id: string }).id });
+    expect(refused.error?.code).toBe("APPROVAL_REQUIRED");
+    expect(refused.summary).toContain("panel");
+    expect(s.store.listRuns()).toEqual([]);
+  });
+
+  it("panel route with ARCHITECT_PANEL_RUNS=terminal: a terminal grant starts the run, and still no dialog is shown", async () => {
+    process.env.ARCHITECT_ROUTE = "panel";
+    process.env.ARCHITECT_PANEL_RUNS = "terminal";
+    const s = await setup();
+    const { call, asked } = await connect(s, "approve");
+    const prepared = await call({ action: "prepare", planId: s.planId });
+    const actionPlanId = (prepared.data.actionPlan as { id: string }).id;
+    expect((await call({ action: "start", actionPlanId })).error?.code).toBe("APPROVAL_REQUIRED");
+    expect(asked).not.toHaveBeenCalled();
+    expect(s.store.listRuns()).toEqual([]);
+    issueGrant(s, { requestId: (prepared.data.approvalRequest as { id: string }).id, channel: "terminal", issuer: "terminal", confirmHash: prepared.data.shortHash as string });
+    expect((await call({ action: "start", actionPlanId })).status).toBe("ok");
+    expect(s.store.listRuns()).toHaveLength(1);
+  });
+
+  it("panel route: any other ARCHITECT_PANEL_RUNS value keeps start refused", async () => {
+    process.env.ARCHITECT_ROUTE = "panel";
+    process.env.ARCHITECT_PANEL_RUNS = "yes";
+    const s = await setup();
+    const { call } = await connect(s);
+    const prepared = await call({ action: "prepare", planId: s.planId });
+    issueGrant(s, { requestId: (prepared.data.approvalRequest as { id: string }).id, channel: "terminal", issuer: "terminal", confirmHash: prepared.data.shortHash as string });
+    const refused = await call({ action: "start", actionPlanId: (prepared.data.actionPlan as { id: string }).id });
+    expect(refused.error?.code).toBe("APPROVAL_REQUIRED");
+    expect(refused.error?.nextStep).toContain("ARCHITECT_PANEL_RUNS=terminal");
+    expect(s.store.listRuns()).toEqual([]);
+  });
+
+  it("a dialog accepted with empty content grants nothing", async () => {
+    const s = await setup();
+    const { call, asked } = await connect(s, "empty");
+    const prepared = await call({ action: "prepare", planId: s.planId });
+    const refused = await call({ action: "start", actionPlanId: (prepared.data.actionPlan as { id: string }).id });
+    expect(asked).toHaveBeenCalledTimes(1);
+    expect(refused.error?.code).toBe("APPROVAL_REQUIRED");
+    expect(s.store.getApprovalRequest((prepared.data.approvalRequest as { id: string }).id)?.state).toBe("pending");
+  });
+
+  it("compact route: upstream's catalog captures the same handler; no dialog, and the gate holds with and without a grant", async () => {
+    const s = await setup();
+    const catalog = new ToolCatalog();
+    registerArchitectRunTool(catalog.asRegistrar(), () => ({ execution: s.execution, store: s.store, now: s.now, newId: s.newId }));
+    const tool = catalog.get("architect_run");
+    const call = async (args: Record<string, unknown>) => {
+      const res = await tool!.handler(args);
+      return ResultEnvelope.parse(JSON.parse((res.content as { type: string; text: string }[])[0].text));
+    };
+    const prepared = await call({ action: "prepare", planId: s.planId });
+    const actionPlanId = (prepared.data.actionPlan as { id: string }).id;
+    expect((await call({ action: "start", actionPlanId })).error?.code).toBe("APPROVAL_REQUIRED");
+    expect(s.store.listRuns()).toEqual([]);
+    issueGrant(s, { requestId: (prepared.data.approvalRequest as { id: string }).id, channel: "terminal", issuer: "terminal", confirmHash: prepared.data.shortHash as string });
+    expect((await call({ action: "start", actionPlanId })).status).toBe("ok");
+    expect(s.store.listRuns()).toHaveLength(1);
   });
 });

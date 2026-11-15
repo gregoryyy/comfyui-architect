@@ -7,8 +7,7 @@
 // dialog only the user can answer, or the terminal command. A verdict the agent relays is
 // stored as the agent's report and never counts as the user's (spec §16.1).
 
-import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { join } from "node:path";
 import {
   type AdmissionDeps,
   ApprovalError,
@@ -18,6 +17,7 @@ import {
   shortHash,
 } from "./admission.js";
 import { acceptanceFrom } from "./evaluation.js";
+import { artifactDir, writeFileNoFollow } from "./files.js";
 import { canonicalJson, sha256Hex } from "./hash.js";
 import {
   type Acceptance,
@@ -25,6 +25,7 @@ import {
   type ApprovalChannel,
   type ApprovalGrant,
   type ApprovalRequest,
+  type Effect,
   type EvaluationRecord,
   FINAL_RUN_STATES,
   type RunPrincipal,
@@ -50,6 +51,8 @@ export type VerdictDialog = (run: RunRecord, summary: string) => Promise<{ verdi
 export interface ExecutionDeps extends AdmissionDeps {
   driver: RunDriver;
   dataDir: string;
+  /** The dependency lock of a candidate's graph (planning's `dependencyLock`), for a run's lineage. */
+  dependencyLock: (candidateId: string, task: TaskSpec) => unknown;
 }
 
 /** The idempotency key of a run: one per target, task revision, plan and action plan (spec §15.4). */
@@ -67,6 +70,9 @@ export function idempotencyKey(actionPlan: ActionPlan): string {
 
 const USER_REVIEW_CRITERION = "user_review";
 
+/** States in which the run's job may still be submitted or rendering. */
+const JOB_MAY_RUN: readonly RunRecord["state"][] = ["PREPARING", "WAITING_FOR_RESOURCE", "VALIDATING", "QUEUED", "RUNNING", "OUTCOME_UNKNOWN"];
+
 /** The criteria a user verdict answers: the task's `user_review` criteria, or one default. */
 function reviewCriteria(task: TaskSpec | undefined): string[] {
   const ids = (task?.acceptance ?? []).filter((c) => c.kind === "user_review").map((c) => c.id);
@@ -80,11 +86,22 @@ function reviewCriteria(task: TaskSpec | undefined): string[] {
  * verification. An agent's report counts for nothing.
  */
 export function acceptanceOf(task: TaskSpec, records: readonly EvaluationRecord[]): Acceptance {
-  const user = records.filter((r) => r.source === "user");
+  const user = latestUserVerdicts(records);
   if (user.some((r) => r.verdict === "fail")) return "failed";
   const machine = acceptanceFrom(task, records);
   if (user.length > 0 && user.every((r) => r.verdict === "pass")) return machine === "passed" ? "passed" : "waived_by_user";
   return machine;
+}
+
+/** The user's latest verdict per criterion: a later answer replaces an earlier one. */
+function latestUserVerdicts(records: readonly EvaluationRecord[]): EvaluationRecord[] {
+  const latest = new Map<string, EvaluationRecord>();
+  for (const r of records) {
+    if (r.source !== "user") continue;
+    const seen = latest.get(r.criterionId);
+    if (!seen || r.createdAt >= seen.createdAt) latest.set(r.criterionId, r);
+  }
+  return [...latest.values()];
 }
 
 /**
@@ -120,8 +137,13 @@ export function recordUserVerdict(
       createdAt: at,
     }),
   );
-  if (run.state !== "AWAITING_REVIEW") return { run, records };
   const acceptance = task ? acceptanceOf(task, store.listEvaluations(run.id)) : "pending";
+  if (run.state === "COMPLETED") {
+    // A later verdict on a completed run (the user changed their mind) updates its acceptance.
+    if (acceptance === run.acceptance) return { run, records };
+    const updated = store.setRunAcceptance({ runId: run.id, acceptance, principal: "user", reason: `user verdict through ${args.channel}: ${args.verdict}`, at: now() });
+    return { run: updated.run, records };
+  }
   const moved = store.transitionRun({
     runId: run.id,
     from: "AWAITING_REVIEW",
@@ -134,8 +156,17 @@ export function recordUserVerdict(
   return { run: moved.run, records };
 }
 
+/** The action plan's render. Every action plan has exactly one (admission.ts builds it). */
+function renderEffect(actionPlan: ActionPlan): Extract<Effect, { kind: "local_render" }> {
+  const render = actionPlan.effects.find((e): e is Extract<Effect, { kind: "local_render" }> => e.kind === "local_render");
+  if (!render) throw new ApprovalError("APPROVAL_INVALIDATED", `action plan ${actionPlan.id} has no render`, "Call architect_run prepare again.");
+  return render;
+}
+
 /** Whether the job ran: ComfyUI finished it, it failed, it was cancelled, or nobody knows yet. */
-function executionVerdict(run: RunRecord): "passed" | "failed" | "cancelled" | "unknown" | "in_progress" {
+function executionVerdict(run: RunRecord, submitted: boolean): "passed" | "failed" | "cancelled" | "unknown" | "in_progress" | "not_run" {
+  // A run stopped before its job was submitted never ran: that isn't an execution failure.
+  if (!submitted && (run.state === "FAILED" || run.state === "CANCELLED")) return "not_run";
   switch (run.state) {
     case "EVALUATING":
     case "AWAITING_REVIEW":
@@ -153,11 +184,11 @@ function executionVerdict(run: RunRecord): "passed" | "failed" | "cancelled" | "
 }
 
 /** The three statements spec §4.2 keeps apart, for a status reply. */
-export function verdictsOf(run: RunRecord, records: readonly EvaluationRecord[]) {
-  const user = records.filter((r) => r.source === "user");
+export function verdictsOf(run: RunRecord, records: readonly EvaluationRecord[], submitted: boolean) {
+  const user = latestUserVerdicts(records);
   const reported = records.filter((r) => r.source === "agent_reported");
   return {
-    execution: executionVerdict(run),
+    execution: executionVerdict(run, submitted),
     acceptance: run.acceptance,
     userVerdict: user.length === 0 ? "none" : user.some((r) => r.verdict === "fail") ? "rejected" : "accepted",
     ...(reported.length > 0 ? { agentReported: reported.map((r) => r.verdict) } : {}),
@@ -169,6 +200,17 @@ export class ArchitectExecution {
 
   /** An action plan and its approval request for the plan's selected candidate. */
   async prepare(request: { planId: string }) {
+    // One unfinished run per plan. A run whose outcome is unknown may be rendering: a new
+    // action plan for the same plan would render it again (spec §15.4). The user resolves
+    // or cancels it first; a deliberate rerun then gets its own approval.
+    const open = this.deps.store.listRuns().filter((r) => r.planId === request.planId && JOB_MAY_RUN.includes(r.state));
+    if (open.length > 0) {
+      throw new ApprovalError(
+        "GRAPH_CONFLICT",
+        `plan ${request.planId} has an unfinished run, ${open[0].id} (${open[0].state})`,
+        `Call status for ${open[0].id}; if its outcome stays unknown, tell the user, who decides whether to cancel it before preparing again.`,
+      );
+    }
     const { actionPlan, request: approval } = await prepareActionPlan(this.deps, request.planId);
     return {
       actionPlan,
@@ -200,7 +242,7 @@ export class ArchitectExecution {
         taskId: actionPlan.taskId,
         taskRevision: actionPlan.taskRevision,
         candidateId: actionPlan.candidateId,
-        graphFingerprint: actionPlan.effects[0].graphFingerprint,
+        graphFingerprint: renderEffect(actionPlan).graphFingerprint,
         target: actionPlan.target,
         idempotencyKey: key,
         state: "PREPARING",
@@ -225,7 +267,7 @@ export class ArchitectExecution {
     const events = store.listRunEvents(run.id);
     return {
       run,
-      verdicts: verdictsOf(run, records),
+      verdicts: verdictsOf(run, records, this.submitted(run.id)),
       evaluations: records.map((r) => ({ criterion: r.criterionId, verdict: r.verdict, source: r.source, explanation: r.explanation })),
       recentEvents: events.slice(-5).map((e) => ({ seq: e.seq, at: e.at, kind: e.kind, ...(e.to ? { to: e.to } : {}), reason: e.reason })),
     };
@@ -252,7 +294,7 @@ export class ArchitectExecution {
     const answer = dialog ? await dialog(run, summary) : undefined;
     if (answer) {
       const r = recordUserVerdict(this.deps, { runId: run.id, verdict: answer.verdict, channel: "elicitation", issuer: answer.issuer, ...(answer.note ? { note: answer.note } : {}) });
-      return { run: r.run, verdicts: verdictsOf(r.run, store.listEvaluations(r.run.id)), userVerdict: answer.verdict };
+      return { run: r.run, verdicts: verdictsOf(r.run, store.listEvaluations(r.run.id), true), userVerdict: answer.verdict };
     }
     if (request.reportedVerdict) {
       const task = store.getTask(run.taskId, run.taskRevision);
@@ -275,56 +317,70 @@ export class ArchitectExecution {
     const fresh = this.requireRun(run.id);
     return {
       run: fresh,
-      verdicts: verdictsOf(fresh, store.listEvaluations(fresh.id)),
+      verdicts: verdictsOf(fresh, store.listEvaluations(fresh.id), true),
       userVerdict: "none" as const,
       nextStep: `The user's own verdict comes from a dialog or, in a terminal: COMFYUI_ARCHITECT=1 comfyui-mcp architect review ${run.id}`,
     };
   }
 
-  /** Write the run's record and evaluations next to the plan's exported files (spec §15.1). */
+  /**
+   * Write the run's record, its evaluations and its dependency lock next to the plan's
+   * exported files (spec §15.1, FR-11), without following a symbolic link (SEC T9).
+   */
   finalize(request: { runId: string }) {
     const { store, dataDir } = this.deps;
     const run = this.requireRun(request.runId);
     if (!FINAL_RUN_STATES.includes(run.state) && run.state !== "AWAITING_REVIEW") {
       throw new ApprovalError("MISSING_INPUT", `run ${run.id} is ${run.state}`, "Finalize a run once it is final or waiting for review.");
     }
-    const root = resolve(dataDir, "artifacts");
-    const dir = resolve(root, run.taskId, run.planId, "runs", run.id);
-    // IDs are generated here, but a stored ID is still data: never write outside artifacts/.
-    if (!dir.startsWith(root + sep)) throw new ApprovalError("MISSING_INPUT", `refusing to write outside ${root}`, "Report this run ID.");
-    mkdirSync(dir, { recursive: true });
-    // A symlink anywhere under artifacts/ could point the write elsewhere (SEC T9).
-    if (realpathSync(dir) !== resolve(realpathSync(dataDir), "artifacts", run.taskId, run.planId, "runs", run.id)) {
-      throw new ApprovalError("MISSING_INPUT", `refusing to write through a symbolic link under ${root}`, "Remove the link and finalize again.");
+    let dir: string;
+    try {
+      dir = artifactDir(dataDir, [run.taskId, run.planId, "runs", run.id]);
+    } catch (err) {
+      throw new ApprovalError("MISSING_INPUT", `refusing to write the run record: ${err instanceof Error ? err.message : String(err)}`, "Remove the link or odd name under artifacts/ and finalize again.");
     }
     const records = store.listEvaluations(run.id);
     const actionPlan = store.getActionPlan(run.actionPlanId);
     const grant = run.grantId ? store.getGrant(run.grantId) : undefined;
-    const files: Record<string, unknown> = {
-      "run.json": {
-        run,
-        lineage: {
-          task: { id: run.taskId, revision: run.taskRevision },
-          plan: run.planId,
-          candidate: run.candidateId,
-          graphFingerprint: run.graphFingerprint,
-          environment: actionPlan?.environmentId,
-          actionPlan: actionPlan ? { id: actionPlan.id, hash: actionPlan.hash } : run.actionPlanId,
-          grant: grant ? { id: grant.id, channel: grant.channel, issuer: grant.issuer, issuedAt: grant.issuedAt } : undefined,
-          promptId: run.promptId,
+    const task = store.getTask(run.taskId, run.taskRevision);
+    const lock = task ? this.deps.dependencyLock(run.candidateId, task) : undefined;
+    const lockText = lock === undefined ? undefined : `${JSON.stringify(lock, null, 2)}\n`;
+    const files: Record<string, string> = {
+      "run.json": `${JSON.stringify(
+        {
+          run,
+          lineage: {
+            task: { id: run.taskId, revision: run.taskRevision },
+            plan: run.planId,
+            candidate: run.candidateId,
+            graphFingerprint: run.graphFingerprint,
+            environment: actionPlan?.environmentId,
+            actionPlan: actionPlan ? { id: actionPlan.id, hash: actionPlan.hash } : run.actionPlanId,
+            grant: grant ? { id: grant.id, channel: grant.channel, issuer: grant.issuer, issuedAt: grant.issuedAt } : undefined,
+            promptId: run.promptId,
+            dependencyLock: lockText ? { file: "dependencies.lock.json", sha256: sha256Hex(lockText) } : "unknown: the task revision is not stored",
+          },
+          verdicts: verdictsOf(run, records, this.submitted(run.id)),
+          events: store.listRunEvents(run.id),
         },
-        verdicts: verdictsOf(run, records),
-        events: store.listRunEvents(run.id),
-      },
-      "evaluation.json": records,
+        null,
+        2,
+      )}\n`,
+      "evaluation.json": `${JSON.stringify(records, null, 2)}\n`,
+      ...(lockText ? { "dependencies.lock.json": lockText } : {}),
     };
     const written: string[] = [];
-    for (const [name, value] of Object.entries(files)) {
+    for (const [name, text] of Object.entries(files)) {
       const path = join(dir, name);
-      writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
+      writeFileNoFollow(path, text);
       written.push(path);
     }
     return { dir, files: written };
+  }
+
+  /** Whether the run's job was ever submitted (an attempt is recorded before the POST). */
+  private submitted(runId: string): boolean {
+    return this.deps.store.listRunEvents(runId).some((e) => e.kind === "submit_attempt");
   }
 
   /** What the user sees before giving a verdict. */
