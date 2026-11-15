@@ -1,6 +1,6 @@
 # Gaps
 
-Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-15 13:46.
+Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-15 15:19.
 
 How this file works:
 - Answers are recorded with date, time and author: `**Answer** (2026-11-15 13:30, Gregor Heinrich): …`. Corrections of assumptions record the same in the **Correction** column. Short answers are fine.
@@ -94,6 +94,20 @@ The product covers every kind of workflow, and the MVP certifies images only (ow
 - **Answer** (2026-11-15 13:45, Gregor Heinrich): Decide after the MVP, as proposed.
 - **Resolved** (2026-11-15 13:45, Opus 5.5 for Gregor Heinrich): ROAD phase 6 keeps the order open until after phase 2; contracts stay kind-neutral (AGENTS, scope decisions).
 
+### Q11. How far does the rename to `@gregoryyy/comfyui-architect` reach? — blocking for TODO 1.3
+
+Q2 chose the package `@gregoryyy/comfyui-architect` and the command `comfyui-architect`. Milestone 1 found that upstream names `comfyui-mcp` well beyond `package.json`, `self-update.ts`, `server.json` and the marketplace: in about 25 source files (the panel launcher, self-restart, agent setup that writes MCP client configs, the npx restart scope, broken-install detection, report-issue, runpod), the plugin launcher (`plugin/scripts/launch-server.mjs`, 18 mentions), `scripts/smoke-install.mjs` (9) and 137 test files. Renaming only the listed files leaves launchers that start upstream's package. `boot.ts` also runs self-update at startup, which from a global or npx install would replace the fork with upstream's `comfyui-mcp`; a source checkout isn't affected.
+
+- **Proposed:** keep `comfyui-mcp` as the package, command and MCP server name while the fork runs from a source checkout and isn't published, and identify the fork through `src/fork-identity.ts`, `serverInfo.title` and the handshake line (done in milestone 1). Do the full rename, routed through one identity module, as its own milestone before the first publish. The alternative is the full rename now: a large change across upstream files and tests, with sync conflicts to match.
+- **Answer:**
+
+### Q12. Which image model families does the MVP certify first? — blocking for TODO 2.4
+
+SPEC §2.2 certifies 12–20 recipe variants across 2–3 families. The reference machine (Apple M5 Pro, 48 GB unified memory) has no image-only family installed; the shared models folder holds video and audio models (LTX 2.5, MiniMax H3, MiniMax Music 3, YuE2), so every image family means downloads ([research/reference-target.md](research/reference-target.md)). Upstream ships skills and packs for Flux, Qwen-Image, Z-Image, ERNIE and others.
+
+- **Proposed:** two families with upstream skills and packs that run on 48 GB of unified memory, for example Flux and Qwen-Image, chosen by the owner with the download size in view.
+- **Answer:**
+
 ## Assumptions
 
 | # | Assumption | Basis | Correction |
@@ -106,3 +120,4 @@ The product covers every kind of workflow, and the MVP certifies images only (ow
 | A6 | The panel's `COMFYUI_MCP_NO_AUTOSPAWN=1` makes it connect to a manually started server instead of launching upstream | Spec §3.2, citing the panel README; not checked in the panel's code | |
 | A7 | Using "ComfyUI" in the product name is fine for a community project that doesn't claim affiliation, as upstream (`comfyui-mcp`) and others do | Community practice; no trademark review done | |
 | A8 | Commits follow upstream's conventional-commit style, so commits meant for upstream can be cherry-picked as they are | Upstream history | |
+| A9 | The panel doesn't refuse a server by its version; upstream's own version gates apply to the panel's version, and the server's version is used only for display and self-update | `src/services/ui-bridge.ts`, `panel-sync.ts`, `self-update.ts`; the panel's code (a separate repository, not installed here) is unchecked | |

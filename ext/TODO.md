@@ -1,6 +1,6 @@
 # TODO
 
-The plan: milestones (`## 1.`), tasks (`1.1`) and subtasks (`1.1.1`) with checkboxes. Numbers never change; new work gets new numbers. *(decision)* marks a choice to settle before dependent work starts, *(variant)* an alternative built for comparison. When an item is done, tick it here and add an entry to [DONE](DONE.md); the process is in [AGENTS](../AGENTS.md#process). Phases beyond the current milestones are in [ROAD](ROAD.md), questions for the owner in [GAPS](GAPS.md). Status: 2026-11-15 14:43.
+The plan: milestones (`## 1.`), tasks (`1.1`) and subtasks (`1.1.1`) with checkboxes. Numbers never change; new work gets new numbers. *(decision)* marks a choice to settle before dependent work starts, *(variant)* an alternative built for comparison. When an item is done, tick it here and add an entry to [DONE](DONE.md); the process is in [AGENTS](../AGENTS.md#process). Phases beyond the current milestones are in [ROAD](ROAD.md), questions for the owner in [GAPS](GAPS.md). Status: 2026-11-15 15:19.
 
 Goal: the spec's first usable MVP, an approved candidate that executes locally and records its outcome (ROAD phase 2). Milestone 1 is spec Phase 0, milestone 2 spec Phase 1. Spec section numbers (§) refer to [SPEC](design/SPEC.md).
 
@@ -36,31 +36,31 @@ Exit (spec §20): the fork launches from an installed package, identifies itself
 
 - [ ] 1.1 Baseline run on `707474d2`, recorded in [BASE](input/BASE.md)
   - [x] 1.1.1 `npm ci`, `npm run lint`, `check:vocabulary`, `check:unknown-collapse` (2026-11-15)
-  - [ ] 1.1.2 `npm run build`, `npm test`, `asset-counts --check`, `vocab:export -- --check`, `docs:gen` as a no-op, the pack and install smoke (`scripts/smoke-install.mjs`)
-  - [ ] 1.1.3 The integration suite against the reference ComfyUI (`npm run test:integration`), with the target from GAPS Q5
+  - [x] 1.1.2 `npm run build`, `npm test`, `asset-counts --check`, `vocab:export -- --check`, `docs:gen` as a no-op, the pack and install smoke (`scripts/smoke-install.mjs`) (2026-11-15): 14 baseline failures, and one file that hangs on the baseline too ([BASE](input/BASE.md#checks-run))
+  - [ ] 1.1.3 The integration suite against the reference ComfyUI (`npm run test:integration`), with the target from GAPS Q5. Blocked: the reference install isn't running; the Desktop install serves port 8188 ([research/reference-target.md](research/reference-target.md))
 - [ ] 1.2 Environment and surface record, as a research note
-  - [ ] 1.2.1 The reference target `~/Documents/opt/flux/ComfyUI` (GAPS Q5; Apple M5 Pro, 48 GB unified memory): its model path layout (models three levels deep, `ComfyUI/ComfyUI/ComfyUI/models`), `COMFYUI_PATH` for tests (upstream auto-selects the Desktop install), ComfyUI version, node classes and installed model families; then the first certified families
-  - [ ] 1.2.2 The installed Ollama models, and upstream's default `artokun/gemma4-comfyui-mcp:e4b` as the first local planner profile, named in configuration rather than code (GAPS Q9)
-  - [ ] 1.2.3 Upstream's tool surface (direct and compact) and panel surface at the baseline, as the reference for 1.5
-  - [ ] 1.2.4 The stock panel's connection behaviour with autospawn off (GAPS A6) and with two servers present (A5)
-- [ ] 1.3 Fork identity, according to GAPS Q2 and Q3
+  - [x] 1.2.1 The reference target `~/Documents/opt/flux/ComfyUI` (GAPS Q5; Apple M5 Pro, 48 GB unified memory): its model path layout (models three levels deep, `ComfyUI/ComfyUI/ComfyUI/models`), `COMFYUI_PATH` for tests (upstream auto-selects the Desktop install), ComfyUI version, node classes and installed model families ([research/reference-target.md](research/reference-target.md)); the first certified families are GAPS Q12
+  - [ ] 1.2.2 The installed Ollama models, and upstream's default `artokun/gemma4-comfyui-mcp:e4b` as the first local planner profile, named in configuration rather than code (GAPS Q9). Models recorded (15; the default isn't installed); the profile follows with the planner configuration in milestone 2
+  - [x] 1.2.3 Upstream's tool surface (direct and compact) and panel surface at the baseline, as the reference for 1.5: 38 core tools plus 3 compact-mode tools, 96 panel tools, 160 retired names ([input/BASE](input/BASE.md))
+  - [ ] 1.2.4 The stock panel's connection behaviour with autospawn off (GAPS A6) and with two servers present (A5). Blocked: the panel isn't installed in either ComfyUI
+- [ ] 1.3 Fork identity, according to GAPS Q2 and Q3. 1.3.1–1.3.3 are blocked on GAPS Q11 (how far the rename reaches)
   - [ ] 1.3.1 `package.json`: `name` `@gregoryyy/comfyui-architect`, `bin` `comfyui-architect`, `mcpName` `io.github.gregoryyy/comfyui-architect`, `repository` and `homepage` on `gregoryyy/comfyui-architect`, `version` 0.1.0; `architect/` in `files` (GAPS Q2, Q3)
   - [ ] 1.3.2 `PACKAGE_NAME` in `src/services/self-update.ts`, with a test that self-update never resolves upstream's package
   - [ ] 1.3.3 `server.json` and `.claude-plugin/marketplace.json`
-  - [ ] 1.3.4 `ext/input/BASE.md` and build metadata carry the upstream commit (spec §17.4)
-- [ ] 1.4 Startup handshake (spec §18.2): package identity, fork version, upstream commit, Architect schema version, active policy, available features; no secrets. The likely seam is `src/handshake-instructions.ts`, whose instructions have byte ceilings (2048 for stdio, 1024 for the panel)
-- [ ] 1.5 Feature flag
-  - [ ] 1.5.1 Configuration read in one place (`src/config.ts`), default off
-  - [ ] 1.5.2 A test that the tool list, the compact catalog and the panel surface with the flag off equal the 1.2.3 record (spec AT-12)
-- [ ] 1.6 Facade and service skeleton
-  - [ ] 1.6.1 `src/services/architect/schemas.ts`: the envelope and `schemaVersion` conventions (spec §7, §16.2)
-  - [ ] 1.6.2 `src/services/architect/upstream.ts`: the facade interface over the inherited services the first slice needs, with contract tests
-  - [ ] 1.6.3 `src/services/architect/service.ts`: the service boundary with injected facade, store, clock and hash service (spec §16.3)
-- [ ] 1.7 Tool registration seam: the Architect tool group in `src/tools/index.ts`, behind the flag, through the existing registrar so the tool-surface policy and compact `call_tool` cover it (spec §14.3)
-- [ ] 1.8 Upstream gates with the first Architect tool: README counts (`asset-counts --check`), a `docs/tools/` page and its `CATEGORIES` entry in `scripts/gen-tool-docs.ts`, `docs/design/tool-vocabulary.json`
-- [ ] 1.9 CI on the fork (GAPS Q6): Actions enabled with `release.yml` and `mcp-registry.yml` disabled, the PR template (0.5.3)
-- [ ] 1.10 Smoke fixture: the installed tarball launches outside the repository, identifies itself, serves an external MCP client and the stock panel with autospawn off
-- [ ] 1.11 Upstream sync dry run: a `sync/upstream-…` branch merges `upstream/main`, passes the suite, records the new baseline, so the procedure is proven before it's needed
+  - [x] 1.3.4 `ext/input/BASE.md` and build metadata carry the upstream commit (spec §17.4): `src/fork-identity.ts`, checked against BASE by a test
+- [x] 1.4 Startup handshake (spec §18.2): package identity, fork version, upstream commit, Architect schema version, active policy, available features; no secrets. Done in `src/boot.ts`: `serverInfo.title` and a line after upstream's stdio instructions with product, fork version, upstream version and commit, and whether the Architect tools are on; `handshake-instructions.ts` and its byte budget stay untouched. Active policy and the schema version join the line when they exist beyond Phase 0
+- [x] 1.5 Feature flag
+  - [x] 1.5.1 Configuration read in one place, default off: `COMFYUI_ARCHITECT` in `src/services/architect/config.ts`, so `src/config.ts` stays upstream's
+  - [x] 1.5.2 A test that the tool list, the compact catalog and the panel surface with the flag off equal the 1.2.3 record (spec AT-12): `src/__tests__/architect/registration.test.ts` compares the catalog with the flag off and on; the panel surface isn't touched by Architect code
+- [x] 1.6 Facade and service skeleton
+  - [x] 1.6.1 `src/services/architect/schemas.ts`: the envelope and `schemaVersion` conventions (spec §7, §16.2)
+  - [x] 1.6.2 `src/services/architect/upstream.ts`: the facade interface over the inherited services the first slice needs, with contract tests
+  - [x] 1.6.3 `src/services/architect/service.ts`: the service boundary with injected facade, store, clock and hash service (spec §16.3); facade, clock and ids are injected, the store follows with TODO 2.2
+- [x] 1.7 Tool registration seam: the Architect tool group in `src/tools/index.ts`, behind the flag, through the existing registrar so the tool-surface policy and compact `call_tool` cover it (spec §14.3)
+- [x] 1.8 Upstream gates with the first Architect tool: README counts (`asset-counts --check`), a `docs/tools/` page and its `CATEGORIES` entry in `scripts/gen-tool-docs.ts`, `docs/design/tool-vocabulary.json`. All pass unchanged, because the gates read the default surface and `architect_inspect` registers only with the flag on; its page, category and vocabulary entry come when Architect tools are on by default
+- [ ] 1.9 CI on the fork (GAPS Q6): Actions enabled with `release.yml` and `mcp-registry.yml` disabled, the PR template (0.5.3). Done except the runs: no workflow has run yet, including on PRs #2 and #3. GitHub runs a fork's workflows only after the owner enables them once in the repository's Actions tab
+- [ ] 1.10 Smoke fixture: the installed tarball launches outside the repository, identifies itself, serves an external MCP client and the stock panel with autospawn off. Done except the panel: `scripts/smoke-install.mjs` passes with the fork's code, and an MCP client over stdio sees the fork's title and handshake line, 41 tools with the flag off and `architect_inspect` with it on. The panel part is blocked like 1.2.4
+- [ ] 1.11 Upstream sync dry run: a `sync/upstream-…` branch merges `upstream/main`, passes the suite, records the new baseline, so the procedure is proven before it's needed. On 2026-11-15 upstream had no commits after the baseline, so there was nothing to merge; re-run when upstream moves
 
 ## 2. One end-to-end planning slice (spec Phase 1)
 

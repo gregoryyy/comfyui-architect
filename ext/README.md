@@ -24,7 +24,7 @@ The project follows gregoryyy's agentic coding project structure, as adapted in 
 | `architect/` | Curated recipes, compatibility rules and fixtures, shipped with the package |
 | `plugin/skills/comfyui-architect/`, `plugin/commands/architect.md` | The Claude Code skill and slash command |
 
-Everything else is upstream's. The paths follow the spec (§17.1); none of them exists yet.
+Everything else is upstream's. The paths follow the spec (§17.1). `src/services/architect/`, `src/tools/architect.ts` and `src/__tests__/architect/` exist since milestone 1, together with `src/fork-identity.ts`; `architect/` and the plugin skill come with milestone 2. The Architect tools are off unless `COMFYUI_ARCHITECT=1` is set.
 
 **Stack and build.** Upstream's stack: TypeScript on Node 22, Zod, Vitest and SQLite. No new framework or service (spec §17.3). Upstream's npm scripts build and test it: `npm ci`, `npm run lint`, `npm run build`, `npm test`.
 
@@ -42,7 +42,7 @@ The fork is meant to stay a superset of upstream: everything upstream does keeps
 - the package identity;
 - the hardcoded package name in self-update.
 
-The list is in [BOOT](input/BOOT.md#fork-specifics). Changing a file outside it needs a recorded decision.
+The list is in [ARCH](ARCH.md#upstream-footprint). Changing a file outside it needs a recorded decision.
 
 **Upstream updates come in by merge.** The pinned upstream commit is recorded in `ext/input/BASE.md`. To take a newer upstream:
 1. Merge `upstream/main` into a sync branch.

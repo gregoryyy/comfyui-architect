@@ -1,6 +1,6 @@
 # Architecture
 
-The architecture to be built and the log of architectural decisions. The architecture itself is in [SPEC](design/SPEC.md); this file maps it, records what has been decided since, and lists the decisions still open (GAPS Q1: SEC, ARCH and EVAL only add what SPEC doesn't say). Security is in [SEC](SEC.md), evaluations in [EVAL](EVAL.md). Status: 2026-11-15 14:43.
+The architecture to be built and the log of architectural decisions. The architecture itself is in [SPEC](design/SPEC.md); this file maps it, records what has been decided since, and lists the decisions still open (GAPS Q1: SEC, ARCH and EVAL only add what SPEC doesn't say). Security is in [SEC](SEC.md), evaluations in [EVAL](EVAL.md). Status: 2026-11-15 15:19.
 
 ## Map
 
@@ -24,12 +24,29 @@ The architecture to be built and the log of architectural decisions. The archite
 
 The design rules in [AGENTS](../AGENTS.md#design-rules) are the principles: Architect off means upstream; upstream only through the facade; models propose and the core decides; unknown is never pass; execution never destroys unrelated work.
 
+## Upstream footprint
+
+Every upstream file the fork changes, and why. Changing any other upstream file needs a decision recorded in DONE and the PR ([SDLC](SDLC.md#definition-of-done)). The list started in [input/BOOT](input/BOOT.md#fork-specifics) and is kept here.
+
+| File | Change | Since |
+| --- | --- | --- |
+| `LICENSE` | The fork's copyright line (GAPS Q4) | PR #2 |
+| `src/tools/index.ts` | One import and two calls: the Architect group registers after upstream's groups, in `registerAllTools` and in `collectToolCatalog`, only when `COMFYUI_ARCHITECT` is on | TODO 1.7 |
+| `src/boot.ts` | One import block, `serverInfo.title`, and a line appended to the stdio handshake instructions naming the fork (`src/fork-identity.ts`). The line is concatenated so the source still reads `instructions: STDIO_HANDSHAKE_INSTRUCTIONS…`, which `handshake-instructions.test.ts` checks as text | TODO 1.4 |
+| `.github/pull_request_template.md` | New file; upstream has none | PR #3 |
+| Planned with the rename (GAPS Q11) | `package.json`, `package-lock.json`, `src/services/self-update.ts`, `server.json`, `.claude-plugin/marketplace.json`, and whatever else Q11's answer includes | TODO 1.3 |
+| Planned when Architect tools are on by default | upstream's `README.md` tool counts, `docs/tools/` pages and `scripts/gen-tool-docs.ts` categories, `docs/design/tool-vocabulary.json`, `src/tools/vocabulary.ts` | Later |
+
+Untouched on purpose: `src/config.ts` (Architect reads its flag in `src/services/architect/config.ts`), `src/handshake-instructions.ts` (the fork line is appended in `boot.ts`, so upstream's byte budget and its test stay as they are), and `src/orchestrator/panel-tools.ts`.
+
 ## Decision log
 
 Newest first. Each entry: date, decision, reason, where it's recorded.
 
 | Date | Decision | Reason | Recorded in |
 | --- | --- | --- | --- |
+| 2026-11-15 | Architect is switched on by the environment variable `COMFYUI_ARCHITECT` (`1`, `true`, `yes`, `on`), read in `src/services/architect/config.ts`; off by default | Keeps `src/config.ts` untouched; one place to read it; off means upstream | TODO 1.5 |
+| 2026-11-15 | The fork identifies itself through `src/fork-identity.ts`, `serverInfo.title` and a handshake line, while package, command and server name stay `comfyui-mcp` pending GAPS Q11 | Identity without touching launch paths; `boot-server-version.test.ts` pins the server name | TODO 1.4 |
 | 2026-11-15 | The first local planner profile is upstream's default `artokun/gemma4-comfyui-mcp:e4b`, named in configuration | Fastest start with a model trained on the tool suite; SPEC §12.3 forbids hardcoding a best model in code | GAPS Q9, TODO 1.2.2 |
 | 2026-11-15 | The three fork seams (panel-agent tool registration on every backend, per-action policy, pausing the agent loop) are built upstreamable; the offer is decided after ROAD phase 1 | Keeps the option of shrinking the fork to an add-on package | GAPS Q8 |
 | 2026-11-15 | The panel fork starts in ROAD phase 4 | The stock panel's chat and choice controls are enough until managed execution has a UI need | GAPS Q7 |
@@ -49,7 +66,6 @@ Newest first. Each entry: date, decision, reason, where it's recorded.
 
 | Decision | Needed by | Tracked |
 | --- | --- | --- |
-| The first certified model families (2–3) | TODO 2.4 | TODO 1.2.1, after the reference target's record |
+| The first certified model families (2–3) | TODO 2.4 | GAPS Q12 |
 | The kind of workflow after images | ROAD phase 6 | GAPS Q10, decided after the MVP |
-| Where Architect's feature flag and configuration live (environment, `.env`, a config file) | TODO 1.5 | Milestone 1 |
-| How the fork's version reaches upstream code that compares versions (panel compatibility, update gates) | TODO 1.3 | Milestone 1 |
+| How far the rename reaches, and with it the fork's package version (upstream's version checks apply to the panel's version, not the server's; A9) | TODO 1.3 | GAPS Q11 |
