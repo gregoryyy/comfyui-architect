@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "recipe-flux1-schnell.t2i",
-  "revision": 2,
+  "revision": 3,
   "title": "FLUX.1-schnell: text to image",
   "description": "Text to image with FLUX.1-schnell from separate components: diffusion model, T5-XXL and CLIP-L text encoders through DualCLIPLoader, and the FLUX.1 VAE. Schnell is timestep-distilled: 4 steps at CFG 1.0, no negative prompt (the negative input is the zeroed positive conditioning) and no guidance embedding, so the graph has no FluxGuidance node. Width and height should be multiples of 8, about one megapixel. The text-encoder defaults are the files upstream's skill names: the files this recipe expects, whether or not a target has them.",
   "kind": "image",
@@ -260,7 +260,7 @@
       "SaveImage"
     ]
   },
-  "certification": "proposed",
+  "certification": "curated",
   "evidence": [
     {
       "kind": "upstream_pack",
@@ -279,6 +279,12 @@
       "source": "GET http://127.0.0.1:8188/object_info/<class>, ComfyUI Desktop 0.44.0; captured in src/__tests__/architect/fixtures/object-info-desktop-0.44.0.json",
       "observedAt": "2026-11-15T17:32:29+01:00",
       "note": "Every node class, input name and COMBO value (weight_dtype default, DualCLIPLoader type flux, sampler euler, scheduler simple) is in the live schema; width and height bounds 16 to 16384 come from EmptyLatentImage."
+    },
+    {
+      "kind": "maintainer_review",
+      "source": "Owner review, GAPS Q12 and PR #7 (2026-11-15 18:49)",
+      "observedAt": "2026-11-15T18:49:40+01:00",
+      "note": "The owner accepted the recipe as curated. Not yet run on a recorded matrix, so not certified (AT-03)."
     }
   ]
 }
