@@ -4,13 +4,17 @@
 // architect_inspect against the configured ComfyUI. Upstream's smoke-install checks the
 // packed tarball; this checks what an MCP client sees, with the Architect flag off and on.
 //
-// Usage: node scripts/architect/stdio-smoke.mjs [off|on|both] [--offline] [--plan]
+// Usage: node scripts/architect/stdio-smoke.mjs [off|on|both] [--offline] [--plan] [--run]
 //   both (default)  runs off, then on, and checks that on adds exactly the architect_* tools
 //   --offline       accepts the STALE_ENVIRONMENT error when no ComfyUI answers, so the
 //                   wiring can be checked without a running ComfyUI
 //   --plan          with the flag on, also plans a 1024x1024 text-to-image task through
 //                   architect_plan (prepare, propose, select, export) into a temporary
 //                   ARCHITECT_DATA_DIR; needs a feasible candidate on the target
+//   --run           implies --plan, then renders the selected candidate through architect_run
+//                   (prepare, start, status until it settles, finalize). It RENDERS on the
+//                   target. The approval stands in for the user: the script runs the terminal
+//                   command's code with the typed hash, since a smoke has no person at a TTY
 // The target comes from the usual environment (COMFYUI_URL, COMFYUI_HOST/PORT, ...).
 // Needs `npm run build` first. Exits 1 if any check fails.
 
@@ -24,7 +28,8 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 const ENTRY = fileURLToPath(new URL("../../dist/index.js", import.meta.url));
 const args = process.argv.slice(2);
 const offline = args.includes("--offline");
-const plan = args.includes("--plan");
+const run = args.includes("--run");
+const plan = args.includes("--plan") || run;
 const dataDir = mkdtempSync(join(tmpdir(), "architect-smoke-"));
 const mode = args.find((a) => !a.startsWith("--")) ?? "both";
 if (!["off", "on", "both"].includes(mode)) {
@@ -122,6 +127,53 @@ async function planTask(client, label) {
   check(selected.status === "ok", `${label} select: ${selected.summary}`);
   const exported = await callPlan(client, { action: "export", planId });
   check(exported.status === "ok" && exported.artifacts?.length === 5, `${label} export: ${exported.summary}`);
+  if (run) await runTask(client, label, planId);
+}
+
+async function callRun(client, args) {
+  const res = await client.callTool({ name: "architect_run", arguments: args });
+  return JSON.parse(res.content?.[0]?.type === "text" ? res.content[0].text : "{}");
+}
+
+async function runTask(client, label, planId) {
+  const prepared = await callRun(client, { action: "prepare", planId });
+  console.log(`${label} run prepare: ${prepared.status}: ${prepared.summary}`);
+  const actionPlanId = prepared.data?.actionPlan?.id;
+  const requestId = prepared.data?.approvalRequest?.id;
+  if (!actionPlanId || !requestId) return check(false, `${label} run prepare returned an action plan`);
+  const refused = await callRun(client, { action: "start", actionPlanId });
+  check(refused.error?.code === "APPROVAL_REQUIRED", `${label} start without approval is refused: ${refused.error?.code}`);
+  // The stand-in for the user: the terminal command's code, with the hash the plan shows.
+  const { runArchitectCli } = await import("../../dist/services/architect/cli.js");
+  const { ArchitectStore } = await import("../../dist/services/architect/store.js");
+  const store = ArchitectStore.open(dataDir);
+  const out = [];
+  const code = await runArchitectCli(["approve", requestId], {
+    store,
+    io: { interactive: true, write: (t) => out.push(t), ask: async () => prepared.data.shortHash },
+  });
+  store.close();
+  check(code === 0, `${label} approved in the terminal channel (${prepared.data.shortHash})`);
+  const started = await callRun(client, { action: "start", actionPlanId });
+  console.log(`${label} run start: ${started.status}: ${started.summary}`);
+  const runId = started.data?.run?.id;
+  if (!runId) return check(false, `${label} start created a run`);
+  const again = await callRun(client, { action: "start", actionPlanId });
+  check(again.data?.run?.id === runId && again.data?.resumed === true, `${label} a second start returns the same run`);
+  let status;
+  const deadline = Date.now() + 5 * 60 * 1000;
+  do {
+    await new Promise((r) => setTimeout(r, 2000));
+    status = await callRun(client, { action: "status", runId });
+  } while (!["AWAITING_REVIEW", "COMPLETED", "FAILED", "CANCELLED"].includes(status.data?.run?.state) && Date.now() < deadline);
+  const r = status.data?.run;
+  console.log(`${label} run status: ${status.summary}`);
+  for (const e of status.data?.evaluations ?? []) console.log(`      ${e.criterion.padEnd(18)} ${e.verdict.padEnd(8)} ${e.explanation}`);
+  check(r?.state === "COMPLETED" || r?.state === "AWAITING_REVIEW", `${label} run finished: ${r?.state}${r?.error ? ` (${r.error.code}: ${r.error.message})` : ""}`);
+  check((r?.outputs?.length ?? 0) > 0, `${label} run outputs: ${(r?.outputs ?? []).map((o) => `${o.subfolder}/${o.filename}`).join(", ")}`);
+  check(status.data?.verdicts?.execution === "passed", `${label} verdicts: ${JSON.stringify(status.data?.verdicts)}`);
+  const finalized = await callRun(client, { action: "finalize", runId });
+  check(finalized.status === "ok" && finalized.artifacts?.length === 2, `${label} finalize: ${finalized.summary}`);
 }
 
 const off = mode === "on" ? undefined : await session(false);

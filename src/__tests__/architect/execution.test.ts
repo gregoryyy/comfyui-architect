@@ -1,110 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import type { SystemStats } from "../../comfyui/types.js";
-import {
-  ApprovalError,
-  type AdmissionDeps,
-  declineRequest,
-  issueGrant,
-  shortHash,
-} from "../../services/architect/admission.js";
+import { describe, expect, it } from "vitest";
+import { existsSync, readFileSync } from "node:fs";
+import { ApprovalError, declineRequest, issueGrant, shortHash } from "../../services/architect/admission.js";
 import { runArchitectCli, type CliIo } from "../../services/architect/cli.js";
-import {
-  acceptanceOf,
-  ArchitectExecution,
-  type RunDriver,
-  recordUserVerdict,
-} from "../../services/architect/execution.js";
-import { ArchitectPlanning, type RecipeSource } from "../../services/architect/planning.js";
-import { type EvaluationRecord, type InstalledModels, type TaskSpecInput } from "../../services/architect/schemas.js";
-import { ArchitectService } from "../../services/architect/service.js";
-import { ArchitectStore } from "../../services/architect/store.js";
-import type { UpstreamFacade } from "../../services/architect/upstream.js";
-import { fixtureObjectInfo, fixtureSnapshot } from "./fixtures/load.js";
-
-const FIXTURES: RecipeSource = {
-  id: "source-fixtures",
-  kind: "fixture",
-  dir: join(dirname(fileURLToPath(import.meta.url)), "fixtures"),
-  trust: "test",
-};
-
-const STATS: SystemStats = {
-  system: { os: "darwin", python_version: "3.12", embedded_python: false, comfyui_version: "0.44.0", ram_total: 1, ram_free: 1 },
-  devices: [],
-};
-
-const TASK: TaskSpecInput = {
-  intent: "A red bicycle against a white wall.",
-  media: { kind: "image", operation: "text_to_image", output: { width: 1024, height: 768 } },
-};
-
-const BASE = "http://127.0.0.1:8188";
-const dirs: string[] = [];
-const stores: ArchitectStore[] = [];
-afterEach(() => {
-  for (const s of stores.splice(0)) s.close();
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
-});
-
-/** A selected plan on the fixture recipe, a fake driver, and a clock the test moves. */
-async function setup() {
-  const dataDir = mkdtempSync(join(tmpdir(), "architect-execution-"));
-  dirs.push(dataDir);
-  const store = ArchitectStore.open(dataDir);
-  stores.push(store);
-  let n = 0;
-  const newId = () => `id${++n}`;
-  let clock = Date.parse("2026-11-15T12:00:00.000Z");
-  const now = () => new Date(clock);
-  const advance = (ms: number) => {
-    clock += ms;
-  };
-  let baseUrl = BASE;
-  let models: InstalledModels = fixtureSnapshot().installedModels ?? { folders: {}, unanswered: [], absent: [] };
-  const upstream = {
-    comfyuiBaseUrl: () => baseUrl,
-    systemStats: async () => STATS,
-    objectInfo: async () => fixtureObjectInfo(),
-    installedModels: async () => models,
-    isPaidNode: () => false,
-  } as Pick<UpstreamFacade, "comfyuiBaseUrl" | "systemStats" | "objectInfo" | "installedModels" | "isPaidNode">;
-  const service = new ArchitectService({ upstream: upstream as UpstreamFacade, now, newId });
-  const planning = new ArchitectPlanning({ store, service, upstream, dataDir, sources: [FIXTURES], now, newId });
-  const prepared = await planning.prepare({ task: TASK });
-  const proposed = await planning.propose({ planId: prepared.plan.id });
-  const best = proposed.candidates.find((c) => c.status === "feasible");
-  if (!best) throw new Error("fixture has no feasible candidate");
-  planning.select({ planId: prepared.plan.id, candidateId: best.id });
-
-  const driver: RunDriver = {
-    advance: vi.fn(async (runId: string) => store.getRun(runId)!),
-    reconcile: vi.fn(async (runId: string) => store.getRun(runId)!),
-    cancel: vi.fn(async (runId: string) => store.getRun(runId)!),
-  };
-  const admission: AdmissionDeps = { store, planning, baseUrl: () => baseUrl, now, newId };
-  const execution = new ArchitectExecution({ ...admission, driver, dataDir });
-  return {
-    store,
-    planning,
-    execution,
-    driver,
-    dataDir,
-    planId: prepared.plan.id,
-    now,
-    newId,
-    advance,
-    setBaseUrl: (u: string) => {
-      baseUrl = u;
-    },
-    setModels: (m: InstalledModels) => {
-      models = m;
-    },
-  };
-}
+import { acceptanceOf, recordUserVerdict } from "../../services/architect/execution.js";
+import type { EvaluationRecord } from "../../services/architect/schemas.js";
+import type { ArchitectStore } from "../../services/architect/store.js";
+import { setup } from "./fixtures/approval-harness.js";
 
 async function expectApprovalError(p: Promise<unknown>, code: ApprovalError["code"]) {
   const err = await p.then(
@@ -234,12 +135,14 @@ async function runAwaitingReview(s: Awaited<ReturnType<typeof setup>>, automatic
   step("PREPARING", "VALIDATING");
   step("VALIDATING", "QUEUED", { promptId: "4f1c7a52-2d6b-4a8e-9a3f-0c2b7e5d9a10" });
   step("QUEUED", "EVALUATING", { outputs: [{ node: "9", filename: "out_00001_.png", subfolder: "architect", type: "output" }] });
-  automatic.forEach((verdict, i) =>
+  // The built-in criteria, in order; those the caller doesn't name pass.
+  const builtIn = ["run_completion", "output_count", "output_readable", "output_format", "output_dimensions"];
+  builtIn.map((criterionId, i) => ({ criterionId, verdict: automatic[i] ?? ("pass" as const) })).forEach(({ criterionId, verdict }, i) =>
     s.store.putEvaluation({
       schemaVersion: 1,
       id: `eval-auto${i}`,
       runId: run.id,
-      criterionId: `auto_${i}`,
+      criterionId,
       evaluatorId: "architect.output-basic",
       evaluatorVersion: "1",
       verdict,
@@ -254,13 +157,19 @@ async function runAwaitingReview(s: Awaited<ReturnType<typeof setup>>, automatic
 
 describe("verdicts (AT-08)", () => {
   it("acceptance keeps machine checks and the user's verdict apart", () => {
-    const rec = (source: EvaluationRecord["source"], verdict: EvaluationRecord["verdict"]) => ({ source, verdict }) as EvaluationRecord;
-    expect(acceptanceOf([rec("automatic", "pass"), rec("user", "pass")])).toBe("passed");
-    expect(acceptanceOf([rec("automatic", "fail"), rec("user", "pass")])).toBe("waived_by_user");
-    expect(acceptanceOf([rec("automatic", "unknown"), rec("user", "pass")])).toBe("waived_by_user");
-    expect(acceptanceOf([rec("automatic", "pass"), rec("user", "fail")])).toBe("failed");
-    expect(acceptanceOf([rec("automatic", "pass")])).toBe("pending");
-    expect(acceptanceOf([rec("automatic", "pass"), rec("agent_reported", "pass")])).toBe("pending");
+    const task = { media: { kind: "image" }, acceptance: [] } as unknown as Parameters<typeof acceptanceOf>[0];
+    const builtIn = ["run_completion", "output_count", "output_readable", "output_format", "output_dimensions"];
+    const auto = (verdict: EvaluationRecord["verdict"], failOne = false) =>
+      builtIn.map((criterionId, i) => ({ criterionId, source: "automatic", verdict: failOne && i === 1 ? verdict : "pass", createdAt: "2026-11-15T12:00:00.000Z" }) as EvaluationRecord);
+    const user = (verdict: EvaluationRecord["verdict"], source: EvaluationRecord["source"] = "user") =>
+      ({ criterionId: "user_review", source, verdict, createdAt: "2026-11-15T12:01:00.000Z" }) as EvaluationRecord;
+    expect(acceptanceOf(task, [...auto("pass"), user("pass")])).toBe("passed");
+    expect(acceptanceOf(task, [...auto("fail", true), user("pass")])).toBe("waived_by_user");
+    expect(acceptanceOf(task, [...auto("unknown", true), user("pass")])).toBe("waived_by_user");
+    expect(acceptanceOf(task, [...auto("pass"), user("fail")])).toBe("failed");
+    expect(acceptanceOf(task, auto("pass"))).toBe("passed");
+    expect(acceptanceOf(task, auto("fail", true))).toBe("failed");
+    expect(acceptanceOf(task, [...auto("unknown", true), user("pass", "agent_reported")])).toBe("pending");
   });
 
   it("a verdict the agent relays is the agent's report and doesn't complete the run", async () => {

@@ -17,6 +17,7 @@ import {
   prepareActionPlan,
   shortHash,
 } from "./admission.js";
+import { acceptanceFrom } from "./evaluation.js";
 import { canonicalJson, sha256Hex } from "./hash.js";
 import {
   type Acceptance,
@@ -73,19 +74,17 @@ function reviewCriteria(task: TaskSpec | undefined): string[] {
 }
 
 /**
- * Acceptance from the automatic checks and the user's verdict (spec §15.3). A rejection
- * fails; an acceptance passes only when every automatic check passed, and otherwise is the
- * user's waiver, which is not a machine verification.
+ * Acceptance (spec §15.3): `acceptanceFrom` decides what the checks and the task's required
+ * criteria establish, and the user's verdict sits on top. A rejection fails. An acceptance
+ * over checks that didn't all pass is the user's waiver, which is not a machine
+ * verification. An agent's report counts for nothing.
  */
-export function acceptanceOf(records: readonly EvaluationRecord[]): Acceptance {
+export function acceptanceOf(task: TaskSpec, records: readonly EvaluationRecord[]): Acceptance {
   const user = records.filter((r) => r.source === "user");
-  const automatic = records.filter((r) => r.source === "automatic");
   if (user.some((r) => r.verdict === "fail")) return "failed";
-  const userAccepted = user.length > 0 && user.every((r) => r.verdict === "pass");
-  const automaticPassed = automatic.every((r) => r.verdict === "pass" || r.verdict === "not_applicable");
-  if (userAccepted) return automaticPassed ? "passed" : "waived_by_user";
-  if (automatic.some((r) => r.verdict === "fail")) return "failed";
-  return "pending";
+  const machine = acceptanceFrom(task, records);
+  if (user.length > 0 && user.every((r) => r.verdict === "pass")) return machine === "passed" ? "passed" : "waived_by_user";
+  return machine;
 }
 
 /**
@@ -122,7 +121,7 @@ export function recordUserVerdict(
     }),
   );
   if (run.state !== "AWAITING_REVIEW") return { run, records };
-  const acceptance = acceptanceOf(store.listEvaluations(run.id));
+  const acceptance = task ? acceptanceOf(task, store.listEvaluations(run.id)) : "pending";
   const moved = store.transitionRun({
     runId: run.id,
     from: "AWAITING_REVIEW",
