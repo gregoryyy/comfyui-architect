@@ -2,6 +2,30 @@
 
 The progress log, newest entry on top. Each entry: `## YYYY-MM-DD HH:MM — Title` (time from `date`), the TODO items and PR or commit, an `Agent:` line, then **Implementation notes**, **Deviations** and **Insights**. The plan is in [TODO](TODO.md).
 
+## 2026-11-15 17:06 — Milestone 1 live checks: reference install, panel route
+
+TODO items: 1.1.3, 1.12 (new), notes on 1.2.4, 1.10, 1.11. Branch `feat/milestone-1-live`.
+
+Agent: Opus 5.5, subagents: none.
+
+### Implementation notes
+
+- The reference install (`~/Documents/opt/flux/ComfyUI`, ComfyUI 0.44.2) ran on port 8190 next to the Desktop install; `scripts/architect/stdio-smoke.mjs` passes against it with 1,042 node classes. With `main.py` at its top level, upstream keeps `COMFYUI_PATH` there and doesn't descend into the nested checkout.
+- The panel, linked into the reference install's `custom_nodes`, was exercised through its HTTP routes and the bridge protocol, against the fork's `connect` server and a pristine `707474d2` build ([research/panel-connection.md](research/panel-connection.md#observed-with-the-panel-installed)).
+- New TODO 1.12, found on the way: the panel route didn't identify the fork, and the panel's agent never got the Architect tools, because the orchestrator builds that tool server's environment without `COMFYUI_ARCHITECT`. With the flag on, the ready greeting now ends with "ComfyUI Architect 0.1.0 (fork of comfyui-mcp 0.52.206 @707474d2): Architect tools on.", and the flag is forwarded. With it off, both stay upstream's. `src/__tests__/architect/panel-route.test.ts` covers both states.
+
+### Deviations
+
+- Two upstream files changed outside the earlier seams, recorded in [ARCH](ARCH.md#upstream-footprint): `src/orchestrator/ready-banner.ts` (the greeting) and `src/services/panel-secrets.ts` (one forwarded variable). The greeting seam sits in `ready-banner.ts`: `ui-bridge-locale.test.ts` matches the call sites in `src/orchestrator/index.ts` as text, and `index.ts` is 7,400 lines.
+- The browser side of the panel checks (TODO 1.2.4, 1.10) wasn't run.
+
+### Insights
+
+- The bridge leaves about half of all panel hellos unanswered within 5 s, on `707474d2` too, so the panel's status flips between "running" and "port held by another process". Recorded in BASE as baseline behaviour.
+- A second server on the same bridge port runs on without the panel; GAPS A5 is confirmed by test.
+- Upstream builds child environments by allowlist, so every new Architect variable has to be forwarded at `buildComfyuiMcpEnv`, or the panel route won't see it.
+- The panel's direct `call_tool` channel admits a fixed read-only list; `architect_*` stays out of it until a decision says otherwise.
+
 ## 2026-11-15 16:52 — Stdio smoke in the repository
 
 TODO items: 1.1.3, 1.10 (notes). Branch `chore/architect-stdio-smoke`.

@@ -1,6 +1,6 @@
 # Architecture
 
-The architecture to be built and the log of architectural decisions. The architecture itself is in [SPEC](design/SPEC.md); this file maps it, records what has been decided since, and lists the decisions still open (GAPS Q1: SEC, ARCH and EVAL only add what SPEC doesn't say). Security is in [SEC](SEC.md), evaluations in [EVAL](EVAL.md). Status: 2026-11-15 15:19.
+The architecture to be built and the log of architectural decisions. The architecture itself is in [SPEC](design/SPEC.md); this file maps it, records what has been decided since, and lists the decisions still open (GAPS Q1: SEC, ARCH and EVAL only add what SPEC doesn't say). Security is in [SEC](SEC.md), evaluations in [EVAL](EVAL.md). Status: 2026-11-15 17:05.
 
 ## Map
 
@@ -33,6 +33,8 @@ Every upstream file the fork changes, and why. Changing any other upstream file 
 | `LICENSE` | The fork's copyright line (GAPS Q4) | PR #2 |
 | `src/tools/index.ts` | One import and two calls: the Architect group registers after upstream's groups, in `registerAllTools` and in `collectToolCatalog`, only when `COMFYUI_ARCHITECT` is on | TODO 1.7 |
 | `src/boot.ts` | One import block, `serverInfo.title`, and a line appended to the stdio handshake instructions naming the fork (`src/fork-identity.ts`). The line is concatenated so the source still reads `instructions: STDIO_HANDSHAKE_INSTRUCTIONS…`, which `handshake-instructions.test.ts` checks as text | TODO 1.4 |
+| `src/orchestrator/ready-banner.ts` | `readyBannerText` wraps upstream's function, renamed `upstreamReadyBannerText`, and appends the fork's line when `COMFYUI_ARCHITECT` is on; both greeting paths (first banner and the #376 correction) pass through it, and the call sites in `src/orchestrator/index.ts` stay as `ui-bridge-locale.test.ts` reads them | TODO 1.12 |
+| `src/services/panel-secrets.ts` | `buildComfyuiMcpEnv` forwards `COMFYUI_ARCHITECT` to the panel agent's tool server, after upstream's tool-policy variables, outside the window `tool-surface-filter.test.ts` reads | TODO 1.12 |
 | `.github/pull_request_template.md` | New file; upstream has none | PR #3 |
 | Planned with the rename (GAPS Q11) | `package.json`, `package-lock.json`, `src/services/self-update.ts`, `server.json`, `.claude-plugin/marketplace.json`, and whatever else Q11's answer includes | TODO 1.3 |
 | Planned when Architect tools are on by default | upstream's `README.md` tool counts, `docs/tools/` pages and `scripts/gen-tool-docs.ts` categories, `docs/design/tool-vocabulary.json`, `src/tools/vocabulary.ts` | Later |

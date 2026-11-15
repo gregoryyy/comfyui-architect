@@ -6,7 +6,7 @@ The project's documents are in [ext/](ext/README.md), which plays the role `docs
 
 ## Current status
 
-Milestone 1 (spec Phase 0) is in review. The fork (`gregoryyy/comfyui-architect`, from upstream `707474d2`, v0.52.206) identifies itself in the MCP handshake, and the `COMFYUI_ARCHITECT` flag, off by default, adds the first Architect tool, `architect_inspect`. Open in milestone 1: the package rename (GAPS Q11), the panel checks, the integration suite against the reference install, and the first CI run. Next is TODO 2, spec Phase 1: one end-to-end planning slice.
+Milestone 1 (spec Phase 0) is merged except the parts listed below. The fork (`gregoryyy/comfyui-architect`, from upstream `707474d2`, v0.52.206) identifies itself in the MCP handshake, and the `COMFYUI_ARCHITECT` flag, off by default, adds the first Architect tool, `architect_inspect`. Open in milestone 1: the package rename (GAPS Q11), the browser side of the panel checks, and the first CI run. With the flag on, the panel's greeting names the fork and the panel's agent gets the Architect tools. Next is TODO 2, spec Phase 1: one end-to-end planning slice.
 
 - The design authority is `ext/design/SPEC.md`, a working copy of the input spec v1.0 (GAPS Q1); spec section numbers (§) refer to it. Design changes go there, never into `ext/input/`.
 - Before proposing an architecture or technology choice, check it against the design rules below and the spec.
@@ -67,7 +67,7 @@ ext/input/BASE.md             the pinned upstream commit and its checks; a secti
 ext/design/SPEC.md            the design authority, a working copy of the input spec (GAPS Q1)
 ext/input/                    bootstrap input: the spec v1.0 (frozen), BOOT, BASE
 src/fork-identity.ts          the fork's identity and pinned upstream baseline
-src/services/architect/       the Architect domain: config (flag), schemas, upstream facade, service
+src/services/architect/       the Architect domain: config (flag), schemas, upstream facade, service, panel greeting
 src/tools/architect.ts        the architect_* MCP tools; architect_inspect so far
 src/__tests__/architect/      Architect tests
 scripts/architect/            Architect scripts: stdio-smoke.mjs, what an MCP client sees with the flag off and on
