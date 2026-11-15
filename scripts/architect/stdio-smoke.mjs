@@ -173,7 +173,11 @@ async function runTask(client, label, planId) {
   check((r?.outputs?.length ?? 0) > 0, `${label} run outputs: ${(r?.outputs ?? []).map((o) => `${o.subfolder}/${o.filename}`).join(", ")}`);
   check(status.data?.verdicts?.execution === "passed", `${label} verdicts: ${JSON.stringify(status.data?.verdicts)}`);
   const finalized = await callRun(client, { action: "finalize", runId });
-  check(finalized.status === "ok" && finalized.artifacts?.length === 2, `${label} finalize: ${finalized.summary}`);
+  const written = (finalized.artifacts ?? []).map((f) => String(f).split("/").pop()).sort();
+  check(
+    finalized.status === "ok" && JSON.stringify(written) === JSON.stringify(["dependencies.lock.json", "evaluation.json", "run.json"]),
+    `${label} finalize: ${finalized.summary}`,
+  );
 }
 
 const off = mode === "on" ? undefined : await session(false);
