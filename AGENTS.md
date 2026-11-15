@@ -6,7 +6,7 @@ The project's documents are in [ext/](ext/README.md), which plays the role `docs
 
 ## Current status
 
-Milestone 1 (spec Phase 0) is merged except the parts listed below. The fork (`gregoryyy/comfyui-architect`, from upstream `707474d2`, v0.52.206) identifies itself in the MCP handshake, and the `COMFYUI_ARCHITECT` flag, off by default, adds the first Architect tool, `architect_inspect`. Open in milestone 1: the package rename (GAPS Q11), the browser side of the panel checks, and the first CI run. With the flag on, the panel's greeting names the fork and the panel's agent gets the Architect tools. Next is TODO 2, spec Phase 1: one end-to-end planning slice.
+Milestone 2 (spec Phase 1) is in review: with `COMFYUI_ARCHITECT` on, `architect_plan` takes a task to validated candidates from the recipe catalog and the installed models, and exports the chosen graph, with no downloads or renders. The first recipes, for Z-Image Turbo and FLUX.1-schnell (GAPS Q12), are `proposed` until the owner reviews them. Still open from milestone 1: the package rename (GAPS Q11), the browser side of the panel checks, and the first CI run. Next is spec Phase 2, managed execution (ROAD phase 2), which TODO doesn't detail yet.
 
 - The design authority is `ext/design/SPEC.md`, a working copy of the input spec v1.0 (GAPS Q1); spec section numbers (§) refer to it. Design changes go there, never into `ext/input/`.
 - Before proposing an architecture or technology choice, check it against the design rules below and the spec.
@@ -49,6 +49,8 @@ Treat these as hard requirements. If a change would violate one, stop and raise 
 
 ```text
 AGENTS.md, CLAUDE.md          this file and @AGENTS.md (force-added: upstream ignores them)
+.claude/agents/               the subagent roles of BOOT (implementer, assurance, upstream-syncer, e2e-runner,
+                              gap-researcher), force-added
 ext/                          the project's documents
 ext/README.md                 what it is, implementation, compatibility
 ext/input/BOOT.md             how the project was set up (bootstrap input), TODO mode, options
@@ -67,13 +69,17 @@ ext/input/BASE.md             the pinned upstream commit and its checks; a secti
 ext/design/SPEC.md            the design authority, a working copy of the input spec (GAPS Q1)
 ext/input/                    bootstrap input: the spec v1.0 (frozen), BOOT, BASE
 src/fork-identity.ts          the fork's identity and pinned upstream baseline
-src/services/architect/       the Architect domain: config (flag), schemas, upstream facade, service, panel greeting
-src/tools/architect.ts        the architect_* MCP tools; architect_inspect so far
-src/__tests__/architect/      Architect tests
+src/services/architect/       the Architect domain: config (flag, forwarded variables), schemas (contracts, parseStored),
+                              upstream facade, service (environment), environment (freshness), store and migrations
+                              (architect.db), hash, catalog, compile, validate, planner, planning (the architect_plan
+                              workflow and export), panel (greeting)
+src/tools/architect.ts        the architect_* MCP tools (architect_inspect, architect_plan) and the MCP prompts
+src/__tests__/architect/      Architect tests; fixtures/ holds fixture recipes and node schemas
 scripts/architect/            Architect scripts: stdio-smoke.mjs, what an MCP client sees with the flag off and on
 ext/research/                 research notes; index in its README
-architect/                    recipes, rules, fixtures shipped with the package (planned)
-plugin/skills/comfyui-architect/, plugin/commands/architect.md   skill and command (planned)
+architect/recipes/            shipped recipes, *.recipe.json
+architect/skills/, architect/commands/   the skill and the /architect command, served as MCP prompts while the
+                              flag is on; they move to plugin/ when Architect is on by default
 ```
 
 Everything else is upstream's. Update this layout in the same change when code lands.

@@ -1,6 +1,6 @@
 # Reference target: environment record
 
-The machine, ComfyUI installs, models and local LLMs that milestone 1 found on 2026-11-15, for GAPS Q5 (reference target) and Q9 (local planner), and as input to the choice of the first certified model families (TODO 1.2.1). Facts were read with `curl` against the running ComfyUI and Ollama, and from the file system. Status: 2026-11-15 17:43.
+The machine, ComfyUI installs, models and local LLMs that milestone 1 found on 2026-11-15, for GAPS Q5 (reference target) and Q9 (local planner), and as input to the choice of the first certified model families (TODO 1.2.1). Facts were read with `curl` against the running ComfyUI and Ollama, and from the file system. Status: 2026-11-15 18:17.
 
 ## Machine
 
@@ -11,10 +11,10 @@ The machine, ComfyUI installs, models and local LLMs that milestone 1 found on 2
 
 | Install | Path | State on 2026-11-15 | Models |
 | --- | --- | --- | --- |
-| **Reference target** (GAPS Q5): source install with its own venv | `~/Documents/opt/flux/ComfyUI` | Not running (its pid file names a process that has exited). Nested layout: a second checkout at `ComfyUI/ComfyUI/ComfyUI/` holds `models/` and three custom nodes (`comfyui-bbox-autorescale`, `foreach`, `rescalecfgadvanced`); the top level has ComfyUI-Manager | 1.8 GB: one MiniMax H3 video LoRA |
-| ComfyUI Desktop | `~/ComfyUI-Installs/ComfyUI (1)/ComfyUI` | **Running on port 8188**: ComfyUI 0.44.0, Python 3.13.12, 1,049 node classes, flags `--enable-manager --enable-assets` | Through `~/Library/Application Support/Comfy Desktop/instance-model-paths/*.yaml`: the shared folder below; input and output in `~/ComfyUI-Shared/` |
+| Source install with its own venv; the reference target of milestone 1 (GAPS Q5, earlier answer) | `~/Documents/opt/flux/ComfyUI` | Not running (its pid file names a process that has exited). Nested layout: a second checkout at `ComfyUI/ComfyUI/ComfyUI/` holds `models/` and three custom nodes (`comfyui-bbox-autorescale`, `foreach`, `rescalecfgadvanced`); the top level has ComfyUI-Manager | 1.8 GB: one MiniMax H3 video LoRA |
+| **Reference target** from milestone 2 on (GAPS Q17): ComfyUI Desktop | `~/ComfyUI-Installs/ComfyUI (1)/ComfyUI` | **Running on port 8188**: ComfyUI 0.44.0, Python 3.13.12, 1,049 node classes, flags `--enable-manager --enable-assets` | Through `~/Library/Application Support/Comfy Desktop/instance-model-paths/*.yaml`: the shared folder below; input and output in `~/ComfyUI-Shared/` |
 
-Upstream auto-selects the Desktop install. Work against the reference target needs `COMFYUI_PATH` pointing at it and that install running instead of, or next to, Desktop on another port.
+Upstream auto-selects the Desktop install, which is the reference target from milestone 2 on (GAPS Q17). Work against the source install needs `COMFYUI_PATH` pointing at it and that install running next to Desktop on another port, as in milestone 1 (port 8190).
 
 ## Models in the shared folder
 
