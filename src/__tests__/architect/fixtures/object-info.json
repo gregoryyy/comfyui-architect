@@ -1,0 +1,230 @@
+{
+  "CheckpointLoaderSimple": {
+    "input": {
+      "required": {
+        "ckpt_name": [
+          ["sd_xl_base_1.0.safetensors", "v1-5-pruned-emaonly.safetensors"],
+          { "tooltip": "The name of the checkpoint (model) to load." }
+        ]
+      }
+    },
+    "input_order": { "required": ["ckpt_name"] },
+    "output": ["MODEL", "CLIP", "VAE"],
+    "output_is_list": [false, false, false],
+    "output_name": ["MODEL", "CLIP", "VAE"],
+    "name": "CheckpointLoaderSimple",
+    "display_name": "Load Checkpoint",
+    "description": "Loads a diffusion model checkpoint, diffusion models are used to denoise latents.",
+    "python_module": "nodes",
+    "category": "loaders",
+    "output_node": false
+  },
+  "CLIPTextEncode": {
+    "input": {
+      "required": {
+        "text": ["STRING", { "multiline": true, "dynamicPrompts": true, "tooltip": "The text to be encoded." }],
+        "clip": ["CLIP", { "tooltip": "The CLIP model used for encoding the text." }]
+      }
+    },
+    "input_order": { "required": ["text", "clip"] },
+    "output": ["CONDITIONING"],
+    "output_is_list": [false],
+    "output_name": ["CONDITIONING"],
+    "name": "CLIPTextEncode",
+    "display_name": "CLIP Text Encode (Prompt)",
+    "description": "Encodes a text prompt using a CLIP model into an embedding that can be used to guide the diffusion model towards generating specific images.",
+    "python_module": "nodes",
+    "category": "conditioning",
+    "output_node": false
+  },
+  "EmptyLatentImage": {
+    "input": {
+      "required": {
+        "width": ["INT", { "default": 512, "min": 16, "max": 16384, "step": 8 }],
+        "height": ["INT", { "default": 512, "min": 16, "max": 16384, "step": 8 }],
+        "batch_size": ["INT", { "default": 1, "min": 1, "max": 4096 }]
+      }
+    },
+    "input_order": { "required": ["width", "height", "batch_size"] },
+    "output": ["LATENT"],
+    "output_is_list": [false],
+    "output_name": ["LATENT"],
+    "name": "EmptyLatentImage",
+    "display_name": "Empty Latent Image",
+    "description": "Create a new batch of empty latent images to be denoised via sampling.",
+    "python_module": "nodes",
+    "category": "latent",
+    "output_node": false
+  },
+  "KSampler": {
+    "input": {
+      "required": {
+        "model": ["MODEL", { "tooltip": "The model used for denoising the input latent." }],
+        "seed": ["INT", { "default": 0, "min": 0, "max": 18446744073709551615, "control_after_generate": true }],
+        "steps": ["INT", { "default": 20, "min": 1, "max": 10000 }],
+        "cfg": ["FLOAT", { "default": 8.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01 }],
+        "sampler_name": [
+          ["euler", "euler_ancestral", "heun", "dpm_2", "dpmpp_2m", "dpmpp_sde", "ddim", "uni_pc"],
+          { "tooltip": "The algorithm used when sampling." }
+        ],
+        "scheduler": [
+          ["simple", "sgm_uniform", "karras", "exponential", "ddim_uniform", "beta", "normal"],
+          { "tooltip": "The scheduler controls how noise is gradually removed." }
+        ],
+        "positive": ["CONDITIONING", {}],
+        "negative": ["CONDITIONING", {}],
+        "latent_image": ["LATENT", {}],
+        "denoise": ["FLOAT", { "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01 }]
+      }
+    },
+    "input_order": {
+      "required": ["model", "seed", "steps", "cfg", "sampler_name", "scheduler", "positive", "negative", "latent_image", "denoise"]
+    },
+    "output": ["LATENT"],
+    "output_is_list": [false],
+    "output_name": ["LATENT"],
+    "name": "KSampler",
+    "display_name": "KSampler",
+    "description": "Uses the provided model, positive and negative conditioning to denoise the latent image.",
+    "python_module": "nodes",
+    "category": "sampling",
+    "output_node": false
+  },
+  "VAEDecode": {
+    "input": {
+      "required": {
+        "samples": ["LATENT", { "tooltip": "The latent to be decoded." }],
+        "vae": ["VAE", { "tooltip": "The VAE model used for decoding the latent." }]
+      }
+    },
+    "input_order": { "required": ["samples", "vae"] },
+    "output": ["IMAGE"],
+    "output_is_list": [false],
+    "output_name": ["IMAGE"],
+    "name": "VAEDecode",
+    "display_name": "VAE Decode",
+    "description": "Decodes latent images back into pixel space images.",
+    "python_module": "nodes",
+    "category": "latent",
+    "output_node": false
+  },
+  "SaveImage": {
+    "input": {
+      "required": {
+        "images": ["IMAGE", { "tooltip": "The images to save." }],
+        "filename_prefix": ["STRING", { "default": "ComfyUI", "tooltip": "The prefix for the file to save." }]
+      },
+      "hidden": { "prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO" }
+    },
+    "input_order": { "required": ["images", "filename_prefix"], "hidden": ["prompt", "extra_pnginfo"] },
+    "output": [],
+    "output_is_list": [],
+    "output_name": [],
+    "name": "SaveImage",
+    "display_name": "Save Image",
+    "description": "Saves the input images to your ComfyUI output directory.",
+    "python_module": "nodes",
+    "category": "image",
+    "output_node": true
+  },
+  "LoadImage": {
+    "input": {
+      "required": {
+        "image": [["example.png"], { "image_upload": true }]
+      }
+    },
+    "input_order": { "required": ["image"] },
+    "output": ["IMAGE", "MASK"],
+    "output_is_list": [false, false],
+    "output_name": ["IMAGE", "MASK"],
+    "name": "LoadImage",
+    "display_name": "Load Image",
+    "description": "",
+    "python_module": "nodes",
+    "category": "image",
+    "output_node": false
+  },
+  "UpscaleModelLoader": {
+    "input": {
+      "required": {
+        "model_name": [["4x-UltraSharp.pth"], {}]
+      }
+    },
+    "input_order": { "required": ["model_name"] },
+    "output": ["UPSCALE_MODEL"],
+    "output_is_list": [false],
+    "output_name": ["UPSCALE_MODEL"],
+    "name": "UpscaleModelLoader",
+    "display_name": "Load Upscale Model",
+    "description": "",
+    "python_module": "comfy_extras.nodes_upscale_model",
+    "category": "loaders",
+    "output_node": false
+  },
+  "ImageUpscaleWithModel": {
+    "input": {
+      "required": {
+        "upscale_model": ["UPSCALE_MODEL", {}],
+        "image": ["IMAGE", {}]
+      }
+    },
+    "input_order": { "required": ["upscale_model", "image"] },
+    "output": ["IMAGE"],
+    "output_is_list": [false],
+    "output_name": ["IMAGE"],
+    "name": "ImageUpscaleWithModel",
+    "display_name": "Upscale Image (using Model)",
+    "description": "",
+    "python_module": "comfy_extras.nodes_upscale_model",
+    "category": "image/upscaling",
+    "output_node": false
+  },
+  "PreviewAny": {
+    "input": {
+      "required": {
+        "source": ["*", {}]
+      }
+    },
+    "input_order": { "required": ["source"] },
+    "output": [],
+    "output_is_list": [],
+    "output_name": [],
+    "name": "PreviewAny",
+    "display_name": "Preview Any",
+    "description": "",
+    "python_module": "comfy_extras.nodes_preview_any",
+    "category": "utils",
+    "output_node": true
+  },
+  "FluxProUltraImageNode": {
+    "input": {
+      "required": {
+        "prompt": ["STRING", { "multiline": true, "default": "", "tooltip": "Prompt for the image generation" }],
+        "prompt_upsampling": ["BOOLEAN", { "default": false }],
+        "seed": ["INT", { "default": 0, "min": 0, "max": 4294967295, "control_after_generate": true }],
+        "aspect_ratio": ["STRING", { "default": "16:9" }],
+        "raw": ["BOOLEAN", { "default": false }]
+      },
+      "optional": {
+        "image_prompt": ["IMAGE", {}],
+        "image_prompt_strength": ["FLOAT", { "default": 0.1, "min": 0.0, "max": 1.0, "step": 0.01 }]
+      },
+      "hidden": { "auth_token": "AUTH_TOKEN_COMFY_ORG", "comfy_api_key": "API_KEY_COMFY_ORG", "unique_id": "UNIQUE_ID" }
+    },
+    "input_order": {
+      "required": ["prompt", "prompt_upsampling", "seed", "aspect_ratio", "raw"],
+      "optional": ["image_prompt", "image_prompt_strength"],
+      "hidden": ["auth_token", "comfy_api_key", "unique_id"]
+    },
+    "output": ["IMAGE"],
+    "output_is_list": [false],
+    "output_name": ["IMAGE"],
+    "name": "FluxProUltraImageNode",
+    "display_name": "Flux 1.1 [pro] Ultra Image",
+    "description": "Generates images using Flux Pro 1.1 Ultra via api based on prompt and resolution.",
+    "python_module": "comfy_api_nodes.nodes_bfl",
+    "category": "api node/image/BFL",
+    "output_node": false,
+    "api_node": true
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "id": "recipe-fixture.upscale-model",
+  "revision": 1,
+  "title": "Fixture: upscale with a model",
+  "description": "Test data only. Load an input image, upscale it with an upscale model, save.",
+  "kind": "image",
+  "operations": ["upscale"],
+  "graph": {
+    "1": {
+      "class_type": "LoadImage",
+      "inputs": { "image": "example.png" }
+    },
+    "2": {
+      "class_type": "UpscaleModelLoader",
+      "inputs": { "model_name": "" }
+    },
+    "3": {
+      "class_type": "ImageUpscaleWithModel",
+      "inputs": { "upscale_model": ["2", 0], "image": ["1", 0] }
+    },
+    "4": {
+      "class_type": "SaveImage",
+      "inputs": { "images": ["3", 0], "filename_prefix": "architect-upscale" }
+    }
+  },
+  "slots": [
+    {
+      "id": "source_image",
+      "label": "Source image (a file in ComfyUI's input folder)",
+      "valueType": "string",
+      "target": { "node": "1", "input": "image" },
+      "required": true
+    },
+    {
+      "id": "upscale_model",
+      "label": "Upscale model",
+      "valueType": "model_file",
+      "target": { "node": "2", "input": "model_name" },
+      "required": true,
+      "modelFolder": "upscale_models"
+    }
+  ],
+  "outputs": [{ "role": "image", "node": "4" }],
+  "dependencies": {
+    "nodeClasses": ["LoadImage", "UpscaleModelLoader", "ImageUpscaleWithModel", "SaveImage"]
+  },
+  "certification": "fixture",
+  "evidence": []
+}
