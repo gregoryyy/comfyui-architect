@@ -10,7 +10,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonicalJson, sha256Hex } from "./hash.js";
-import { type EnvironmentSnapshot, Recipe, type TaskSpec } from "./schemas.js";
+import { type EnvironmentSnapshot, Recipe, type RecipeSlot, type TaskSpec } from "./schemas.js";
 
 export { canonicalJson, sha256Hex };
 
@@ -73,18 +73,30 @@ const TIER_ORDER = { certified: 0, curated: 1, proposed: 2, fixture: 3 } as cons
 
 export interface RetrievedRecipe {
   recipe: Recipe;
-  /** Model slots whose folder lists at least one installed file, out of all model slots. */
+  /** Model slots an installed file could fill feasibly (see `fillableFrom`), out of all model slots. */
   installedOverlap: { satisfiable: number; total: number };
   /** Model slots whose folder the snapshot couldn't read: their fit is unknown. */
   unknownFolders: string[];
 }
 
 /**
+ * Whether a model slot could be filled feasibly from a folder's listed files. It mirrors the
+ * validator's rules, so the fit `prepare` reports doesn't promise what `propose` then blocks:
+ * a slot with a default needs that file (any other file of the folder fails the family check
+ * once the slot names a family, GAPS Q14); a slot with a family but no default can't be
+ * filled feasibly at all; a slot with neither takes any listed file. Whether the loader
+ * offers the file is still the validator's question.
+ */
+function fillableFrom(slot: RecipeSlot, listed: readonly string[]): boolean {
+  if (slot.default !== undefined) return typeof slot.default === "string" && listed.includes(slot.default);
+  if (slot.modelFamily !== undefined) return false;
+  return listed.length > 0;
+}
+
+/**
  * Recipes that solve the task's kind and operation, best first: evidence tier, then the
- * share of model slots the target could fill from installed files, then id (spec §8.5).
- * "Could fill" only means the folder lists some file; whether a file fits is the
- * validator's question. A folder the snapshot couldn't read counts as unknown, never as
- * empty (#796).
+ * share of model slots the target could fill from installed files (`fillableFrom`), then id
+ * (spec §8.5). A folder the snapshot couldn't read counts as unknown, never as empty (#796).
  */
 export function retrieveRecipes(
   recipes: readonly Recipe[],
@@ -102,7 +114,7 @@ export function retrieveRecipes(
       const listed = snapshot.installedModels?.folders[folder];
       if (listed === undefined) {
         if (!snapshot.installedModels?.absent.includes(folder)) unknownFolders.push(folder);
-      } else if (listed.length > 0) {
+      } else if (fillableFrom(slot, listed)) {
         satisfiable += 1;
       }
     }
