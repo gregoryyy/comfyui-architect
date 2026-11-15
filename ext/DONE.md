@@ -2,6 +2,26 @@
 
 The progress log, newest entry on top. Each entry: `## YYYY-MM-DD HH:MM — Title` (time from `date`), the TODO items and PR or commit, an `Agent:` line, then **Implementation notes**, **Deviations** and **Insights**. The plan is in [TODO](TODO.md).
 
+## 2026-11-15 16:52 — Stdio smoke in the repository
+
+TODO items: 1.1.3, 1.10 (notes). Branch `chore/architect-stdio-smoke`.
+
+Agent: Opus 5.5, subagents: none.
+
+### Implementation notes
+
+- `scripts/architect/stdio-smoke.mjs` starts the built server as an external MCP client does, with the Architect flag off, on, or both (the default). It checks that `serverInfo.title` and the handshake line name the fork, that the flag adds only `architect_*` tools (spec AT-12) and that `architect_inspect` reads the target; it exits 1 when a check fails. `--offline` accepts the `STALE_ENVIRONMENT` error, so the wiring can be checked without a ComfyUI.
+- Against the Desktop ComfyUI on port 8188, all checks pass: 41 tools with the flag off, 42 with it on, ComfyUI 0.44.0.
+- `architect_inspect` now says "No snapshot" when no probe answers; it said "Partial snapshot" next to the status `error`. The probe names are one constant, so the all-failed case no longer counts to two.
+
+### Deviations
+
+- None. The script is a new file; no upstream file changes.
+
+### Insights
+
+- The smoke replaces upstream's `test:integration` as the live check for now, because that script sets a variable no test reads.
+
 ## 2026-11-15 15:19 — Milestone 1: fork identity, feature flag, first Architect tool
 
 TODO items: 1.1.2, 1.2.1, 1.2.3, 1.3.4, 1.4, 1.5, 1.6, 1.7, 1.8; notes on 1.1.3, 1.2.2, 1.2.4, 1.3, 1.9, 1.10, 1.11. Branch `feat/milestone-1`, built on `docs/milestone-0` (PR #3).

@@ -32,7 +32,7 @@ The PR template (`.github/pull_request_template.md`) carries this list.
 ## Testing
 
 - **Unit and contract tests** run in CI with fixtures and mocks: no GPU, no model downloads, no provider subscription (SPEC §19.1). Architect tests live in `src/__tests__/architect/`.
-- **Integration tests** against a live ComfyUI are opt-in (`npm run test:integration`) and run on the reference target (GAPS Q5) with `COMFYUI_PATH` set; their hardware, model and runtime matrix is recorded with the results.
+- **Integration tests** against a live ComfyUI run on the reference target (GAPS Q5); their hardware, model and runtime matrix is recorded with the results. Upstream's `npm run test:integration` doesn't reach a live ComfyUI at the baseline (TODO 1.1.3). The live check so far is `node scripts/architect/stdio-smoke.mjs` after `npm run build`, with `COMFYUI_URL` pointing at the target: it starts the server as an MCP client does, checks the fork's handshake and that the flag adds only `architect_*` tools, and calls `architect_inspect`. `--offline` checks the wiring without a ComfyUI.
 - **Upstream's suite runs unchanged** on every PR. Architect never edits an upstream test to make it pass; a needed change to one is an upstream-footprint change.
 
 ## Upstream sync

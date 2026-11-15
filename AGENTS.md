@@ -70,6 +70,7 @@ src/fork-identity.ts          the fork's identity and pinned upstream baseline
 src/services/architect/       the Architect domain: config (flag), schemas, upstream facade, service
 src/tools/architect.ts        the architect_* MCP tools; architect_inspect so far
 src/__tests__/architect/      Architect tests
+scripts/architect/            Architect scripts: stdio-smoke.mjs, what an MCP client sees with the flag off and on
 ext/research/                 research notes; index in its README
 architect/                    recipes, rules, fixtures shipped with the package (planned)
 plugin/skills/comfyui-architect/, plugin/commands/architect.md   skill and command (planned)

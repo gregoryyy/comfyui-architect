@@ -141,5 +141,7 @@ describe("ArchitectService.inspectEnvironmentEnvelope", () => {
     const env = await service(facade({ systemStats: refused, objectInfo: refused })).inspectEnvironmentEnvelope();
     expect(env.status).toBe("error");
     expect(env.error).toMatchObject({ code: "STALE_ENVIRONMENT", retryable: true });
+    expect(env.summary).toContain("No snapshot");
+    expect(env.summary).not.toContain("Partial");
   });
 });
