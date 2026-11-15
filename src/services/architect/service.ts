@@ -9,6 +9,9 @@ import { ARCHITECT_SCHEMA_VERSION } from "../../fork-identity.js";
 import { EnvironmentSnapshot, type ProbeError, ResultEnvelope } from "./schemas.js";
 import type { UpstreamFacade } from "./upstream.js";
 
+/** The reads an environment snapshot is built from; all of them failing means no snapshot. */
+const ENVIRONMENT_PROBES = ["system_stats", "object_info"] as const;
+
 export interface ArchitectDeps {
   upstream: UpstreamFacade;
   /** The clock; injected so snapshots are reproducible in tests. */
@@ -61,7 +64,7 @@ export class ArchitectService {
         memoryFree: d.vram_free,
       }));
     } catch (err) {
-      probeErrors.push({ probe: "system_stats", message: errorMessage(err) });
+      probeErrors.push({ probe: ENVIRONMENT_PROBES[0], message: errorMessage(err) });
     }
 
     try {
@@ -69,7 +72,7 @@ export class ArchitectService {
       snapshot.nodeClassCount = classes.length;
       snapshot.nodeSchemaDigest = nodeSchemaDigest(classes);
     } catch (err) {
-      probeErrors.push({ probe: "object_info", message: errorMessage(err) });
+      probeErrors.push({ probe: ENVIRONMENT_PROBES[1], message: errorMessage(err) });
     }
 
     snapshot.probeErrors = probeErrors;
@@ -80,21 +83,25 @@ export class ArchitectService {
   async inspectEnvironmentEnvelope(): Promise<ResultEnvelope> {
     const snap = await this.inspectEnvironment();
     const failed = snap.probeErrors.map((e) => e.probe);
+    const unreadable = failed.length === ENVIRONMENT_PROBES.length;
     const summary =
       failed.length === 0
         ? `ComfyUI ${snap.comfyuiVersion ?? "(version not reported)"} at ${snap.target.baseUrl}: ` +
           `${snap.nodeClassCount} node classes, ${snap.devices?.length ?? 0} device(s).`
-        : `Partial snapshot of ${snap.target.baseUrl}: ${failed.join(", ")} could not be read; ` +
-          "those fields are unknown, not empty.";
+        : unreadable
+          ? `No snapshot of ${snap.target.baseUrl}: ${failed.join(", ")} could not be read; ` +
+            "every field is unknown."
+          : `Partial snapshot of ${snap.target.baseUrl}: ${failed.join(", ")} could not be read; ` +
+            "those fields are unknown, not empty.";
     return ResultEnvelope.parse({
       schemaVersion: ARCHITECT_SCHEMA_VERSION,
       operationId: this.deps.newId(),
-      status: failed.length === 0 ? "ok" : failed.length === 2 ? "error" : "partial",
+      status: failed.length === 0 ? "ok" : unreadable ? "error" : "partial",
       summary,
       data: { environment: snap },
       warnings: snap.probeErrors.map((e) => `${e.probe}: ${e.message}`),
       artifacts: [],
-      ...(failed.length === 2
+      ...(unreadable
         ? {
             error: {
               code: "STALE_ENVIRONMENT",
