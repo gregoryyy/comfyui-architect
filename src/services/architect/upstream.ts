@@ -8,7 +8,8 @@
 // Kept free of Architect-specific logic so it can be offered upstream as-is (GAPS Q8).
 
 import { getObjectInfo, getSystemStats } from "../../comfyui/client.js";
-import type { ObjectInfo, SystemStats } from "../../comfyui/types.js";
+import type { ComfyUINodeDef, ObjectInfo, SystemStats } from "../../comfyui/types.js";
+import { isApiNode, isExternalServiceNode } from "../api-nodes.js";
 import { getComfyUIBaseUrl } from "../../config.js";
 import {
   type LocalModel,
@@ -29,6 +30,12 @@ export interface UpstreamFacade {
    * verified nothing: no folder answered, or upstream refused it as stale.
    */
   installedModels(): Promise<InstalledModels>;
+  /**
+   * Whether a node spends money or sends data to a remote service: upstream's own rule
+   * (ComfyUI API nodes, marked external-service nodes, known paid packs, nodes that ask for
+   * a credential), so Architect's policy check matches what upstream already warns about.
+   */
+  isPaidNode(def: ComfyUINodeDef): boolean;
 }
 
 /** The facade over upstream's live services. */
@@ -38,6 +45,7 @@ export function createUpstreamFacade(): UpstreamFacade {
     systemStats: () => getSystemStats({ diagnosticContext: "environment" }),
     objectInfo: () => getObjectInfo(),
     installedModels: async () => installedModelsFromListing(await listLocalModelsWithCoverage()),
+    isPaidNode: (def) => isApiNode(def) || isExternalServiceNode(def),
   };
 }
 

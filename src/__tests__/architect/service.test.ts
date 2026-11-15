@@ -60,6 +60,7 @@ function facade(overrides: Partial<UpstreamFacade> = {}): UpstreamFacade {
     comfyuiBaseUrl: () => "http://127.0.0.1:8188",
     systemStats: async () => STATS,
     objectInfo: async () => OBJECT_INFO,
+    isPaidNode: () => false,
     installedModels: async () => MODELS,
     ...overrides,
   };
