@@ -1,6 +1,6 @@
 # Style
 
-The project's standard for code, tool and interface conventions, written output, and the writing style of all prose. It applies to the Architect code, to `ext/`, to `AGENTS.md`, and to commit bodies, PR text, DONE entries and agents' replies. Upstream's own files keep upstream's style; an edit to one matches the code around it. The process is in [AGENTS](../AGENTS.md#process) until `SDLC.md` exists. Status: 2026-11-15 13:46.
+The project's standard for code, tool and interface conventions, written output, and the writing style of all prose. It applies to the Architect code, to `ext/`, to `AGENTS.md`, and to commit bodies, PR text, DONE entries and agents' replies. Upstream's own files keep upstream's style; an edit to one matches the code around it. The process is in [SDLC](SDLC.md), security in [SEC](SEC.md), dependencies in [SBOM](SBOM.md). Status: 2026-11-15 14:43.
 
 ## Code
 
@@ -64,7 +64,7 @@ Prose follows the [writing style](#writing-style) below. This section covers lay
 ### Documents
 
 - Upper-case file names only for central documents (`README`, `AGENTS`, `IDEA`, `ARCH`, `SEC`, `GAPS`, `SDLC`, `STYLE`, `SBOM`, `TODO`, `ROAD`, `DONE`, `design/SPEC`); everything else lower case with hyphens. `ext/input/` holds bootstrap material: the spec v1.0 is frozen apart from the product name ComfyUI Architect, BOOT stays as moved, and BASE gains a section per upstream sync.
-- Each central document opens with one paragraph on what it covers and links to its neighbours, then a status line with a timestamp to the minute (`Status: 2026-11-15 13:46.`, local time). Take every timestamp from the clock (`date '+%Y-%m-%d %H:%M'`), never estimate it.
+- Each central document opens with one paragraph on what it covers and links to its neighbours, then a status line with a timestamp to the minute (`Status: 2026-11-15 14:43.`, local time). Take every timestamp from the clock (`date '+%Y-%m-%d %H:%M'`), never estimate it.
 - Sentence-case headings, short paragraphs, tables for comparisons, bold lead-ins for list items that carry a term. Say what is decided, proposed and open.
 - `§` refers to the sections of [SPEC](design/SPEC.md); IDs from other documents carry their document (`GAPS Q2`, `TODO 1.3`).
 - ASCII diagrams on a fixed grid, at most 100 columns; Mermaid for flows, kept simple.
