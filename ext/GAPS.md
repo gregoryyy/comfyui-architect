@@ -1,6 +1,6 @@
 # Gaps
 
-Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-15 18:49.
+Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-15 20:21.
 
 How this file works:
 - Answers are recorded with date, time and author: `**Answer** (2026-11-15 13:30, Gregor Heinrich): …`. Corrections of assumptions record the same in the **Correction** column. Short answers are fine.
@@ -105,6 +105,8 @@ Q2 chose the package `@gregoryyy/comfyui-architect` and the command `comfyui-arc
 - **Proposed:** keep `comfyui-mcp` as the package, command and MCP server name while the fork runs from a source checkout and isn't published, and identify the fork through `src/fork-identity.ts`, `serverInfo.title` and the handshake line (done in milestone 1). Do the full rename, routed through one identity module, as its own milestone before the first publish. The alternative is the full rename now: a large change across upstream files and tests, with sync conflicts to match.
 - **Answer** (2026-11-15 18:49, Gregor Heinrich): keep `comfyui-mcp` as the package, as proposed.
 - **Resolved** (2026-11-15 18:49, Opus 5.5 for Gregor Heinrich): package, command and MCP server name stay `comfyui-mcp` while the fork runs from a source checkout and isn't published; the fork identifies itself through `src/fork-identity.ts`, `serverInfo.title` and the handshake line. The full rename, through one identity module, is its own milestone before the first publish ([ROAD](ROAD.md)); TODO 1.3.1–1.3.3 wait for it.
+- **Answer** (2026-11-15 20:21, Gregor Heinrich): keep `comfyui-mcp` for now; the rename comes together with a new README.md, command shorthands and the publishing preparation.
+- **Resolved** (2026-11-15 20:21, Opus 5.5 for Gregor Heinrich): the rename milestone also covers a new README.md, command shorthands and the publishing preparation ([ROAD](ROAD.md#unscheduled-ideas), TODO 1.3).
 
 ### Q12. Which image model families does the MVP certify first?
 
@@ -124,6 +126,7 @@ The installed `diffusion_models/flux1-schnell-fp8.safetensors` is an all-in-one 
 - **Proposed:** add a second FLUX.1-schnell recipe that uses `CheckpointLoaderSimple`, and make the file visible in `checkpoints/` (a symlink, or moving it), which is a change to the owner's model folders the owner makes. The alternative is downloading the two separate encoders (about 5 GB), which needs approval and comes with managed acquisition (ROAD phase 3).
 - **Answer** (2026-11-15 18:49, Gregor Heinrich): make it visible in `checkpoints/`.
 - **Resolved** (2026-11-15 18:49, Opus 5.5 for Gregor Heinrich): a symbolic link `checkpoints/flux1-schnell-fp8.safetensors` → `../diffusion_models/flux1-schnell-fp8.safetensors` in the second model root, and the recipe `recipe-flux1-schnell.ckpt-t2i`, which loads it with `CheckpointLoaderSimple` as ComfyUI's own `flux_schnell` template does. The `UNETLoader` recipe stays for an install with separate encoders.
+- **Answer** (2026-11-15 20:21, Gregor Heinrich): as proposed. Confirms the answer of 18:49: the second recipe and the file visible in `checkpoints/`.
 
 ### Q14. Should a model file of an unverified family block a candidate?
 

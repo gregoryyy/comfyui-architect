@@ -46,7 +46,7 @@ Phases with a goal and a measured gate each, and ideas that aren't scheduled. Th
 
 ## Unscheduled ideas
 
-- **The package rename** to `@gregoryyy/comfyui-architect` and the command `comfyui-architect`, through one identity module, as its own milestone before the first publish; until then package, command and server name stay `comfyui-mcp` (GAPS Q11, TODO 1.3.1–1.3.3).
+- **The package rename** to `@gregoryyy/comfyui-architect` and the command `comfyui-architect`, through one identity module, as its own milestone before the first publish, together with a new README.md, command shorthands and the publishing preparation; until then package, command and server name stay `comfyui-mcp` (GAPS Q11, TODO 1.3.1–1.3.3).
 - **Motif extraction** from arbitrary imported workflows (FR-16).
 - **Upstream extension points** for tool registration, per-action policy and agent pausing; if upstream accepts them, ComfyUI Architect becomes an add-on package instead of a fork (GAPS Q8).
 - **An unattended runner** that drives the same state machine through an explicit backend session (spec §5.2).
