@@ -933,7 +933,17 @@ function describeRejectedOutputs(nodeErrors: unknown): string | undefined {
 export async function enqueuePrompt(
   workflow: Record<string, unknown>,
   extraData?: Record<string, unknown>,
-  opts?: { front?: boolean; partialExecutionTargets?: readonly string[] },
+  opts?: {
+    front?: boolean;
+    partialExecutionTargets?: readonly string[];
+    /**
+     * A client-chosen prompt id (a UUID), sent as `prompt_id`. ComfyUI uses it instead of
+     * minting one, so a caller that stored the id before the POST can look the job up in
+     * /queue and /history when the response is lost, instead of submitting again.
+     * Ignored in cloud mode.
+     */
+    promptId?: string;
+  },
 ): Promise<{ prompt_id: string; queue_remaining?: number; rejectedOutputs?: string }> {
   if (isCloudMode()) return cloudClient.enqueuePrompt(workflow, extraData, opts);
 
@@ -952,6 +962,7 @@ export async function enqueuePrompt(
     body: JSON.stringify({
       prompt: workflow,
       client_id: "comfyui-mcp",
+      ...(opts?.promptId ? { prompt_id: opts.promptId } : {}),
       ...(extraData ? { extra_data: extraData } : {}),
       ...(opts?.front ? { front: true } : {}),
       ...(opts?.partialExecutionTargets?.length
