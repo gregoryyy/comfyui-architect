@@ -1,0 +1,162 @@
+{
+  "schemaVersion": 1,
+  "id": "recipe-fixture.t2i-basic",
+  "revision": 1,
+  "title": "Fixture: checkpoint text to image",
+  "description": "Test data only. One checkpoint, positive and negative prompt, KSampler, VAE decode, save.",
+  "kind": "image",
+  "operations": ["text_to_image"],
+  "graph": {
+    "1": {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": { "ckpt_name": "" },
+      "_meta": { "title": "Load Checkpoint" }
+    },
+    "2": {
+      "class_type": "CLIPTextEncode",
+      "inputs": { "text": "", "clip": ["1", 1] },
+      "_meta": { "title": "Positive prompt" }
+    },
+    "3": {
+      "class_type": "CLIPTextEncode",
+      "inputs": { "text": "", "clip": ["1", 1] },
+      "_meta": { "title": "Negative prompt" }
+    },
+    "4": {
+      "class_type": "EmptyLatentImage",
+      "inputs": { "width": 1024, "height": 1024, "batch_size": 1 }
+    },
+    "5": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": ["1", 0],
+        "seed": 0,
+        "steps": 25,
+        "cfg": 6.5,
+        "sampler_name": "euler",
+        "scheduler": "normal",
+        "positive": ["2", 0],
+        "negative": ["3", 0],
+        "latent_image": ["4", 0],
+        "denoise": 1
+      }
+    },
+    "6": {
+      "class_type": "VAEDecode",
+      "inputs": { "samples": ["5", 0], "vae": ["1", 2] }
+    },
+    "7": {
+      "class_type": "SaveImage",
+      "inputs": { "images": ["6", 0], "filename_prefix": "architect" }
+    }
+  },
+  "slots": [
+    {
+      "id": "checkpoint",
+      "label": "Checkpoint",
+      "valueType": "model_file",
+      "target": { "node": "1", "input": "ckpt_name" },
+      "required": true,
+      "modelFolder": "checkpoints",
+      "modelFamily": "sdxl"
+    },
+    {
+      "id": "prompt",
+      "label": "Prompt",
+      "valueType": "string",
+      "target": { "node": "2", "input": "text" },
+      "required": true,
+      "fromTask": "intent"
+    },
+    {
+      "id": "negative_prompt",
+      "label": "Negative prompt",
+      "valueType": "string",
+      "target": { "node": "3", "input": "text" },
+      "required": false,
+      "default": "blurry, low quality"
+    },
+    {
+      "id": "width",
+      "label": "Width",
+      "valueType": "int",
+      "target": { "node": "4", "input": "width" },
+      "required": true,
+      "fromTask": "media.output.width",
+      "min": 64,
+      "max": 4096
+    },
+    {
+      "id": "height",
+      "label": "Height",
+      "valueType": "int",
+      "target": { "node": "4", "input": "height" },
+      "required": true,
+      "fromTask": "media.output.height",
+      "min": 64,
+      "max": 4096
+    },
+    {
+      "id": "batch_size",
+      "label": "Images per run",
+      "valueType": "int",
+      "target": { "node": "4", "input": "batch_size" },
+      "required": true,
+      "fromTask": "media.output.count",
+      "min": 1,
+      "max": 8
+    },
+    {
+      "id": "seed",
+      "label": "Seed",
+      "valueType": "seed",
+      "target": { "node": "5", "input": "seed" },
+      "required": true,
+      "default": 0
+    },
+    {
+      "id": "steps",
+      "label": "Steps",
+      "valueType": "int",
+      "target": { "node": "5", "input": "steps" },
+      "required": true,
+      "default": 25,
+      "min": 1,
+      "max": 150
+    },
+    {
+      "id": "cfg",
+      "label": "CFG scale",
+      "valueType": "float",
+      "target": { "node": "5", "input": "cfg" },
+      "required": true,
+      "default": 6.5,
+      "min": 0,
+      "max": 30
+    },
+    {
+      "id": "sampler",
+      "label": "Sampler",
+      "valueType": "enum",
+      "target": { "node": "5", "input": "sampler_name" },
+      "required": true,
+      "default": "euler",
+      "choices": ["euler", "euler_ancestral", "dpmpp_2m"]
+    },
+    {
+      "id": "scheduler",
+      "label": "Scheduler",
+      "valueType": "enum",
+      "target": { "node": "5", "input": "scheduler" },
+      "required": true,
+      "default": "normal",
+      "choices": ["normal", "karras"]
+    }
+  ],
+  "outputs": [{ "role": "image", "node": "7" }],
+  "dependencies": {
+    "nodeClasses": ["CheckpointLoaderSimple", "CLIPTextEncode", "EmptyLatentImage", "KSampler", "VAEDecode", "SaveImage"]
+  },
+  "certification": "fixture",
+  "evidence": []
+}
