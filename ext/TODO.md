@@ -94,3 +94,25 @@ Exit (spec §20): a user can describe an image task, compare installed-asset can
 - [x] 2.7 The skill `plugin/skills/comfyui-architect/` and the command `plugin/commands/architect.md`. Written in `architect/skills/` and `architect/commands/` and served as MCP prompts while the flag is on; a file in `plugin/` would change the flag-off surface and upstream's README counts ([ARCH](ARCH.md#decision-log))
   - [x] 2.7.1 The skill: when to plan with Architect, the action order, what the agent may and may not supply (spec §9.2), and how to present candidates and blockers
   - [x] 2.7.2 The command, and both registered as MCP prompts with the Architect tools, absent with the flag off
+
+## 3. Managed execution and evidence (spec Phase 2)
+
+Exit (spec §20): an approved candidate executes locally, survives reconnect and restart, records its outcome and can't bypass its effect restrictions. Gate ([ROAD](ROAD.md) phase 2): AT-05, AT-06, AT-07, AT-08 and AT-10. The only effect in this milestone is a local render of a selected candidate, with its cancellation; downloads and installs come with milestone 4 (ROAD phase 3). Research: [research/approval-channel.md](research/approval-channel.md).
+
+- [ ] 3.1 Contracts and storage (spec §7.1, §15.2, §15.3): `ActionPlan`, `ApprovalRequest`, `ApprovalGrant`, `RunRecord` with its events, `EvaluationRecord` and `ResourceLease` as Zod schemas read through `parseStored`; migration 2 adds `action_plans`, `approval_requests`, `approval_grants`, `operations`, `runs`, `run_events`, `evaluations` and `resource_leases`. Kind-neutral: what is image-specific lives in the evaluator, not the record
+  - [ ] 3.1.1 Schemas, with tests for valid, missing, newer and unknown-property records
+  - [ ] 3.1.2 Migration and repositories; the run state machine of §15.3 as a transition table with guards, each transition stored with time, principal and reason before it's announced
+- [x] 3.2 *(decision)* The approval channel for external MCP clients (GAPS Q20: form elicitation where the client supports it, a terminal command as fallback) and what Architect mode does with upstream's effectful tools (GAPS Q21: `1` assist keeps them, `managed` hides them on every route); answered 2026-11-15 21:09
+- [ ] 3.3 Action plans and grants (spec §14.1, §14.2): `architect_run prepare` turns a selected candidate into an action plan with a content hash (graph fingerprint, target, budgets, expiry) and opens an approval request; a grant binds that hash, target, limits and expiry, is consumed by one start, and is invalidated by any material change. No model-callable tool creates or widens a grant
+  - [ ] 3.3.1 Action plan and request, with the plan hash computed from canonical JSON
+  - [ ] 3.3.2 Grant capture through the channel Q20 chooses; the channel is recorded in the grant
+  - [ ] 3.3.3 Negative tests: a model-supplied grant, a grant for another hash or target, an expired, consumed or invalidated grant, a changed environment between grant and start (SEC T1)
+- [ ] 3.4 Effect admission (spec §14.3, AT-05): one service gate every Architect effect passes, the same on direct tools, compact `call_tool` and the panel route; a test drives each route with and without a grant
+- [ ] 3.5 The durable run controller (spec §15.3, §15.4, AT-06, AT-07)
+  - [ ] 3.5.1 Facade: submission with a client-chosen prompt ID, queue and history reads, interrupt of one prompt ID. Submitting with a prompt ID needs an optional parameter on upstream's `enqueuePrompt` (`src/comfyui/client.ts`), a seam recorded in ARCH; ComfyUI 0.44 accepts a client UUID as `prompt_id`
+  - [ ] 3.5.2 The controller: idempotency key per target, task and plan revision; the attempt is stored before the network call; a lost response enters `OUTCOME_UNKNOWN` and reconciles against queue and history, never resubmits blindly; progress by polling; resume of every non-final run after a restart
+  - [ ] 3.5.3 Cancellation of Architect's own prompt only: dequeue if pending, interrupt if running and its prompt ID matches; never clear the queue; tests with unrelated jobs queued and running
+- [ ] 3.6 Resource coordination (spec §11.3, §11.4, AT-10): a lease per memory pool with owner, heartbeat, expiry and recovery; one render per pool; with an unknown estimate the run counts as the bounded probe the grant names; a local reasoning model resident on the same pool blocks the render unless the user permits releasing it (`manageSharedModelResidency` off by default); unified memory counted once
+- [ ] 3.7 Evaluation and review (spec §13.1, §13.2, AT-08): artifact existence and readability, count, format and dimensions against the task, run completion; the user's verdict through the trusted channel; an agent's opinion stored as the agent's, never as the user's; execution, acceptance and user verdict kept apart
+- [ ] 3.8 Run export and lineage (spec §15.1, FR-11): `runs/<run-id>/run.json` and `evaluation.json` under the plan's artifacts, linking task, plan, graph, dependency lock, environment, prompt ID and outputs
+- [ ] 3.9 The skill and command describe the run actions; a live run against the reference target through `stdio-smoke.mjs --run` (e2e-runner)

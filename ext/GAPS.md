@@ -1,6 +1,6 @@
 # Gaps
 
-Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-15 20:21.
+Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-15 21:09.
 
 How this file works:
 - Answers are recorded with date, time and author: `**Answer** (2026-11-15 13:30, Gregor Heinrich): …`. Corrections of assumptions record the same in the **Correction** column. Short answers are fine.
@@ -172,6 +172,27 @@ The exit asks to compare installed-asset candidates. On the reference machine on
 
 - **Answer** (2026-11-15 18:17, Gregor Heinrich): ok.
 - **Resolved** (2026-11-15 18:17, Opus 5.5 for Gregor Heinrich): the fixture stays as captured.
+
+### Q20. Through which channel does the user approve a run and give a verdict?
+
+A grant must come from the user, never from the agent (spec §14.2); the same holds for the user's verdict on an output. [research/approval-channel.md](research/approval-channel.md) compares the channels:
+- **Form elicitation:** the client shows a dialog the model can't answer. The Claude Code CLI documents it, interactive sessions only. In the VS Code extension it was reported to decline automatically (issues open, current version untested). An `Elicitation` hook in the user's settings can accept without a dialog.
+- **A terminal command** the user runs, which shows the stored action plan and asks for confirmation against its hash. It works with any client. An agent with a shell on the same account can run it too, and Claude Code's Bash deny rules are text matches, not a boundary.
+- **A loopback page** has the same limit against a same-account agent.
+
+No channel keeps out an agent that has a shell and the user's account. Spec §14.3 states that boundary: a strict deployment restricts the host agent as well.
+
+- **Proposed:** form elicitation when the client declares it, with the terminal command `comfyui-mcp architect approve <request-id>` as the fallback (and the only channel in clients that decline elicitation). Both show the action plan and its short hash. The grant records the channel. The README and SEC state the boundary and a strict setup (Bash deny rule for the command, `allowManagedHooksOnly`, sandbox). The user's verdict on an output uses the same channels; a verdict the agent relays is stored as `agent_reported`.
+- **Answer** (2026-11-15 21:09, Gregor Heinrich): elicitation where the client supports it, the terminal command as fallback, as proposed.
+- **Resolved** (2026-11-15 21:09, Opus 5.5 for Gregor Heinrich): TODO 3.3.2 and 3.7 implement both channels; the grant and the verdict record their channel.
+
+### Q21. With Architect on, do upstream's effectful tools stay available?
+
+With `COMFYUI_ARCHITECT=1` today, the agent still has upstream's `enqueue_workflow`, `generate_image`, `download_model`, `install_custom_node`, `restart_comfyui` and the queue actions, which run without an Architect grant. Spec §14.3: Architect mode "SHOULD expose only the planning tools and approved inspection tools", disabling direct render submission and installs where the host allows. AT-05 requires that no unapproved effect succeeds on any route.
+
+- **Proposed:** two levels. `COMFYUI_ARCHITECT=1` (assist) keeps upstream's tools as they are, and grants govern Architect's own runs; AT-05 is tested for those. `COMFYUI_ARCHITECT=managed` hides upstream's effectful tools and actions through the existing registration filter, on direct, compact and panel routes, so every effect goes through `architect_run`. Both levels in milestone 3.
+- **Answer** (2026-11-15 21:09, Gregor Heinrich): two levels, as proposed.
+- **Resolved** (2026-11-15 21:09, Opus 5.5 for Gregor Heinrich): `COMFYUI_ARCHITECT=1` is assist, `COMFYUI_ARCHITECT=managed` hides upstream's effectful tools on every route (TODO 3.4).
 
 ## Assumptions
 
