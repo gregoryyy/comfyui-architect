@@ -64,6 +64,7 @@ Actions is off on a new fork. Public repositories run it at no cost, but enablin
 - **Answer** (2026-11-15 13:45, Gregor Heinrich): Enable Actions, and disable the tag workflows, as proposed.
 - **Resolved** (2026-11-15 13:45, Opus 5.5 for Gregor Heinrich): TODO 1.9: `release.yml` and `mcp-registry.yml` are disabled when Actions is enabled, until the fork's identity and secrets exist.
 - **Answer** (2026-11-15 18:49, Gregor Heinrich): enable Actions on the fork, run CI, and disable it again if it doesn't work on GitHub.
+- **Status** (2026-11-15 19:03, Opus 5.5): Actions is enabled with the two tag workflows disabled, but no run starts until the owner confirms the fork's workflows once in the Actions tab; then the next push to PR #8 runs CI (TODO 1.9).
 
 ### Q7. When does the companion panel fork start?
 

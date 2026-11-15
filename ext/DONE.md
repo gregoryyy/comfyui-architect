@@ -2,6 +2,37 @@
 
 The progress log, newest entry on top. Each entry: `## YYYY-MM-DD HH:MM — Title` (time from `date`), the TODO items and PR or commit, an `Agent:` line, then **Implementation notes**, **Deviations** and **Insights**. The plan is in [TODO](TODO.md).
 
+## 2026-11-15 19:03 — Milestone 2 follow-ups: FLUX checkpoint, curated recipes, panel in the browser
+
+TODO items: 1.2.4, 1.10 (done), notes on 1.3, 1.9 and 2.4.4. GAPS Q6, Q11–Q16 answered. PR #8, branch `feat/milestone-2-followups`, built on #7.
+
+Agent: Opus 5.5, subagents: none.
+
+### Implementation notes
+
+- **FLUX.1-schnell (GAPS Q13):**
+  - `checkpoints/flux1-schnell-fp8.safetensors` is a symbolic link to the all-in-one file in `diffusion_models/` of the second model root.
+  - The new recipe `recipe-flux1-schnell.ckpt-t2i` loads it with `CheckpointLoaderSimple`, node for node as ComfyUI's `flux_schnell` template does. It's `proposed`.
+  - `stdio-smoke.mjs --plan` against the Desktop install now gives two feasible candidates, Z-Image Turbo and FLUX.1-schnell, and exports the first. The `UNETLoader` recipe stays blocked for lack of separate encoders.
+- **The three first recipes** are `curated` at revision 3, with a `maintainer_review` entry recording the owner's acceptance. A test ties `curated` to that evidence.
+- **The captured `/object_info` fixture** gains `CheckpointLoaderSimple` from the live Desktop.
+- **GAPS answers:**
+  - Q11: the package stays `comfyui-mcp`, and the rename becomes its own milestone before the first publish (ROAD, ARCH, TODO 1.3).
+  - Q14–Q16: the proposals, as implemented in #7.
+- **Browser panel checks:**
+  - Setup: a headless Chromium (Playwright from the npx cache with the cached browser, nothing installed) against the reference install on port 8190 and the fork's `connect` server with the flag on.
+  - With "Autostart MCP" off, the Agent tab connects to the fork's server ([research/panel-connection.md](research/panel-connection.md#observed-with-the-panel-installed)).
+
+### Deviations
+
+- **CI didn't run.** Actions is enabled with the tag workflows disabled, but a fork's workflows start only after the owner confirms them in the Actions tab, and no browser that has the owner's GitHub session was reachable from this session. So TODO 1.9 stays open.
+- **The greeting wasn't seen in the browser.** The one agent turn tried was retired after 5 s by the bridge's flipping connection, which is baseline behaviour, so neither the greeting nor the agent's `architect_*` tools were observed there. No second turn was tried: the panel had fallen back to a ChatGPT conversation, and a retry could have spent another subscription.
+
+### Insights
+
+- The stock panel's flipping status isn't only cosmetic. A dropped socket that re-hellos is taken for a workflow switch, which retires the agent mid-turn and switches the panel's conversation. Panel work in a later milestone depends on that upstream behaviour.
+- Testing the panel leaves state in the target install: settings (`autostartMcp`, `bridgeUrl.claude`) and a saved workflow. A browser test needs its own ComfyUI user directory.
+
 ## 2026-11-15 18:28 — Milestone 2: one end-to-end planning slice
 
 TODO items: 2.1–2.7 with their subtasks; notes on 1.3.1. GAPS Q14–Q19 (new; Q17–Q19 answered). PR #7, branch `feat/milestone-2`.

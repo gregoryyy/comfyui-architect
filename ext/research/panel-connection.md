@@ -1,6 +1,6 @@
 # Panel connection: how the stock panel finds and starts a server
 
-How upstream's sidebar panel (`artokun/comfyui-mcp-panel`) connects to a comfyui-mcp server, for GAPS A5, A6 and A9 and TODO 1.2.4 and 1.10. Facts were read from the panel's source at commit `54603d56` (2026-10-24, version 0.15.184) and from the fork's server code at `707474d2`, on 2026-11-15. The section on observed behaviour comes from runs on 2026-11-15 with the panel linked into the reference install (ComfyUI 0.44.2 on port 8190); everything else is read from the code. Status: 2026-11-15 17:05.
+How upstream's sidebar panel (`artokun/comfyui-mcp-panel`) connects to a comfyui-mcp server, for GAPS A5, A6 and A9 and TODO 1.2.4 and 1.10. Facts were read from the panel's source at commit `54603d56` (2026-10-24, version 0.15.184) and from the fork's server code at `707474d2`, on 2026-11-15. The section on observed behaviour comes from runs on 2026-11-15 with the panel linked into the reference install (ComfyUI 0.44.2 on port 8190); everything else is read from the code. Status: 2026-11-15 19:03.
 
 ## Ports
 
@@ -32,7 +32,12 @@ Runs on 2026-11-15: the panel (linked into `~/Documents/opt/flux/ComfyUI/custom_
 - **The panel agent's tools:** the orchestrator builds the environment of the agent's comfyui tool server from an allowlist (`buildComfyuiMcpEnv` in `src/services/panel-secrets.ts`), so before TODO 1.12 `COMFYUI_ARCHITECT` never reached it and the panel's agent had no `architect_*` tools. The fork now forwards it next to upstream's tool-policy variables. Checked by a unit test; a live agent turn wasn't run, since it spends the subscription.
 - **The direct `call_tool` channel** the panel and the mobile client use refuses `architect_inspect` ("tool \"architect_inspect\" is not permitted"): it admits a fixed list of read-only tools (`src/orchestrator/call-tool-admission.ts`). Nothing changed there.
 - **Cosmetic:** the terminal banner of `connect` still says "ComfyUI MCP", and the log line "Found ComfyUI on port 8188" comes from auto-detection before the given URL takes over.
-- **Not tested:** the browser side (the Agent tab, its "Autostart MCP" setting and the Connect button); that needs someone at the browser.
+- **The browser side** (2026-11-15 18:56–19:00): a headless Chromium (Playwright) loaded the reference install's page with "Autostart MCP" set off through ComfyUI's settings API, with the fork's `connect` server running and `COMFYUI_ARCHITECT=1`.
+  - The Agent tab ("ComfyUI Agent Panel") opened and dialled `ws://127.0.0.1:9199`. The server logged the tab connecting, and no launcher started.
+  - The panel's status read "connecting" and "connected" in turn over 40 s, from the unanswered hellos above.
+  - One message ("list the tool names you have that start with architect_") reached the orchestrator. It spawned a Claude agent on the subscription (`claude-opus-5-5`, `apiKeySource=none`).
+  - Five seconds later a dropped socket re-helloed as a workflow switch. The orchestrator retired the tab mid-turn, the agent stopped without answering, and the panel showed a ChatGPT conversation. So the greeting and the agent's `architect_*` tools weren't observed in the browser. The unit test of TODO 1.12 is still the evidence for both.
+  - Afterwards, the reference install's settings had `comfyui-mcp.autostartMcp: true` (the default) and `comfyui-mcp.bridgeUrl.claude` set, written during the runs. The panel had also saved the canvas as a workflow file, which was deleted.
 
 ## Consequences
 
