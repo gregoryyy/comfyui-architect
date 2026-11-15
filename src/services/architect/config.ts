@@ -1,8 +1,8 @@
 // Architect's configuration, read in one place (TODO 1.5.1).
 //
-// Kept here rather than in src/config.ts so the upstream file stays untouched; the
-// domain code receives values from these functions and never reads the environment
-// itself.
+// Kept here rather than in src/config.ts so the upstream file stays untouched. Two
+// settings are read where their rule lives: the data directory in store.ts and the
+// snapshot's maximum age in environment.ts; ARCHITECT_ENV_KEYS lists all of them.
 
 /** Environment variable that switches the Architect tools on. Off by default. */
 export const ARCHITECT_FLAG_ENV = "COMFYUI_ARCHITECT";

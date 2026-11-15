@@ -16,7 +16,7 @@
 
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
 import type Database from "better-sqlite3";
 import { z } from "zod";
@@ -44,7 +44,12 @@ export const ARCHITECT_DB_FILE = "architect.db";
  */
 export function architectDataDir(env: NodeJS.ProcessEnv = process.env): string {
   const explicit = env.ARCHITECT_DATA_DIR?.trim();
-  if (explicit) return explicit;
+  if (explicit) {
+    // A relative path resolves against each process's working directory, so the stdio
+    // route and the panel's tool server would open different databases (SEC T9).
+    if (!isAbsolute(explicit)) throw new Error(`ARCHITECT_DATA_DIR must be an absolute path, got "${explicit}"`);
+    return explicit;
+  }
   const base = env.COMFYUI_MCP_DATA_DIR?.trim() || join(homedir(), ".comfyui-mcp");
   return join(base, "architect");
 }

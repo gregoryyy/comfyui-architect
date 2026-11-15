@@ -37,4 +37,11 @@ describe("the Architect prompts (TODO 2.7)", () => {
     expect(text).not.toMatch(/^---/);
     expect(text).not.toContain("$ARGUMENTS");
   });
+
+  it("fills the user's text literally, so replacement patterns like $& stay as typed", async () => {
+    const { client } = await connected({ COMFYUI_ARCHITECT: "1" });
+    const res = await client.getPrompt({ name: "architect", arguments: { task: "cost $& and $$ and $'" } });
+    const first = res.messages[0].content;
+    expect(first.type === "text" ? first.text : "").toContain("cost $& and $$ and $'");
+  });
 });

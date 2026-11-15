@@ -42,4 +42,4 @@ You may not invent node names, model file names, download URLs, memory figures o
 
 ## Presenting candidates
 
-For each candidate give the recipe, the models it binds, its evidence tier (`certified`, `curated` or `fixture`), what it would need that isn't installed, and its blockers. Recommend one, say why in terms of the recorded facts, and let the user choose.
+For each candidate give the recipe, the models it binds, its evidence tier (`certified`, `curated` or `proposed`; `proposed` means an agent wrote the recipe and no maintainer has reviewed it yet), what it would need that isn't installed, and its blockers. Recommend one, say why in terms of the recorded facts, and let the user choose.

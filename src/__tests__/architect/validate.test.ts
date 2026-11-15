@@ -18,6 +18,12 @@ import {
 import { fixtureObjectInfo, fixtureRecipe, fixtureSnapshot, fixtureTask } from "./fixtures/load.js";
 
 const CKPT = "sd_xl_base_1.0.safetensors";
+
+/** The text-to-image fixture without a default file, so a binding has to name one. */
+function t2iWithoutDefault(): Recipe {
+  const r = fixtureRecipe("t2i-basic");
+  return { ...r, slots: r.slots.map((s) => (s.id === "checkpoint" ? { ...s, default: undefined } : s)) };
+}
 const T2I_BINDINGS = { checkpoint: CKPT, seed: 7 };
 
 function byId(checks: CheckResult[], id: string): CheckResult {
@@ -78,14 +84,16 @@ describe("validateGraph: complete environment", () => {
     expect(byId(report.checks, "runtime.execution")).toMatchObject({ verdict: "not_applicable", hard: false });
   });
 
-  it("passes the upscale fixture", () => {
+  it("fails nothing in the upscale fixture, and leaves the output size it can't decide unknown", () => {
     const { report } = run({
       recipe: fixtureRecipe("upscale-model"),
       task: fixtureTask({ media: { kind: "image", operation: "upscale", output: { width: 2048, height: 2048 } } }),
       bindings: { source_image: "example.png", upscale_model: "4x-UltraSharp.pth" },
     });
     expect(hardFails(report.checks)).toEqual([]);
-    expect(report.overall).toBe("pass");
+    const hardUnknowns = report.checks.filter((c) => c.hard && c.verdict === "unknown").map((c) => c.id);
+    expect(hardUnknowns).toEqual(["contract.task.width", "contract.task.height"]);
+    expect(report.overall).toBe("unknown");
   });
 
   it("validates a graph the caller passes, when it is the compiled one", () => {
@@ -131,7 +139,7 @@ describe("contract layer", () => {
   });
 
   it("carries the compiler's failures and checks no graph when compilation failed", () => {
-    const { report } = run({ bindings: { seed: 7 } });
+    const { report } = run({ recipe: t2iWithoutDefault(), bindings: { seed: 7 } });
     expect(byId(report.checks, "contract.slot.checkpoint").verdict).toBe("fail");
     expect(byId(report.checks, "structure.graph")).toMatchObject({ verdict: "unknown", hard: true });
     expect(byId(report.checks, "native_types.graph")).toMatchObject({ verdict: "unknown", hard: true });
@@ -239,21 +247,39 @@ describe("native types layer", () => {
     });
   });
 
-  it("leaves a model file's COMBO to the dependencies layer", () => {
-    // Listed by the model probe, not in the object_info COMBO: dependencies decides.
+  it("fails a model file the folder lists but the loader doesn't offer (GAPS Q13)", () => {
+    // Listed by the model probe, not in the object_info COMBO: /prompt would refuse it.
     const { report } = run({ bindings: { checkpoint: "other/not-in-combo.safetensors" } });
-    expect(byId(report.checks, "native_types.combo.1.ckpt_name")).toMatchObject({ verdict: "not_applicable", hard: false });
+    expect(byId(report.checks, "native_types.combo.1.ckpt_name")).toMatchObject({ verdict: "fail", hard: true });
     expect(byId(report.checks, "dependencies.model.checkpoint").verdict).toBe("pass");
-    expect(report.overall).toBe("pass");
+    expect(report.overall).toBe("fail");
+  });
+
+  it("passes a model file the loader offers", () => {
+    const { report } = run();
+    expect(byId(report.checks, "native_types.combo.1.ckpt_name")).toMatchObject({ verdict: "pass", hard: true });
+  });
+
+  it("fails a literal input the node class doesn't declare", () => {
+    const r = fixtureRecipe("t2i-basic");
+    const typo = { ...r, graph: { ...r.graph, "5": { ...r.graph["5"], inputs: { ...r.graph["5"].inputs, stpes: 20 } } } };
+    const { report } = run({ recipe: typo });
+    expect(byId(report.checks, "native_types.input.5.stpes")).toMatchObject({ verdict: "fail", hard: true });
   });
 });
 
 describe("semantic types layer", () => {
-  it("is unknown, not hard, for a slot annotated with a family", () => {
+  it("is a soft unknown for the recipe's own file in an annotated slot", () => {
     const { report } = run();
     const c = byId(report.checks, "semantic_types.model_family.checkpoint");
     expect(c).toMatchObject({ verdict: "unknown", hard: false });
     expect(c.message).toContain("isn't verified yet");
+  });
+
+  it("is a hard unknown for any other file, so it can't make a candidate feasible (GAPS Q14)", () => {
+    const { report } = run({ recipe: t2iWithoutDefault() });
+    expect(byId(report.checks, "semantic_types.model_family.checkpoint")).toMatchObject({ verdict: "unknown", hard: true });
+    expect(report.overall).toBe("unknown");
   });
 
   it("is not applicable for a slot without a family", () => {

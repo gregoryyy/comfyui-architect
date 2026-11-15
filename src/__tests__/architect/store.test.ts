@@ -144,6 +144,10 @@ afterEach(() => {
 });
 
 describe("architectDataDir", () => {
+  it("refuses a relative ARCHITECT_DATA_DIR, which each process would resolve differently", () => {
+    expect(() => architectDataDir({ ARCHITECT_DATA_DIR: "data/arch" })).toThrow(/absolute/);
+  });
+
   it("uses ARCHITECT_DATA_DIR, trimmed, when it is set", () => {
     expect(architectDataDir({ ARCHITECT_DATA_DIR: "  /data/arch  ", COMFYUI_MCP_DATA_DIR: "/data/up" })).toBe("/data/arch");
   });

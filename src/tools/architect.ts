@@ -49,7 +49,9 @@ function errorEnvelope(err: unknown): ResultEnvelope {
     artifacts: [],
     error: known
       ? { code: err.code, retryable: err.retryable, nextStep: err.nextStep }
-      : { code: "OUTCOME_UNKNOWN", retryable: false, nextStep: "Report this error; the request may or may not have been recorded." },
+      : // Not OUTCOME_UNKNOWN: spec §15.4 keeps that for a submission whose result was lost,
+        // which a reconcile loop acts on. Planning submits nothing.
+        { code: "INTERNAL_ERROR", retryable: false, nextStep: "Report this error; the request may or may not have been recorded." },
   };
 }
 
@@ -159,6 +161,7 @@ export function registerArchitectTools(
               ...r.missingFields.map((m) => `missing: ${m}`),
               ...r.environment.readiness.reasons.map((x) => `environment: ${x}`),
               ...(r.recipes.length === 0 ? [`no recipe in the catalog solves ${r.task.media.kind}/${r.task.media.operation}`] : []),
+              ...p.catalogWarnings(),
             ];
             return reply(okEnvelope(`Task ${r.task.id} r${r.task.revision}, plan ${r.plan.id} (${r.plan.state}); ${r.recipes.length} fitting recipe(s).`, r, warnings));
           }
@@ -168,6 +171,7 @@ export function registerArchitectTools(
             const warnings = [
               ...r.readiness.reasons.map((x) => `environment: ${x}`),
               ...(r.truncated ? [`enumeration stopped at ${r.expanded} candidates`] : []),
+              ...p.catalogWarnings(),
             ];
             if (r.candidates.length === 0 || feasible === 0) {
               return reply({
@@ -249,7 +253,7 @@ export function registerArchitectPrompts(server: McpServer, env: NodeJS.ProcessE
     },
     ({ task }) => ({
       messages: [
-        { role: "user" as const, content: { type: "text" as const, text: `${command.replace("$ARGUMENTS", task)}\n\n---\n\n${skill}` } },
+        { role: "user" as const, content: { type: "text" as const, text: `${command.replace("$ARGUMENTS", () => task)}\n\n---\n\n${skill}` } },
       ],
     }),
   );

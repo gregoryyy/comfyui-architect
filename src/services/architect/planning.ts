@@ -6,7 +6,7 @@
 // on export, files under `ARCHITECT_DATA_DIR/artifacts/`. Nothing here downloads, installs,
 // submits a prompt or touches the canvas (milestone 2's exit, spec §20).
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import type { ComfyUINodeDef, ObjectInfo } from "../../comfyui/types.js";
 import { FORK_IDENTITY, UPSTREAM_BASELINE } from "../../fork-identity.js";
@@ -27,7 +27,7 @@ import {
 import type { ArchitectService } from "./service.js";
 import type { ArchitectStore } from "./store.js";
 import type { UpstreamFacade } from "./upstream.js";
-import { validateGraph } from "./validate.js";
+import { overallVerdict, validateGraph } from "./validate.js";
 
 /** A recipe source the catalog loads: the shipped folder, and in tests a fixture folder. */
 export interface RecipeSource {
@@ -77,6 +77,13 @@ function emptyBlockers(): Plan["blockers"] {
 
 export class ArchitectPlanning {
   private synced: CatalogSyncResult | undefined;
+  /**
+   * The recipes the last sync loaded and stored, as they are in their files now. Planning
+   * uses these, never the store's whole history: a recipe whose file was deleted, became
+   * invalid or changed without a revision bump stays in architect.db for the plans that
+   * name it, but isn't planned with again (TODO 2.4.1).
+   */
+  private current: Recipe[] = [];
 
   constructor(private readonly deps: PlanningDeps) {}
 
@@ -85,6 +92,7 @@ export class ArchitectPlanning {
     if (this.synced && !force) return this.synced;
     const { store, sources, now } = this.deps;
     const result: CatalogSyncResult = { loaded: 0, errors: [], missingSources: [] };
+    const current: Recipe[] = [];
     for (const src of sources) {
       const loaded = loadRecipeDir(src.dir);
       if (!loaded.dirFound) {
@@ -96,6 +104,7 @@ export class ArchitectPlanning {
       for (const r of loaded.recipes) {
         try {
           store.putRecipe(r.recipe, src.id, r.contentHash);
+          current.push(r.recipe);
           result.loaded += 1;
         } catch (err) {
           result.errors.push({ source: src.id, file: r.file, message: err instanceof Error ? err.message : String(err) });
@@ -103,12 +112,22 @@ export class ArchitectPlanning {
       }
     }
     this.synced = result;
+    this.current = current;
     return result;
   }
 
   private recipes(kind?: Recipe["kind"]): Recipe[] {
     this.syncCatalog();
-    return this.deps.store.listRecipes(kind ? { kind } : {});
+    return this.current.filter((r) => kind === undefined || r.kind === kind);
+  }
+
+  /** What went wrong loading the catalog, as warnings each planning step carries (TODO 2.4.1). */
+  catalogWarnings(): string[] {
+    const sync = this.syncCatalog();
+    return [
+      ...sync.errors.map((e) => `recipe file ${e.file}: ${e.message}`),
+      ...sync.missingSources.map((src) => `recipe source ${src} not found: its recipes are unknown`),
+    ];
   }
 
   /** A snapshot fit for planning: the given one if still usable, else a new one, stored. */
@@ -267,6 +286,9 @@ export class ArchitectPlanning {
       throw new PlanningError("GRAPH_CONFLICT", `recipe ${candidate.recipeId} r${candidate.recipeRevision} is no longer in the catalog`, "Propose again.");
     }
     const compiled = compileRecipe(recipe, task, candidate.bindings);
+    if (candidate.graphFingerprint === undefined) {
+      throw new PlanningError("GRAPH_CONFLICT", `candidate ${candidate.id} never compiled: ${blockingChecks(candidate.validation).join("; ") || "see its validation report"}`, "Choose another candidate or propose again.");
+    }
     if (!compiled.graph || compiled.fingerprint !== candidate.graphFingerprint) {
       throw new PlanningError("GRAPH_CONFLICT", `candidate ${candidate.id} no longer compiles to the graph it was validated as`, "Propose again.");
     }
@@ -305,8 +327,23 @@ export class ArchitectPlanning {
     });
     const status: PlanCandidate["status"] = outcome.report.overall === "pass" ? "feasible" : outcome.report.overall === "unknown" ? "diagnostic" : "blocked";
     const updated = store.putCandidate({ ...candidate, environmentId: snapshot.id, validation: outcome.report, dependencyDelta: outcome.dependencyDelta, status });
-    store.putPlan({ ...plan, updatedAt: now().toISOString() });
-    return { candidate: candidateSummary(updated), environmentId: snapshot.id, previous: candidate.validation.overall };
+    // A selection holds only while its candidate is feasible: when a recheck finds it no
+    // longer is, the selection is withdrawn, so export can't write a graph that fails.
+    const deselect = plan.state === "SELECTED" && plan.selectedCandidateId === candidate.id && status !== "feasible";
+    const statuses = plan.candidateIds.map((id) => (id === candidate.id ? status : store.getCandidate(id)?.status));
+    const { selectedCandidateId: _withdrawn, ...unselected } = plan;
+    const next: Plan =
+      plan.state === "SELECTED" && !deselect
+        ? { ...plan, updatedAt: now().toISOString() }
+        : { ...unselected, state: statuses.some((x) => x !== undefined && x !== "blocked") ? "PROPOSED" : "BLOCKED", updatedAt: now().toISOString() };
+    const stored = store.putPlan(next);
+    return {
+      candidate: candidateSummary(updated),
+      environmentId: snapshot.id,
+      previous: candidate.validation.overall,
+      planState: stored.state,
+      ...(deselect ? { selectionWithdrawn: true } : {}),
+    };
   }
 
   /** Record the user's choice. Selecting authorizes nothing (spec §16.1). */
@@ -314,13 +351,8 @@ export class ArchitectPlanning {
     const { store, now } = this.deps;
     const { plan } = this.requirePlan(request.planId);
     const candidate = this.requireCandidate(plan, request.candidateId);
-    if (candidate.status !== "feasible") {
-      throw new PlanningError(
-        candidate.status === "diagnostic" ? "UNVERIFIED_COMPATIBILITY" : "NO_FEASIBLE_CANDIDATE",
-        `candidate ${candidate.id} is ${candidate.status}: ${blockingChecks(candidate.validation).join("; ") || "see its validation report"}`,
-        "Resolve the blocking checks and call validate, or choose a feasible candidate.",
-      );
-    }
+    requireFeasible(candidate);
+    if (plan.state === "SUPERSEDED") throw new PlanningError("GRAPH_CONFLICT", `plan ${plan.id} is SUPERSEDED`, "Call prepare for a new plan.");
     return store.putPlan({ ...plan, state: "SELECTED", selectedCandidateId: candidate.id, updatedAt: now().toISOString() });
   }
 
@@ -331,6 +363,7 @@ export class ArchitectPlanning {
       throw new PlanningError("MISSING_INPUT", `plan ${plan.id} has no selected candidate`, "Call select first.");
     }
     const candidate = this.requireCandidate(plan, plan.selectedCandidateId);
+    requireFeasible(candidate);
     const { recipe, graph, fingerprint } = this.compiledGraph(candidate, task);
     const env = this.deps.store.getSnapshot(candidate.environmentId);
     const root = resolve(this.deps.dataDir, "artifacts");
@@ -338,6 +371,11 @@ export class ArchitectPlanning {
     // IDs are generated here, but a stored ID is still data: never write outside artifacts/.
     if (!dir.startsWith(root + sep)) throw new PlanningError("GRAPH_CONFLICT", `refusing to export outside ${root}`, "Report this plan ID.");
     mkdirSync(dir, { recursive: true });
+    // A symlink anywhere under artifacts/ could point the write elsewhere (SEC T9).
+    const real = realpathSync(dir);
+    if (real !== resolve(realpathSync(this.deps.dataDir), "artifacts", task.id, plan.id)) {
+      throw new PlanningError("GRAPH_CONFLICT", `refusing to export through a symbolic link under ${root}`, "Remove the link and export again.");
+    }
     const lock = {
       schemaVersion: 1,
       graphFingerprint: fingerprint,
@@ -365,6 +403,28 @@ export class ArchitectPlanning {
       written.push(path);
     }
     return { dir, files: written, graphFingerprint: fingerprint, uiGraph: "not exported: the UI graph comes with a certified recipe's UI template (ARCH, 2026-11-15)" };
+  }
+}
+
+/**
+ * A stored status is data, and a schema-valid edit could change it: select and export
+ * recompute the verdict from the candidate's checks before they act on it.
+ */
+function requireFeasible(candidate: PlanCandidate): void {
+  const overall = overallVerdict(candidate.validation.checks);
+  if (candidate.status === "feasible" && overall !== "pass") {
+    throw new PlanningError(
+      "GRAPH_CONFLICT",
+      `candidate ${candidate.id} is recorded as feasible, but its checks come to ${overall}`,
+      "Call validate for this candidate, then select again.",
+    );
+  }
+  if (candidate.status !== "feasible") {
+    throw new PlanningError(
+      candidate.status === "diagnostic" ? "UNVERIFIED_COMPATIBILITY" : "NO_FEASIBLE_CANDIDATE",
+      `candidate ${candidate.id} is ${candidate.status}: ${blockingChecks(candidate.validation).join("; ") || "see its validation report"}`,
+      "Resolve the blocking checks and call validate, or choose a feasible candidate.",
+    );
   }
 }
 

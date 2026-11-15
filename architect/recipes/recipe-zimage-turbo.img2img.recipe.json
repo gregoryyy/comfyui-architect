@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "recipe-zimage-turbo.img2img",
-  "revision": 1,
+  "revision": 2,
   "title": "Z-Image Turbo: image to image",
   "description": "Prompt-guided image to image with Z-Image Turbo: the source image is encoded to a latent and sampled again at a denoise below 1, so the prompt reshapes the image while lower denoise keeps more of its structure. It is not instruction editing: the model doesn't follow edit instructions, it renders the prompt starting from the source. The output has the source image's size. The source image slot takes a file name in ComfyUI's input folder.",
   "kind": "image",
@@ -236,7 +236,9 @@
   "outputs": [
     {
       "role": "image",
-      "node": "10"
+      "node": "10",
+      "format": "png",
+      "count": 1
     }
   ],
   "dependencies": {

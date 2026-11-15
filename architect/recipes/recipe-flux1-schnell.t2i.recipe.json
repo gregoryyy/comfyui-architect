@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "recipe-flux1-schnell.t2i",
-  "revision": 1,
+  "revision": 2,
   "title": "FLUX.1-schnell: text to image",
   "description": "Text to image with FLUX.1-schnell from separate components: diffusion model, T5-XXL and CLIP-L text encoders through DualCLIPLoader, and the FLUX.1 VAE. Schnell is timestep-distilled: 4 steps at CFG 1.0, no negative prompt (the negative input is the zeroed positive conditioning) and no guidance embedding, so the graph has no FluxGuidance node. Width and height should be multiples of 8, about one megapixel. The text-encoder defaults are the files upstream's skill names: the files this recipe expects, whether or not a target has them.",
   "kind": "image",
@@ -242,7 +242,9 @@
   "outputs": [
     {
       "role": "image",
-      "node": "9"
+      "node": "9",
+      "format": "png",
+      "count": 1
     }
   ],
   "dependencies": {

@@ -86,6 +86,56 @@ function checkSlotValue(slot: RecipeSlot, value: unknown): { value: string | num
 }
 
 /**
+ * Whether the recipe honours every output-shape field and input the task sets (spec §7.3,
+ * §10.3; GAPS Q16). A field is honoured when a slot fills from it, or when what the recipe
+ * declares it writes matches. A definite mismatch fails, as unsupported; a field nothing
+ * decides is a hard unknown, never a pass, so a task isn't relaxed by being ignored.
+ */
+function taskFieldChecks(recipe: Recipe, task: TaskSpec): CheckResult[] {
+  const out: CheckResult[] = [];
+  const consumed = new Set(recipe.slots.flatMap((s) => (s.fromTask !== undefined ? [s.fromTask] : [])));
+  const primary = recipe.outputs[0];
+  const media = task.media;
+  if (media.kind !== "image") return out;
+  for (const dim of ["width", "height"] as const) {
+    const path = `media.output.${dim}`;
+    out.push(
+      consumed.has(path)
+        ? check(`contract.task.${dim}`, "pass", true, `the recipe sets the output ${dim} from the task (${media.output[dim]})`)
+        : check(
+            `contract.task.${dim}`,
+            "unknown",
+            true,
+            `the recipe doesn't set the output ${dim}; whether the result is ${media.output[dim]} isn't known`,
+          ),
+    );
+  }
+  const declared = (field: "count" | "format", want: string | number): CheckResult => {
+    const id = `contract.task.${field}`;
+    if (consumed.has(`media.output.${field}`)) return check(id, "pass", true, `the recipe sets the output ${field} from the task`);
+    const has = primary[field];
+    if (has === undefined) return check(id, "unknown", true, `the recipe doesn't declare its output ${field}; the task asks for ${want}`);
+    return has === want
+      ? check(id, "pass", true, `the recipe writes ${field} ${has}, as the task asks`)
+      : check(id, "fail", true, `the recipe writes ${field} ${has}, the task asks for ${want}`);
+  };
+  out.push(declared("count", media.output.count), declared("format", media.output.format));
+  // Input assets aren't resolved to files on the target before managed execution (ROAD
+  // phase 2); until then no slot can carry one, so each input the task names stays unknown.
+  for (const input of task.inputs) {
+    out.push(
+      check(
+        `contract.task.input.${input.role}`,
+        "unknown",
+        true,
+        `task input ${input.role} (asset ${input.assetId}) isn't bound to the graph: assets aren't resolved to target files yet`,
+      ),
+    );
+  }
+  return out;
+}
+
+/**
  * Compile `recipe` for `task` with `bindings` (spec §10.2). Each slot takes, in order, its
  * explicit binding, the value at its `fromTask` path, its default. A binding for a slot the
  * recipe doesn't have fails: an agent's typo must not be ignored while the default runs.
@@ -111,6 +161,8 @@ export function compileRecipe(recipe: Recipe, task: TaskSpec, bindings: Bindings
         ),
   );
 
+  checks.push(...taskFieldChecks(recipe, task));
+
   const slotIds = new Set(recipe.slots.map((s) => s.id));
   for (const id of Object.keys(bindings)) {
     if (!slotIds.has(id)) {
@@ -128,7 +180,22 @@ export function compileRecipe(recipe: Recipe, task: TaskSpec, bindings: Bindings
     const fromTask = slot.fromTask !== undefined ? readTaskPath(task, slot.fromTask) : undefined;
     let value: unknown;
     let source: string;
-    if (Object.hasOwn(bindings, slot.id)) {
+    if (Object.hasOwn(bindings, slot.id) && fromTask !== undefined && bindings[slot.id] !== fromTask) {
+      // A slot the task fills can't be overridden by a binding: a smaller size or another
+      // prompt would relax the task silently (AGENTS, spec §4.3; GAPS Q15). A change goes
+      // through a new task revision.
+      checks.push(
+        check(
+          id,
+          "fail",
+          true,
+          `slot ${slot.id}: binding ${JSON.stringify(bindings[slot.id])} differs from the task's ${slot.fromTask} ` +
+            `(${JSON.stringify(fromTask)}); revise the task instead`,
+          nodeId,
+        ),
+      );
+      continue;
+    } else if (Object.hasOwn(bindings, slot.id)) {
       value = bindings[slot.id];
       source = "binding";
     } else if (fromTask !== undefined) {

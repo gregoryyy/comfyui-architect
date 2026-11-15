@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,6 +33,10 @@ const TASK: TaskSpecInput = {
 };
 
 const dirs: string[] = [];
+
+function writeBroken(dir: string): void {
+  writeFileSync(join(dir, "broken.recipe.json"), "{ not json");
+}
 const stores: ArchitectStore[] = [];
 afterEach(() => {
   for (const s of stores.splice(0)) s.close();
@@ -137,6 +141,62 @@ describe("ArchitectPlanning, prepare to export", () => {
     if (!stored) throw new Error("candidate not stored");
     store.putCandidate({ ...stored, graphFingerprint: "0".repeat(64) });
     expect(() => planning.export({ planId: prepared.plan.id })).toThrow(/no longer compiles/);
+  });
+
+  it("withdraws the selection when a recheck finds the candidate no longer feasible, and won't export it", async () => {
+    let models = fixtureSnapshot().installedModels ?? { folders: {}, unanswered: [], absent: [] };
+    const { planning } = setup({ models: async () => models });
+    const prepared = await planning.prepare({ task: TASK });
+    const best = (await planning.propose({ planId: prepared.plan.id })).candidates[0];
+    planning.select({ planId: prepared.plan.id, candidateId: best.id });
+    models = { ...models, folders: { ...models.folders, checkpoints: [] } };
+    const rechecked = await planning.validate({ planId: prepared.plan.id, candidateId: best.id });
+    expect(rechecked.candidate.status).toBe("blocked");
+    expect(rechecked.selectionWithdrawn).toBe(true);
+    expect(rechecked.planState).not.toBe("SELECTED");
+    expect(() => planning.export({ planId: prepared.plan.id })).toThrow(/no selected candidate/);
+    expect(() => planning.select({ planId: prepared.plan.id, candidateId: best.id })).toThrow(/blocked/);
+  });
+
+  it("won't select or export a candidate whose stored status contradicts its checks", async () => {
+    const { planning, store } = setup();
+    const prepared = await planning.prepare({ task: TASK });
+    const proposed = await planning.propose({
+      planId: prepared.plan.id,
+      proposals: [{ recipeId: "recipe-fixture.t2i-basic", bindings: { checkpoint: "invented.safetensors" } }],
+    });
+    const blocked = store.getCandidate(proposed.candidates[0].id);
+    if (!blocked) throw new Error("candidate not stored");
+    store.putCandidate({ ...blocked, status: "feasible" });
+    expect(() => planning.select({ planId: prepared.plan.id, candidateId: blocked.id })).toThrow(/checks come to fail/);
+  });
+
+  it("refuses to export through a symbolic link under artifacts/", async () => {
+    const { planning, dataDir } = setup();
+    const prepared = await planning.prepare({ task: TASK });
+    const best = (await planning.propose({ planId: prepared.plan.id })).candidates[0];
+    planning.select({ planId: prepared.plan.id, candidateId: best.id });
+    const elsewhere = mkdtempSync(join(tmpdir(), "architect-elsewhere-"));
+    dirs.push(elsewhere);
+    mkdirSync(join(dataDir, "artifacts"), { recursive: true });
+    symlinkSync(elsewhere, join(dataDir, "artifacts", prepared.task.id));
+    expect(() => planning.export({ planId: prepared.plan.id })).toThrow(/symbolic link/);
+    expect(existsSync(join(elsewhere, prepared.plan.id, "workflow.api.json"))).toBe(false);
+  });
+
+  it("plans only with the recipes the catalog holds now, and warns about files it couldn't load", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "architect-recipes-"));
+    dirs.push(dir);
+    cpSync(join(FIXTURES.dir, "t2i-basic.recipe.json"), join(dir, "t2i-basic.recipe.json"));
+    const source: RecipeSource = { ...FIXTURES, id: "source-tmp", dir };
+    const first = setup();
+    const p1 = new ArchitectPlanning({ store: first.store, service: first.service, upstream: first.upstream, dataDir: first.dataDir, sources: [source], now: () => new Date(), newId: () => `a${Math.random().toString(36).slice(2)}` });
+    expect((await p1.prepare({ task: TASK })).recipes.map((r) => r.id)).toEqual(["recipe-fixture.t2i-basic"]);
+    unlinkSync(join(dir, "t2i-basic.recipe.json"));
+    writeBroken(dir);
+    const p2 = new ArchitectPlanning({ store: first.store, service: first.service, upstream: first.upstream, dataDir: first.dataDir, sources: [source], now: () => new Date(), newId: () => `b${Math.random().toString(36).slice(2)}` });
+    expect((await p2.prepare({ task: TASK })).recipes).toEqual([]);
+    expect(p2.catalogWarnings().join(" ")).toContain("broken.recipe.json");
   });
 
   it("reads a candidate's graph on request only", async () => {

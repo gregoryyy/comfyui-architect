@@ -39,6 +39,8 @@ export const ArchitectErrorCode = z.enum([
   "BUDGET_EXCEEDED",
   "GRAPH_CONFLICT",
   "OUTCOME_UNKNOWN",
+  /** An error the service didn't anticipate; spec §16.4's list isn't exhaustive ("include"). */
+  "INTERNAL_ERROR",
 ]);
 export type ArchitectErrorCode = z.infer<typeof ArchitectErrorCode>;
 
@@ -323,8 +325,24 @@ export const Recipe = z
     operations: z.array(z.string().min(1)).min(1),
     graph: ApiGraph,
     slots: z.array(RecipeSlot),
-    /** Output nodes and the role each plays, so a compiled graph maps roles to node IDs. */
-    outputs: z.array(z.object({ role: z.string().min(1), node: z.string().min(1) }).strict()).min(1),
+    /**
+     * Output nodes and the role each plays, so a compiled graph maps roles to node IDs.
+     * `format` and `count` say what one run writes for the role, so the contract layer can
+     * tell a task asking for something else apart from one the recipe serves (GAPS Q16);
+     * left out, that comparison is unknown.
+     */
+    outputs: z
+      .array(
+        z
+          .object({
+            role: z.string().min(1),
+            node: z.string().min(1),
+            format: z.string().min(1).optional(),
+            count: z.number().int().positive().optional(),
+          })
+          .strict(),
+      )
+      .min(1),
     dependencies: z.object({ nodeClasses: z.array(z.string().min(1)) }).strict(),
     certification: Certification,
     evidence: z.array(EvidenceRef),

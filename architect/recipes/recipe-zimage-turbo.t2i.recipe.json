@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "recipe-zimage-turbo.t2i",
-  "revision": 1,
+  "revision": 2,
   "title": "Z-Image Turbo: text to image",
   "description": "Text to image with Z-Image Turbo from separate components: diffusion model, Qwen 3 4B text encoder and VAE. Turbo is DMD-distilled, so it samples in 10 steps at CFG 1.0 and ignores the negative prompt; the negative input is the zeroed positive conditioning. Width and height should be divisible by 16.",
   "kind": "image",
@@ -228,7 +228,9 @@
   "outputs": [
     {
       "role": "image",
-      "node": "9"
+      "node": "9",
+      "format": "png",
+      "count": 1
     }
   ],
   "dependencies": {

@@ -5,8 +5,8 @@
 // is too old, too incomplete or about another target. Missing data counts against a
 // snapshot, never for it (#796).
 //
-// The maximum age is read here rather than in config.ts, which holds only the feature flag
-// so far; the planner receives the value through these functions.
+// The maximum age (`ARCHITECT_ENV_MAX_AGE_SECONDS`) is read here, next to the rule it
+// sets; config.ts lists it among the variables forwarded to the panel's tool server.
 
 import type { EnvironmentSnapshot } from "./schemas.js";
 import type { EnvironmentProbe } from "./service.js";

@@ -1,8 +1,8 @@
 // The Architect service boundary (spec §16.3). Its dependencies are injected, so unit
 // tests run without ComfyUI, a GPU or a provider.
 //
-// Read-only inspection so far (TODO 1.6, 2.3). Planning and execution arrive with later
-// TODO items, behind the same boundary.
+// Read-only environment inspection (TODO 1.6, 2.3). Planning is in planning.ts, which
+// takes this service as a dependency; execution arrives with ROAD phase 2.
 
 import { createHash, randomUUID } from "node:crypto";
 import { ARCHITECT_SCHEMA_VERSION } from "../../fork-identity.js";

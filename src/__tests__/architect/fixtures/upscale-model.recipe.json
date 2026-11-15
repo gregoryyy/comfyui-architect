@@ -41,7 +41,7 @@
       "modelFolder": "upscale_models"
     }
   ],
-  "outputs": [{ "role": "image", "node": "4" }],
+  "outputs": [{ "role": "image", "node": "4", "format": "png", "count": 1 }],
   "dependencies": {
     "nodeClasses": ["LoadImage", "UpscaleModelLoader", "ImageUpscaleWithModel", "SaveImage"]
   },

@@ -65,12 +65,58 @@ describe("compileRecipe", () => {
     expect(recipe.graph["1"].inputs.ckpt_name).toBe("");
   });
 
-  it("prefers a binding over the task and the task over the default", () => {
+  it("prefers the task over the default, and a binding over the default", () => {
     const withDefault = variant(recipe, {
       slots: recipe.slots.map((s) => (s.id === "width" ? { ...s, default: 512 } : s)),
     });
     expect(compileRecipe(withDefault, task, { checkpoint: CKPT }).graph!["4"].inputs.width).toBe(1024);
-    expect(compileRecipe(withDefault, task, { checkpoint: CKPT, width: 640 }).graph!["4"].inputs.width).toBe(640);
+    expect(compileRecipe(withDefault, task, { checkpoint: CKPT, width: 1024 }).graph!["4"].inputs.width).toBe(1024);
+    expect(compileRecipe(recipe, task, { checkpoint: CKPT, steps: 30 }).graph!["5"].inputs.steps).toBe(30);
+  });
+
+  it("refuses a binding that overrides what the task fills, so nothing is relaxed silently (GAPS Q15)", () => {
+    const smaller = compileRecipe(recipe, task, { checkpoint: CKPT, width: 512 });
+    expect(byId(smaller.checks, "contract.slot.width")).toMatchObject({ verdict: "fail", hard: true });
+    expect(byId(smaller.checks, "contract.slot.width").message).toContain("revise the task");
+    expect(smaller.graph).toBeUndefined();
+    const otherPrompt = compileRecipe(recipe, task, { checkpoint: CKPT, prompt: "something else" });
+    expect(byId(otherPrompt.checks, "contract.slot.prompt").verdict).toBe("fail");
+  });
+
+  describe("the task fields the recipe honours (GAPS Q16)", () => {
+    const shape = (output: Record<string, unknown>) =>
+      fixtureTask({ media: { kind: "image", operation: "text_to_image", output: { width: 1024, height: 768, ...output } } });
+
+    it("passes fields a slot fills or the recipe declares", () => {
+      const out = compileRecipe(recipe, task, { checkpoint: CKPT });
+      for (const f of ["width", "height", "count", "format"]) expect(byId(out.checks, `contract.task.${f}`).verdict).toBe("pass");
+    });
+
+    it("fails a format the recipe doesn't write, and a count it can't fill", () => {
+      expect(byId(compileRecipe(recipe, shape({ format: "webp" }), { checkpoint: CKPT }).checks, "contract.task.format")).toMatchObject({
+        verdict: "fail",
+        hard: true,
+      });
+      const noCountSlot = variant(recipe, { slots: recipe.slots.filter((s) => s.id !== "batch_size") });
+      expect(byId(compileRecipe(noCountSlot, shape({ count: 4 }), { checkpoint: CKPT }).checks, "contract.task.count").verdict).toBe("fail");
+    });
+
+    it("leaves a field nothing decides as a hard unknown, never a pass", () => {
+      const undeclared = variant(recipe, { outputs: [{ role: "image", node: "7" }] });
+      expect(byId(compileRecipe(undeclared, task, { checkpoint: CKPT }).checks, "contract.task.format")).toMatchObject({
+        verdict: "unknown",
+        hard: true,
+      });
+      const noWidth = variant(recipe, {
+        slots: recipe.slots.map((s) => (s.id === "width" ? { ...s, fromTask: undefined, default: 1024 } : s)),
+      });
+      expect(byId(compileRecipe(noWidth, task, { checkpoint: CKPT }).checks, "contract.task.width").verdict).toBe("unknown");
+      const withInput = fixtureTask({ inputs: [{ assetId: "a1", role: "reference_image" }] });
+      expect(byId(compileRecipe(recipe, withInput, { checkpoint: CKPT }).checks, "contract.task.input.reference_image")).toMatchObject({
+        verdict: "unknown",
+        hard: true,
+      });
+    });
   });
 
   it("falls back to the default when the task path doesn't resolve, and never reads the prototype", () => {
@@ -154,21 +200,24 @@ describe("compileRecipe", () => {
     });
 
     it("a required slot without any value", () => {
-      expectFail(compileRecipe(recipe, task, {}), "contract.slot.checkpoint", "no binding");
+      const noDefault = variant(recipe, {
+        slots: recipe.slots.map((s) => (s.id === "checkpoint" ? { ...s, default: undefined } : s)),
+      });
+      expectFail(compileRecipe(noDefault, task, {}), "contract.slot.checkpoint", "no binding");
     });
 
     it.each([
-      ["a non-integer int", { width: 1024.5 }, "contract.slot.width", "integer"],
-      ["an int below min", { width: 32 }, "contract.slot.width", "minimum"],
-      ["an int above max", { width: 8192 }, "contract.slot.width", "maximum"],
+      ["a non-integer int", { steps: 20.5 }, "contract.slot.steps", "integer"],
+      ["an int below min", { steps: 0 }, "contract.slot.steps", "minimum"],
+      ["an int above max", { steps: 151 }, "contract.slot.steps", "maximum"],
       ["a string for an int", { steps: "20" }, "contract.slot.steps", "finite number"],
       ["a non-finite float", { cfg: Number.NaN }, "contract.slot.cfg", "finite number"],
       ["a float above max", { cfg: 31 }, "contract.slot.cfg", "maximum"],
       ["a negative seed", { seed: -1 }, "contract.slot.seed", "seed"],
       ["a fractional seed", { seed: 1.5 }, "contract.slot.seed", "seed"],
       ["a seed beyond 2^53", { seed: 2 ** 60 }, "contract.slot.seed", "seed"],
-      ["an empty string", { prompt: "" }, "contract.slot.prompt", "non-empty"],
-      ["a blank string", { prompt: "   " }, "contract.slot.prompt", "non-empty"],
+      ["an empty string", { negative_prompt: "" }, "contract.slot.negative_prompt", "non-empty"],
+      ["a blank string", { negative_prompt: "   " }, "contract.slot.negative_prompt", "non-empty"],
       ["a number for a model file", { checkpoint: 3 }, "contract.slot.checkpoint", "non-empty string"],
       ["an enum value outside its choices", { sampler: "lms" }, "contract.slot.sampler", "not one of"],
     ])("%s", (_label, extra, id, text) => {

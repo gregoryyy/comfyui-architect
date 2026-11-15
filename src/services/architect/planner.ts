@@ -210,9 +210,10 @@ export function planCandidates(input: PlanningInput): PlanningOutput {
     }
   }
 
-  // Hard constraints first (status), then evidence tier, then dependency burden; the
-  // first candidate of each recipe goes before a second of any, so three slots show
-  // three trade-offs where three exist (spec §9.2 step 6).
+  // Hard constraints first (status), then evidence tier, then dependency burden. Within a
+  // status, the first candidate of each recipe goes before a second of any, so three slots
+  // show three trade-offs where three exist (spec §9.2 step 6) — but never ahead of a
+  // candidate with a better status: a blocked candidate can't push out a feasible one.
   const burden = (c: PlanCandidate) => c.dependencyDelta.missingModels.length + c.dependencyDelta.missingNodeClasses.length;
   const ranked = [...built].sort(
     (a, b) =>
@@ -221,8 +222,12 @@ export function planCandidates(input: PlanningInput): PlanningOutput {
       burden(a) - burden(b) ||
       (a.recipeId < b.recipeId ? -1 : a.recipeId > b.recipeId ? 1 : 0),
   );
-  const firstPerRecipe = ranked.filter((c, i) => ranked.findIndex((d) => d.recipeId === c.recipeId) === i);
-  const rest = ranked.filter((c) => !firstPerRecipe.includes(c));
-  const presented = [...firstPerRecipe, ...rest].slice(0, MAX_PRESENTED_CANDIDATES);
+  const ordered: PlanCandidate[] = [];
+  for (const status of Object.keys(STATUS_ORDER) as PlanCandidate["status"][]) {
+    const group = ranked.filter((c) => c.status === status);
+    const firstPerRecipe = group.filter((c, i) => group.findIndex((d) => d.recipeId === c.recipeId) === i);
+    ordered.push(...firstPerRecipe, ...group.filter((c) => !firstPerRecipe.includes(c)));
+  }
+  const presented = ordered.slice(0, MAX_PRESENTED_CANDIDATES);
   return { presented, expanded: built.length, blockers: dedupe(blockers), truncated };
 }

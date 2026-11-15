@@ -58,7 +58,8 @@
       "target": { "node": "1", "input": "ckpt_name" },
       "required": true,
       "modelFolder": "checkpoints",
-      "modelFamily": "sdxl"
+      "modelFamily": "sdxl",
+      "default": "sd_xl_base_1.0.safetensors"
     },
     {
       "id": "prompt",
@@ -153,7 +154,7 @@
       "choices": ["normal", "karras"]
     }
   ],
-  "outputs": [{ "role": "image", "node": "7" }],
+  "outputs": [{ "role": "image", "node": "7", "format": "png", "count": 1 }],
   "dependencies": {
     "nodeClasses": ["CheckpointLoaderSimple", "CLIPTextEncode", "EmptyLatentImage", "KSampler", "VAEDecode", "SaveImage"]
   },

@@ -101,9 +101,8 @@ const CREDENTIAL_INPUT_RE =
  * may mark themselves with `external_api_node` / `EXTERNAL_API_NODE`; a node that asks for
  * an API credential can't be confirmed free. These are the signals upstream's
  * `isApiNode` and `isExternalServiceNode` (src/services/api-nodes.ts) read, minus their
- * registry of known paid packs: Architect reaches upstream only through the facade, which
- * doesn't expose the classifier yet, so `ValidateInput.isPaidNode` lets the service pass
- * upstream's once it does.
+ * registry of known paid packs. Planning passes upstream's classifier from the facade as
+ * `ValidateInput.isPaidNode`; this rule is the fallback when a caller passes none.
  */
 export function isPaidRenderNode(def: ComfyUINodeDef): boolean {
   if (def.api_node === true) return true;
@@ -132,9 +131,31 @@ function isLoopbackHostname(hostname: string): boolean {
 // ---------------------------------------------------------------------------------------
 // Layers
 
+/** True when the snapshot can't say what a model folder holds (#796): unread, not empty. */
+function folderUnread(snapshot: EnvironmentSnapshot, folder: string): boolean {
+  const installed = snapshot.installedModels;
+  return installed === undefined || (!Object.hasOwn(installed.folders, folder) && !installed.absent.includes(folder));
+}
+
 function contractLayer(input: ValidateInput, compiled: CompileResult): CheckResult[] {
   const c = mk("contract");
-  const checks = [...compiled.checks];
+  // A required model slot left empty because its folder couldn't be read has no file for a
+  // reason the target didn't state: unknown, not the definite failure the compiler reports.
+  const checks = compiled.checks.map((check) => {
+    const slot = input.recipe.slots.find((s) => `contract.slot.${s.id}` === check.id);
+    if (
+      slot === undefined ||
+      check.verdict !== "fail" ||
+      slot.valueType !== "model_file" ||
+      Object.hasOwn(compiled.values, slot.id) ||
+      Object.hasOwn(input.bindings, slot.id) ||
+      !folderUnread(input.snapshot, slot.modelFolder ?? "")
+    ) {
+      return check;
+    }
+    const why = input.snapshot.installedModels?.unanswered.find((u) => u.folder === slot.modelFolder)?.reason ?? "the folder wasn't probed";
+    return { ...check, verdict: "unknown" as const, message: `slot ${slot.id}: no file to bind, ${slot.modelFolder} couldn't be read (${why})` };
+  });
   const transforms = input.transforms ?? [];
   checks.push(
     transforms.length === 0
@@ -292,12 +313,29 @@ function nativeTypesLayer(graph: ApiGraph, recipe: Recipe, objectInfo: ObjectInf
         }
         continue;
       }
-      if (spec === undefined) continue;
+      if (spec === undefined) {
+        // A literal the node doesn't declare is dropped by ComfyUI, so the value the recipe
+        // meant is never applied; with the node's schema known, that is a definite fault.
+        if (def !== undefined) {
+          checks.push(c(`input.${nodeId}.${name}`, "fail", true, `${nodeId}.${name}: ${node.class_type} declares no input ${name}`, nodeId));
+        }
+        continue;
+      }
       const combo = comboChoices(spec);
       if (!combo.combo) continue;
       const id = `combo.${nodeId}.${name}`;
-      if (modelInputs.has(`${nodeId}\u0000${name}`)) {
-        checks.push(c(id, "not_applicable", false, `${nodeId}.${name} holds a model file; the dependencies layer decides it`, nodeId));
+      if (modelInputs.has(`${nodeId}\u0000${name}`) && combo.choices === undefined) {
+        // Whether the file is installed is the dependencies layer's call; that the loader
+        // offers it isn't known here.
+        checks.push(c(id, "unknown", false, `${nodeId}.${name} holds a model file; the loader's schema lists no choices`, nodeId));
+      } else if (modelInputs.has(`${nodeId}\u0000${name}`)) {
+        // A file can be installed in the slot's folder and still not be offered by the loader
+        // (another folder, a filtered extension), and then fails at /prompt (GAPS Q13).
+        checks.push(
+          combo.choices?.includes(value)
+            ? c(id, "pass", true, `${nodeId}.${name} = ${JSON.stringify(value)} is offered by ${node.class_type}`, nodeId)
+            : c(id, "fail", true, `${nodeId}.${name} = ${JSON.stringify(value)} is not a file ${node.class_type} offers on the target`, nodeId),
+        );
       } else if (combo.choices === undefined) {
         checks.push(c(id, "unknown", false, `${nodeId}.${name}: the schema lists no choices`, nodeId));
       } else if (combo.choices.includes(value)) {
@@ -311,15 +349,31 @@ function nativeTypesLayer(graph: ApiGraph, recipe: Recipe, objectInfo: ObjectInf
   return checks;
 }
 
-function semanticTypesLayer(recipe: Recipe): CheckResult[] {
+/**
+ * Model families (spec §10.3). Nothing reads a file's family yet, so each check is unknown.
+ * For the recipe's default file, which the recipe's author named, it's a soft unknown; for
+ * any other file it's hard, so a file of another family in the slot can't make a candidate
+ * feasible (spec §9.3: an incompatible component can't be offset; GAPS Q14).
+ */
+function semanticTypesLayer(recipe: Recipe, values: Record<string, string | number>): CheckResult[] {
   const c = mk("semantic_types");
   const modelSlots = recipe.slots.filter((s) => s.valueType === "model_file");
   if (modelSlots.length === 0) return [c("models", "not_applicable", false, "the recipe binds no model files")];
-  return modelSlots.map((s) =>
-    s.modelFamily !== undefined
-      ? c(`model_family.${s.id}`, "unknown", false, `slot ${s.id} expects family ${s.modelFamily}; the bound file's family isn't verified yet`, s.target.node)
-      : c(`model_family.${s.id}`, "not_applicable", false, `slot ${s.id} is annotated with no model family`, s.target.node),
-  );
+  return modelSlots.map((s) => {
+    const id = `model_family.${s.id}`;
+    if (s.modelFamily === undefined) return c(id, "not_applicable", false, `slot ${s.id} is annotated with no model family`, s.target.node);
+    const bound = values[s.id];
+    if (bound === undefined) return c(id, "not_applicable", false, `slot ${s.id} has no file bound`, s.target.node);
+    return bound === s.default
+      ? c(id, "unknown", false, `slot ${s.id} expects family ${s.modelFamily}; the recipe names ${bound}, whose family isn't verified yet`, s.target.node)
+      : c(
+          id,
+          "unknown",
+          true,
+          `slot ${s.id} expects family ${s.modelFamily}; ${JSON.stringify(bound)} isn't the recipe's file, and its family isn't verified`,
+          s.target.node,
+        );
+  });
 }
 
 function dependenciesLayer(
@@ -461,7 +515,7 @@ export function validateGraph(input: ValidateInput): ValidationOutcome {
     checks.push(...structureLayer(graph, recipe, objectInfo));
     checks.push(...nativeTypesLayer(graph, recipe, objectInfo));
   }
-  checks.push(...semanticTypesLayer(recipe));
+  checks.push(...semanticTypesLayer(recipe, compiled.values));
   const deps = dependenciesLayer(recipe, compiled.values, objectInfo, snapshot);
   checks.push(...deps.checks);
   checks.push(...policyLayer(graph, task, objectInfo, snapshot, input.isPaidNode ?? isPaidRenderNode));
