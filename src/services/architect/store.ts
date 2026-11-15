@@ -20,6 +20,7 @@ import { join } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
 import type Database from "better-sqlite3";
 import { z } from "zod";
+import { canonicalJson } from "./hash.js";
 import { MIGRATIONS, SCHEMA_MIGRATIONS_SQL } from "./migrations.js";
 import {
   EnvironmentSnapshot,
@@ -138,14 +139,6 @@ function readStored<K extends StoredKind>(kind: K, payload: string, row: { id: s
   return record;
 }
 
-/** JSON with object keys sorted at every level, so equal records serialise identically. */
-export function canonicalJson(value: unknown): string {
-  return JSON.stringify(value, (_key, v: unknown) => {
-    if (typeof v !== "object" || v === null || Array.isArray(v)) return v;
-    return Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
-  });
-}
-
 /** Time columns hold UTC ISO strings, so ordering by them is ordering by time. */
 function utc(timestamp: string): string {
   return new Date(timestamp).toISOString();
@@ -248,6 +241,9 @@ function prepareStatements(db: Database.Database) {
  * The `architect.db` store: one better-sqlite3 connection and the repositories on it.
  * Synchronous, as better-sqlite3 is; every multi-step write runs in a transaction.
  */
+/** Re-exported for callers that already import it from here. */
+export { canonicalJson };
+
 export class ArchitectStore {
   private readonly stmts: ReturnType<typeof prepareStatements>;
 

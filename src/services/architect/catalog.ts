@@ -6,33 +6,19 @@
 // never skipped silently (spec §8.4). Retrieval is a bounded filter and sort over what
 // the catalog holds; nothing here fetches from outside the machine.
 
-import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { canonicalJson, sha256Hex } from "./hash.js";
 import { type EnvironmentSnapshot, Recipe, type TaskSpec } from "./schemas.js";
+
+export { canonicalJson, sha256Hex };
 
 /** `architect/recipes/` at the package root: three levels up from src/ and from dist/. */
 export const SHIPPED_RECIPES_DIR = fileURLToPath(new URL("../../../architect/recipes/", import.meta.url));
 
 /** Retrieve at most this many recipes for one task (spec §9.2). */
 export const MAX_RETRIEVED_RECIPES = 20;
-
-/** JSON with object keys sorted at every level, so equal content hashes equal (spec §10.5). */
-export function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-export function sha256Hex(text: string): string {
-  return createHash("sha256").update(text).digest("hex");
-}
 
 export interface LoadedRecipe {
   recipe: Recipe;
