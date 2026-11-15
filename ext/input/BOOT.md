@@ -1,10 +1,10 @@
 # Bootstrapping a project
 
-How Comfy Architect gets set up, from raw idea to a fork that agents and people can work in. The steps come from Lakeshore's `docs/BOOT.md`. Here it's adapted to a project that extends a fork of `artokun/comfyui-mcp` instead of starting from an empty repository. The fork was created on 2026-11-15 at 12:54 from upstream commit `707474d2` (v0.52.206). Use this as the checklist for the steps still open. Status: 2026-11-15 13:07.
+How ComfyUI Architect gets set up, from raw idea to a fork that agents and people can work in. The steps come from Lakeshore's `docs/BOOT.md`. Here it's adapted to a project that extends a fork of `artokun/comfyui-mcp` instead of starting from an empty repository. The fork was created on 2026-11-15 at 12:54 from upstream commit `707474d2` (v0.52.206). Use this as the checklist for the steps still open. Status: 2026-11-15 13:07.
 
-## What is different in a fork
+## Fork specifics
 
-Lakeshore started from an empty repository. Comfy Architect lives inside someone else's, which changes three things.
+Lakeshore started from an empty repository. ComfyUI Architect lives inside someone else's.
 
 **`ext/` is the docs folder.** Everything Lakeshore keeps in `docs/` lives in `ext/` here. Upstream's `docs/` is its published documentation site (`docs/docs.json`, 13 locales, a generated tool reference), and upstream's gates check it: `check:docs-links`, `check:docs-locale`, `check:docs-mdx` and the blog checks. Architect documents there would end up in upstream's site structure, trip those gates and conflict on every sync. `docs/` only receives what upstream's tooling generates from Architect code (below).
 
@@ -26,7 +26,7 @@ Lakeshore started from an empty repository. Comfy Architect lives inside someone
 
 ## The steps
 
-| # | Step | Produces | Comfy Architect |
+| # | Step | Produces | ComfyUI Architect |
 | --- | --- | --- | --- |
 | 1 | Collect the input | `ext/input/` | Open. The source is the ChatGPT conversation linked from `ext/README.md`; nothing is copied yet |
 | 2 | Assess it critically, state the idea, list the gaps | `ext/IDEA.md`, `ext/GAPS.md`, notes in the first DONE entry | Open. Spec §1–3 is the starting point; the fork assessment of 2026-11-15 goes into DONE |
@@ -106,7 +106,7 @@ A subproject's documents are in `ext/<name>/` and its code under `src/services/a
 
 ### 5. Make it readable and buildable
 
-- **`ext/README.md`:** what Comfy Architect is in two paragraphs, its status, a map of the `ext/` documents, how to build, and the layout. Upstream's `README.md` stays upstream's, apart from the tool counts its gate requires.
+- **`ext/README.md`:** what ComfyUI Architect is in two paragraphs, its status, a map of the `ext/` documents, how to build, and the layout. Upstream's `README.md` stays upstream's, apart from the tool counts its gate requires.
 - **Build:** upstream's npm scripts are the entry point: `npm ci`, `npm run lint`, `npm run build`, `npm test`. Every PR also passes the CI-only gates (`asset-counts --check`, `check:vocabulary`, `check:unknown-collapse`, `vocab:export -- --check`, `docs:gen` as a no-op) and the pack smoke test. A `justfile` is added only with the PDF option.
 - **`ext/SDLC.md`:** the development process that AGENTS refers to: lifecycle, work items, branches and PRs, definition of done, testing, studies, TODO mode, decisions, releases. It also covers the upstream sync:
   - branch `sync/upstream-YYYY-MM-DD` from `main`;
@@ -177,7 +177,7 @@ Review the PRs as they come in. A deviation recorded in DONE is the agent's way 
 
 Parts of the setup that a project adopts when it benefits. None is adopted yet.
 
-| Option | In Comfy Architect |
+| Option | In ComfyUI Architect |
 | --- | --- |
 | [Markdown to PDF](#markdown-to-pdf) | Not adopted |
 | [Local CI](#local-ci) | Not needed while hosted Actions is free for the public fork; available as a fallback |
@@ -249,7 +249,6 @@ comfyui-mcp/                    the fork; everything not listed is upstream's
 │   └── workflows/              upstream's; release and registry disabled or retargeted
 ├── ext/                        the project's docs folder
 │   ├── README.md               what it is, status, document map, build, layout
-│   ├── BOOT.md                 this file
 │   ├── comfy-architect-system-spec.md   the spec (to design/SPEC.md, decision)
 │   ├── IDEA.md GAPS.md SEC.md ARCH.md EVAL.md        (open)
 │   ├── TODO.md ROAD.md DONE.md                       (open)
@@ -258,7 +257,7 @@ comfyui-mcp/                    the fork; everything not listed is upstream's
 │   ├── GLOS.md SOTA.md         (optional)
 │   ├── design/                 central design documents and notes (open)
 │   ├── research/               research notes (open)
-│   ├── input/                  raw input, not edited, publishable only (open)
+│   ├── input/                  raw input, not edited, publishable only: this file (moved 2026-11-15)
 │   ├── utils/                  pdf/, ci/, hooks/ (options)
 │   └── .gitignore              generated files under ext/ (open)
 ├── architect/                  recipes/, rules/, fixtures/ (open, spec §17.1)
@@ -267,7 +266,7 @@ comfyui-mcp/                    the fork; everything not listed is upstream's
 │   ├── tools/architect.ts      MCP registration (open)
 │   └── __tests__/architect/    unit, contract and integration tests (open)
 ├── plugin/
-│   ├── skills/comfy-architect/ (open)
+│   ├── skills/comfyui-architect/ (open)
 │   └── commands/architect.md   (open)
 └── docs/                       upstream's site; Architect adds generated tool pages only
 ```

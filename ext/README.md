@@ -1,28 +1,28 @@
-# Comfy Architect
+# ComfyUI Architect
 
 Planning: ChatGPT: Product Architect/ComfyUI Workflow Architecture
 
 ## 1. Purpose
 
-[Comfy Architect](./input/comfy-architect-system-spec.md) is designed to turn a natural-language task into an executable ComfyUI workflow, taking account of quality targets, installed models, available templates, and compute and memory limits. Rather than simply generating graph JSON, it retrieves suitable workflow patterns, selects compatible components, compares feasible alternatives, and explains their quality, speed, and resource trade-offs. Missing models or dependencies can be proposed for download, subject to user approval.
+[ComfyUI Architect](./input/comfy-architect-system-spec.md) is designed to turn a natural-language task into an executable ComfyUI workflow, taking account of quality targets, installed models, available templates, and compute and memory limits. Rather than simply generating graph JSON, it retrieves suitable workflow patterns, selects compatible components, compares feasible alternatives, and explains their quality, speed, and resource trade-offs. Missing models or dependencies can be proposed for download, subject to user approval.
 
-The implementation extends a fork of **`artokun/comfyui-mcp`**, reusing its provider integrations, workflow tooling, model management, and execution infrastructure. Comfy Architect adds structured task specifications, a capability knowledge base, constraint-aware planning, and a bounded execution-and-evaluation loop. The same core serves external MCP clients and the ComfyUI sidebar, using local Ollama models or configured Claude, Codex, and API providers. Deterministic checks govern graph compatibility and permitted actions; test renders and user feedback establish whether the resulting workflow actually meets the intended outcome.
+The implementation extends a fork of **`artokun/comfyui-mcp`**, reusing its provider integrations, workflow tooling, model management, and execution infrastructure. ComfyUI Architect adds structured task specifications, a capability knowledge base, constraint-aware planning, and a bounded execution-and-evaluation loop. The same core serves external MCP clients and the ComfyUI sidebar, using local Ollama models or configured Claude, Codex, and API providers. Deterministic checks govern graph compatibility and permitted actions; test renders and user feedback establish whether the resulting workflow actually meets the intended outcome.
 
 ## 2. Implementation
 
-The project follows gregoryyy's agentic coding project structure, as adapted in [BOOT](BOOT.md). `ext/` holds the project's documents, the role `docs/` plays elsewhere, because upstream's `docs/` is its published documentation site.
+The project follows gregoryyy's agentic coding project structure, as adapted in [BOOT](input/BOOT.md). `ext/` holds the project's documents, the role `docs/` plays elsewhere, because upstream's `docs/` is its published documentation site.
 
-**Where things go.** The Architect code is additive and lives beside upstream's, not inside it:
+**Where things go.** The Architect code is additive and has its own directories next to upstream's:
 
 | Path | Content |
 | --- | --- |
-| `ext/` | Project documents: this README, [BOOT](BOOT.md), the [spec](input/comfy-architect-system-spec.md) as input, and later IDEA, GAPS, ARCH, TODO, DONE |
+| `ext/` | Project documents: this README, [BOOT](input/BOOT.md), [IDEA](IDEA.md), [GAPS](GAPS.md), [TODO](TODO.md), [ROAD](ROAD.md), [DONE](DONE.md), [STYLE](STYLE.md), [BASE](input/BASE.md), and the [spec](input/comfy-architect-system-spec.md) as input |
 | `src/services/architect/` | The Architect domain: task specs, catalog, planner, constraints, policy, resources, run controller, evaluation, store |
 | `src/services/architect/upstream.ts` | The one facade through which the Architect code calls upstream services |
 | `src/tools/architect.ts` | The MCP tools `architect_inspect`, `architect_plan`, `architect_run`, `architect_library` |
 | `src/__tests__/architect/` | Unit, contract and integration tests |
 | `architect/` | Curated recipes, compatibility rules and fixtures, shipped with the package |
-| `plugin/skills/comfy-architect/`, `plugin/commands/architect.md` | The Claude Code skill and slash command |
+| `plugin/skills/comfyui-architect/`, `plugin/commands/architect.md` | The Claude Code skill and slash command |
 
 Everything else is upstream's. The paths follow the spec (§17.1); none of them exists yet.
 
@@ -42,9 +42,9 @@ The fork is meant to stay a superset of upstream: everything upstream does keeps
 - the package identity;
 - the hardcoded package name in self-update.
 
-The list is in [BOOT](BOOT.md#what-is-different-in-a-fork). A change outside it is a deliberate decision, not a side effect.
+The list is in [BOOT](input/BOOT.md#fork-specifics). Changing a file outside it needs a recorded decision.
 
-**Upstream updates come in by merge.** The pinned upstream commit is recorded in `ext/UPSTREAM_BASELINE.md`. To take a newer upstream:
+**Upstream updates come in by merge.** The pinned upstream commit is recorded in `ext/input/BASE.md`. To take a newer upstream:
 1. Merge `upstream/main` into a sync branch.
 2. Run upstream's suite and the Architect tests against it.
 3. Merge the sync branch through a PR, and record the new baseline.

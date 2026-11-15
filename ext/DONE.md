@@ -1,0 +1,121 @@
+# Done
+
+The progress log, newest entry on top. Each entry: `## YYYY-MM-DD HH:MM — Title` (time from `date`), the TODO items and PR or commit, an `Agent:` line, then **Implementation notes**, **Deviations** and **Insights**. The plan is in [TODO](TODO.md).
+
+## 2026-11-15 13:29 — STYLE as the central standard; BOOT and BASE to input
+
+TODO items: 0.5.2.2. Branch `architect/spec`, not yet committed.
+
+Agent: Opus 5.5, subagents: none.
+
+### Implementation notes
+
+- [STYLE](STYLE.md) is the project's standard (owner, 2026-11-15): code (upstream's TypeScript and ESM conventions, Zod contracts, no type escapes, stdout reserved for MCP stdio, upstream's #796 rule), tools and interfaces (action-oriented tool families, English tool text that is never translated, i18n for text a person reads), written output (documents, commits, PRs, DONE, replies), and the writing style from Lakeshore's `.claude/STYLE.md`, with its sections renumbered W1 to W4 and its llmkit and stop-slop attribution kept. The separate `.claude/STYLE.md` is gone, so nothing under `.claude/` needs force-adding.
+- `BOOT.md` moved to `ext/input/` as bootstrap input (owner, 2026-11-15); links in AGENTS, README, GAPS, TODO and DONE point there, and BOOT's file tree lists itself under `input/`.
+- `UPSTREAM_BASELINE.md` renamed to `BASELINE.md`, then moved to [ext/input/BASE.md](input/BASE.md) (owner, 2026-11-15), title "Baseline", with all live references. `ext/input/` now holds bootstrap material rather than only frozen input: the spec stays frozen, and BASE gains a section per upstream sync (AGENTS layout, STYLE documents).
+
+### Deviations
+
+- Spec §17.4 and BOOT call the file `UPSTREAM_BASELINE.md`. Both are input and keep the old name.
+- Commit `254ad1fc` and the file on disk lack the seven edits that adapted BOOT to the spec's move into `ext/input/` (step 1 state, the GAPS Q1 variants, the file tree, the names). An editor save of the BOOT intro most likely overwrote them before the commit. BOOT therefore still describes the spec at `ext/` root; restoring the edits is the owner's call.
+
+### Insights
+
+- Upstream writes nothing but protocol to stdout (its logger goes to stderr), and it keeps tool descriptions in English on purpose, because models route on their wording; only about 150 strings a person reads are translated. Both rules are in STYLE now.
+
+## 2026-11-15 13:23 — The product covers every kind of workflow
+
+TODO items: 0.2, 2.1. Branch `architect/spec`, not yet committed.
+
+Agent: Opus 5.5, subagents: none.
+
+### Implementation notes
+
+- Owner, 2026-11-15: the product covers every kind of ComfyUI workflow, and images are the MVP's scope only. IDEA gained a scope paragraph and an approach item for contracts that work for every kind; AGENTS's scope decisions say the same.
+- ROAD gained phase 6, "Every kind of workflow", in place of the unscheduled idea for video and audio recipe families. GAPS Q10 asks which kind follows images. TODO 2.1 keeps image-specific fields in a kind-specific part of the schemas.
+
+### Deviations
+
+- The spec treats video and audio as later work (FR-17, "Later") and its TaskSpec example is image-shaped (§7.2). The contracts now generalise it, so adding a kind needs no migration of the core records.
+
+### Insights
+
+- Upstream has many video packs and skills, but audio exists only as a generation tool and as sound in LTX 2.3 video packs. Audio would start with less to build on than video.
+
+## 2026-11-15 13:19 — Key project documents and writing style
+
+TODO items: 0.2, 0.3.1, 0.4.1, 1.1.1. Branch `architect/spec`, not yet committed.
+
+Agent: Opus 5.5, subagents: none.
+
+### Implementation notes
+
+- Root `AGENTS.md` and `CLAUDE.md` (`@AGENTS.md`): scope, design rules from the spec, layout, stack, process, style, security, commits. Upstream's `.gitignore` excludes both, so they need `git add -f` once.
+- [IDEA](IDEA.md), [GAPS](GAPS.md) (nine questions, eight assumptions), [TODO](TODO.md) (milestone 0 setup, 1 spec Phase 0 in detail, 2 spec Phase 1 in outline), [ROAD](ROAD.md) (the spec's Phases 0–5 with their gates), [BASE](input/BASE.md) (the pinned commit, the checks run on it, the upstream facts the fork relies on), and this file.
+- `.claude/STYLE.md`, the writing style for prose, copied from Lakeshore. pitch2canvas has the same file with American spelling; orgfab, orgfab.ai and proclens have an older version without the stop-slop rules. `.claude/` is ignored upstream, so it needs `git add -f` too.
+- Swept all new documents with STYLE's grep table and fixed the hits that were habits: a counting head in GAPS Q8 and in BOOT, "deliberate" in AGENTS, GAPS and README, a manufactured contrast in README, sentence headings in BOOT, AGENTS and BASELINE, an absolute and a pull-quote in IDEA. BOOT's "What is different in a fork" became "Fork specifics", and the links to it moved.
+- Renamed the product to ComfyUI Architect (owner, 2026-11-15) in AGENTS, BOOT and README; the planned skill is `plugin/skills/comfyui-architect/`.
+
+### Deviations
+
+- The spec plans `plugin/skills/comfy-architect/`; the rename makes it `comfyui-architect`. The spec stays unedited as input.
+- Status lines in the new documents were first written with estimated times (13:20 to 13:26) and corrected to the clock.
+
+### Insights
+
+- `check:vocabulary` scans every tracked and untracked file, `ext/` included, so documents may only name current tool names. IDEA describes upstream's features in prose for that reason.
+- The README title was already "ComfyUI Architect" when the rename was asked for; the spec, BOOT and the body still said "Comfy Architect".
+
+## 2026-11-15 13:13 — BOOT, README structure, spec as input
+
+TODO items: 0.1, 0.5.1. Commit `254ad1fc` on `architect/spec`.
+
+Agent: Opus 5.5, subagents: none.
+
+### Implementation notes
+
+- [BOOT](input/BOOT.md) adapted from Lakeshore's `docs/BOOT.md`: `ext/` as the docs folder, the upstream files that must change because of upstream's gates, the public repository, the steps with their state, fork-specific options, subagents and hooks.
+- README sections Implementation and Compatibility: where the Architect code goes, and the rules that keep the fork a superset of upstream.
+- The owner moved the spec unchanged to `ext/input/`, making it frozen input.
+
+### Deviations
+
+- The owner moved the spec while BOOT was being written; BOOT's spec decision was rewritten from "where does the spec live" to "how do the design documents derive from it" (GAPS Q1).
+- An earlier reply said commit `874c4489` contained the ChatGPT link; it didn't. The owner had replaced it with a plain line before the commit.
+
+### Insights
+
+- Upstream ignores `/AGENTS.md`, `/CLAUDE.md` and `.claude/` ("Contributors bring their own agent instructions"). Force-adding them keeps upstream's `.gitignore` unchanged.
+- Adding an MCP tool touches upstream's README (tool counts), `docs/tools/` and the tool vocabulary, because upstream's CI derives them from the registry and fails on drift.
+
+## 2026-11-15 13:04 — Spec committed
+
+TODO item: 0.1. Commit `874c4489` on the new branch `architect/spec`.
+
+Agent: Opus 5.5, subagents: none.
+
+### Implementation notes
+
+- Committed `ext/README.md` and the spec v1.0.
+- Git had no author identity. Set it for this repository only: Gregor Heinrich with the GitHub noreply address, so no private address enters the public history.
+
+## 2026-11-15 12:54 — Fork and assessment
+
+TODO items: 0.6. No commit.
+
+Agent: Opus 5.5, subagents: none.
+
+### Implementation notes
+
+- Analysed upstream at `707474d2` (v0.52.206) before forking; the facts are in [BASE](input/BASE.md). `npm ci` and `npm run lint` passed.
+- Forked to the public `gregoryyy/comfyui-mcp` with `gh repo fork --remote`: `origin` is the fork, `upstream` is artokun's repository. Set `gh`'s default repository to the fork, so `gh pr create` targets it, and made `main` track `origin/main`.
+
+Decisions by the owner:
+- **Fork, not a separate package.** The spec needs Architect tools in the panel agent on every backend, approvals that gate upstream's own effects, and pausing the agent around a render. Upstream gives the panel agent other MCP servers only on the Claude backend, filters policy per tool rather than per action, and runs the agent loop in the orchestrator with no hook for pausing. The planning domain, recipes and skills would work outside a fork; these three wouldn't.
+- **Keep the fork public.** A fork of a public repository can't be private. Public means free Actions minutes and direct PRs to upstream; the price is that everything committed is public for good.
+
+### Insights
+
+- Upstream activity fell from 2,045 commits in August to 61 in October and 1 in November, so syncs will likely be small for now. `src/orchestrator/panel-tools.ts` (31,000 lines) is where conflicts would concentrate.
+- Upstream's `ci.yml` keeps the comment of an Oxlint gate removed in `1d5b12b1` (#2928) with no step under it. A one-line upstream fix.
+- The spec's §18.2 covers the fork's package identity but not upstream's hardcoded `PACKAGE_NAME` in self-update, which would replace the fork with upstream.
