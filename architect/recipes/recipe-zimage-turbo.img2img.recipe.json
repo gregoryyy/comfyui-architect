@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 1,
+  "id": "recipe-zimage-turbo.img2img",
+  "revision": 1,
+  "title": "Z-Image Turbo: image to image",
+  "description": "Prompt-guided image to image with Z-Image Turbo: the source image is encoded to a latent and sampled again at a denoise below 1, so the prompt reshapes the image while lower denoise keeps more of its structure. It is not instruction editing: the model doesn't follow edit instructions, it renders the prompt starting from the source. The output has the source image's size. The source image slot takes a file name in ComfyUI's input folder.",
+  "kind": "image",
+  "operations": ["image_edit"],
+  "graph": {
+    "1": {
+      "class_type": "UNETLoader",
+      "inputs": { "unet_name": "z_image_turbo_bf16.safetensors", "weight_dtype": "default" },
+      "_meta": { "title": "Diffusion model" }
+    },
+    "2": {
+      "class_type": "CLIPLoader",
+      "inputs": { "clip_name": "qwen_3_4b.safetensors", "type": "qwen_image" },
+      "_meta": { "title": "Text encoder" }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "inputs": { "vae_name": "ae.safetensors" },
+      "_meta": { "title": "VAE" }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "inputs": { "clip": ["2", 0], "text": "" },
+      "_meta": { "title": "Positive" }
+    },
+    "5": {
+      "class_type": "ConditioningZeroOut",
+      "inputs": { "conditioning": ["4", 0] },
+      "_meta": { "title": "Negative (zeroed)" }
+    },
+    "6": {
+      "class_type": "LoadImage",
+      "inputs": { "image": "" },
+      "_meta": { "title": "Source image" }
+    },
+    "7": {
+      "class_type": "VAEEncode",
+      "inputs": { "pixels": ["6", 0], "vae": ["3", 0] },
+      "_meta": { "title": "Encode source" }
+    },
+    "8": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": ["1", 0],
+        "positive": ["4", 0],
+        "negative": ["5", 0],
+        "latent_image": ["7", 0],
+        "seed": 0,
+        "steps": 10,
+        "cfg": 1,
+        "sampler_name": "dpmpp_sde",
+        "scheduler": "beta",
+        "denoise": 1
+      },
+      "_meta": { "title": "Sampler" }
+    },
+    "9": {
+      "class_type": "VAEDecode",
+      "inputs": { "samples": ["8", 0], "vae": ["3", 0] },
+      "_meta": { "title": "Decode" }
+    },
+    "10": {
+      "class_type": "SaveImage",
+      "inputs": { "images": ["9", 0], "filename_prefix": "architect/zimage-turbo-img2img" },
+      "_meta": { "title": "Save" }
+    }
+  },
+  "slots": [
+    {
+      "id": "diffusion_model",
+      "label": "Z-Image Turbo diffusion model",
+      "valueType": "model_file",
+      "target": { "node": "1", "input": "unet_name" },
+      "required": true,
+      "default": "z_image_turbo_bf16.safetensors",
+      "modelFolder": "diffusion_models",
+      "modelFamily": "z-image-turbo"
+    },
+    {
+      "id": "text_encoder",
+      "label": "Qwen 3 4B text encoder",
+      "valueType": "model_file",
+      "target": { "node": "2", "input": "clip_name" },
+      "required": true,
+      "default": "qwen_3_4b.safetensors",
+      "modelFolder": "text_encoders",
+      "modelFamily": "qwen3-4b"
+    },
+    {
+      "id": "vae",
+      "label": "Z-Image VAE",
+      "valueType": "model_file",
+      "target": { "node": "3", "input": "vae_name" },
+      "required": true,
+      "default": "ae.safetensors",
+      "modelFolder": "vae",
+      "modelFamily": "z-image-vae"
+    },
+    {
+      "id": "prompt",
+      "label": "Prompt",
+      "valueType": "string",
+      "target": { "node": "4", "input": "text" },
+      "required": true
+    },
+    {
+      "id": "source_image",
+      "label": "Source image (file name in ComfyUI's input folder)",
+      "valueType": "string",
+      "target": { "node": "6", "input": "image" },
+      "required": true
+    },
+    {
+      "id": "denoise",
+      "label": "Denoise (below 1 keeps more of the source)",
+      "valueType": "float",
+      "target": { "node": "8", "input": "denoise" },
+      "required": true,
+      "min": 0,
+      "max": 1
+    },
+    {
+      "id": "seed",
+      "label": "Seed",
+      "valueType": "seed",
+      "target": { "node": "8", "input": "seed" },
+      "required": true
+    }
+  ],
+  "outputs": [{ "role": "image", "node": "10" }],
+  "dependencies": {
+    "nodeClasses": [
+      "UNETLoader",
+      "CLIPLoader",
+      "VAELoader",
+      "CLIPTextEncode",
+      "ConditioningZeroOut",
+      "LoadImage",
+      "VAEEncode",
+      "KSampler",
+      "VAEDecode",
+      "SaveImage"
+    ]
+  },
+  "certification": "proposed",
+  "evidence": [
+    {
+      "kind": "upstream_pack",
+      "source": "plugin/skills/z-image-txt2img/SKILL.md at fork baseline 707474d2 (blob 3dafc274)",
+      "observedAt": "2026-11-15T17:31:48+01:00",
+      "note": "Components and sampler values as in recipe-zimage-turbo.t2i (UNETLoader, CLIPLoader type qwen_image, VAELoader; 10 steps, CFG 1.0, dpmpp_sde, beta). The skill describes img2img only as an optional low-denoise refinement pass for Z-Image Base (denoise 0.15); it gives no Turbo img2img values, so denoise has no default here. The source-image path (LoadImage, then VAEEncode into the sampler's latent) follows the live KSampler schema, whose denoise tooltip says lower values keep the structure of the initial image for image to image sampling."
+    },
+    {
+      "kind": "documentation",
+      "source": "GET http://127.0.0.1:8188/object_info/<class>, ComfyUI Desktop 0.44.0; captured in src/__tests__/architect/fixtures/object-info-desktop-0.44.0.json",
+      "observedAt": "2026-11-15T17:32:29+01:00",
+      "note": "Every node class, input name and COMBO value is in the live schema; denoise bounds 0 to 1 come from KSampler. LoadImage.image is a COMBO of the files in ComfyUI's input folder, so the validator checks the slot's value against the target."
+    }
+  ]
+}

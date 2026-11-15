@@ -1,0 +1,170 @@
+{
+  "schemaVersion": 1,
+  "id": "recipe-zimage-turbo.t2i",
+  "revision": 1,
+  "title": "Z-Image Turbo: text to image",
+  "description": "Text to image with Z-Image Turbo from separate components: diffusion model, Qwen 3 4B text encoder and VAE. Turbo is DMD-distilled, so it samples in 10 steps at CFG 1.0 and ignores the negative prompt; the negative input is the zeroed positive conditioning. Width and height should be divisible by 16.",
+  "kind": "image",
+  "operations": ["text_to_image"],
+  "graph": {
+    "1": {
+      "class_type": "UNETLoader",
+      "inputs": { "unet_name": "z_image_turbo_bf16.safetensors", "weight_dtype": "default" },
+      "_meta": { "title": "Diffusion model" }
+    },
+    "2": {
+      "class_type": "CLIPLoader",
+      "inputs": { "clip_name": "qwen_3_4b.safetensors", "type": "qwen_image" },
+      "_meta": { "title": "Text encoder" }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "inputs": { "vae_name": "ae.safetensors" },
+      "_meta": { "title": "VAE" }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "inputs": { "clip": ["2", 0], "text": "" },
+      "_meta": { "title": "Positive" }
+    },
+    "5": {
+      "class_type": "ConditioningZeroOut",
+      "inputs": { "conditioning": ["4", 0] },
+      "_meta": { "title": "Negative (zeroed)" }
+    },
+    "6": {
+      "class_type": "EmptySD3LatentImage",
+      "inputs": { "width": 1024, "height": 1024, "batch_size": 1 },
+      "_meta": { "title": "Latent" }
+    },
+    "7": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": ["1", 0],
+        "positive": ["4", 0],
+        "negative": ["5", 0],
+        "latent_image": ["6", 0],
+        "seed": 0,
+        "steps": 10,
+        "cfg": 1,
+        "sampler_name": "dpmpp_sde",
+        "scheduler": "beta",
+        "denoise": 1
+      },
+      "_meta": { "title": "Sampler" }
+    },
+    "8": {
+      "class_type": "VAEDecode",
+      "inputs": { "samples": ["7", 0], "vae": ["3", 0] },
+      "_meta": { "title": "Decode" }
+    },
+    "9": {
+      "class_type": "SaveImage",
+      "inputs": { "images": ["8", 0], "filename_prefix": "architect/zimage-turbo-t2i" },
+      "_meta": { "title": "Save" }
+    }
+  },
+  "slots": [
+    {
+      "id": "diffusion_model",
+      "label": "Z-Image Turbo diffusion model",
+      "valueType": "model_file",
+      "target": { "node": "1", "input": "unet_name" },
+      "required": true,
+      "default": "z_image_turbo_bf16.safetensors",
+      "modelFolder": "diffusion_models",
+      "modelFamily": "z-image-turbo"
+    },
+    {
+      "id": "text_encoder",
+      "label": "Qwen 3 4B text encoder",
+      "valueType": "model_file",
+      "target": { "node": "2", "input": "clip_name" },
+      "required": true,
+      "default": "qwen_3_4b.safetensors",
+      "modelFolder": "text_encoders",
+      "modelFamily": "qwen3-4b"
+    },
+    {
+      "id": "vae",
+      "label": "Z-Image VAE",
+      "valueType": "model_file",
+      "target": { "node": "3", "input": "vae_name" },
+      "required": true,
+      "default": "ae.safetensors",
+      "modelFolder": "vae",
+      "modelFamily": "z-image-vae"
+    },
+    {
+      "id": "prompt",
+      "label": "Prompt",
+      "valueType": "string",
+      "target": { "node": "4", "input": "text" },
+      "required": true
+    },
+    {
+      "id": "width",
+      "label": "Width",
+      "valueType": "int",
+      "target": { "node": "6", "input": "width" },
+      "required": true,
+      "default": 1024,
+      "fromTask": "media.output.width",
+      "min": 16,
+      "max": 16384
+    },
+    {
+      "id": "height",
+      "label": "Height",
+      "valueType": "int",
+      "target": { "node": "6", "input": "height" },
+      "required": true,
+      "default": 1024,
+      "fromTask": "media.output.height",
+      "min": 16,
+      "max": 16384
+    },
+    {
+      "id": "seed",
+      "label": "Seed",
+      "valueType": "seed",
+      "target": { "node": "7", "input": "seed" },
+      "required": true
+    }
+  ],
+  "outputs": [{ "role": "image", "node": "9" }],
+  "dependencies": {
+    "nodeClasses": [
+      "UNETLoader",
+      "CLIPLoader",
+      "VAELoader",
+      "CLIPTextEncode",
+      "ConditioningZeroOut",
+      "EmptySD3LatentImage",
+      "KSampler",
+      "VAEDecode",
+      "SaveImage"
+    ]
+  },
+  "certification": "proposed",
+  "evidence": [
+    {
+      "kind": "upstream_pack",
+      "source": "plugin/skills/z-image-txt2img/SKILL.md at fork baseline 707474d2 (blob 3dafc274)",
+      "observedAt": "2026-11-15T17:31:48+01:00",
+      "note": "Components (UNETLoader z_image_turbo_bf16, CLIPLoader type qwen_image with qwen_3_4b, VAELoader), the Turbo preset marked sharpest (10 steps, CFG 1.0, dpmpp_sde, beta), 1024x1024, sides divisible by 16, negative prompt not effective. The skill names the VAE z-image-ae.safetensors, a renamed copy of ae.safetensors from Comfy-Org/z_image_turbo; the installed file and the template keep the name ae.safetensors. The skill also says this VAE has different weights from FLUX.1's ae.safetensors; which of the two the installed file is has not been checked. The skill's author pick res_2s is not a KSampler sampler on this install."
+    },
+    {
+      "kind": "documentation",
+      "source": "ComfyUI workflow template image_z_image_turbo (comfyui-workflow-templates 0.11.103, GET http://127.0.0.1:8188/templates/image_z_image_turbo.json)",
+      "observedAt": "2026-11-15T17:31:48+01:00",
+      "note": "The skill gives no complete Turbo graph; the node chain follows the official template: CLIPTextEncode for the prompt (the skill's TextEncodeZImageOmni is experimental and adds reference-image tokens), ConditioningZeroOut as negative, EmptySD3LatentImage. The template uses CLIPLoader type lumina2 and 8 steps of res_multistep/simple; this recipe keeps the skill's values. The template's ModelSamplingAuraFlow shift 3 is left out: it equals the default shift of the Z-Image model class (3.0, comfy/supported_models.py, ZImage)."
+    },
+    {
+      "kind": "documentation",
+      "source": "GET http://127.0.0.1:8188/object_info/<class>, ComfyUI Desktop 0.44.0; captured in src/__tests__/architect/fixtures/object-info-desktop-0.44.0.json",
+      "observedAt": "2026-11-15T17:32:29+01:00",
+      "note": "Every node class, input name and COMBO value (weight_dtype default, type qwen_image, sampler dpmpp_sde, scheduler beta) is in the live schema; width and height bounds 16 to 16384 come from EmptySD3LatentImage."
+    }
+  ]
+}

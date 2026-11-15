@@ -1,0 +1,180 @@
+{
+  "schemaVersion": 1,
+  "id": "recipe-flux1-schnell.t2i",
+  "revision": 1,
+  "title": "FLUX.1-schnell: text to image",
+  "description": "Text to image with FLUX.1-schnell from separate components: diffusion model, T5-XXL and CLIP-L text encoders through DualCLIPLoader, and the FLUX.1 VAE. Schnell is timestep-distilled: 4 steps at CFG 1.0, no negative prompt (the negative input is the zeroed positive conditioning) and no guidance embedding, so the graph has no FluxGuidance node. Width and height should be multiples of 8, about one megapixel. The text-encoder defaults are the files upstream's skill names: the files this recipe expects, whether or not a target has them.",
+  "kind": "image",
+  "operations": ["text_to_image"],
+  "graph": {
+    "1": {
+      "class_type": "UNETLoader",
+      "inputs": { "unet_name": "flux1-schnell-fp8.safetensors", "weight_dtype": "default" },
+      "_meta": { "title": "Diffusion model" }
+    },
+    "2": {
+      "class_type": "DualCLIPLoader",
+      "inputs": { "clip_name1": "t5xxl_fp8_e4m3fn.safetensors", "clip_name2": "clip_l.safetensors", "type": "flux" },
+      "_meta": { "title": "Text encoders" }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "inputs": { "vae_name": "ae.safetensors" },
+      "_meta": { "title": "VAE" }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "inputs": { "clip": ["2", 0], "text": "" },
+      "_meta": { "title": "Positive" }
+    },
+    "5": {
+      "class_type": "ConditioningZeroOut",
+      "inputs": { "conditioning": ["4", 0] },
+      "_meta": { "title": "Negative (zeroed)" }
+    },
+    "6": {
+      "class_type": "EmptyLatentImage",
+      "inputs": { "width": 1024, "height": 1024, "batch_size": 1 },
+      "_meta": { "title": "Latent" }
+    },
+    "7": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": ["1", 0],
+        "positive": ["4", 0],
+        "negative": ["5", 0],
+        "latent_image": ["6", 0],
+        "seed": 0,
+        "steps": 4,
+        "cfg": 1,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "denoise": 1
+      },
+      "_meta": { "title": "Sampler" }
+    },
+    "8": {
+      "class_type": "VAEDecode",
+      "inputs": { "samples": ["7", 0], "vae": ["3", 0] },
+      "_meta": { "title": "Decode" }
+    },
+    "9": {
+      "class_type": "SaveImage",
+      "inputs": { "images": ["8", 0], "filename_prefix": "architect/flux1-schnell-t2i" },
+      "_meta": { "title": "Save" }
+    }
+  },
+  "slots": [
+    {
+      "id": "diffusion_model",
+      "label": "FLUX.1-schnell diffusion model",
+      "valueType": "model_file",
+      "target": { "node": "1", "input": "unet_name" },
+      "required": true,
+      "default": "flux1-schnell-fp8.safetensors",
+      "modelFolder": "diffusion_models",
+      "modelFamily": "flux1-schnell"
+    },
+    {
+      "id": "t5xxl",
+      "label": "T5-XXL text encoder (expected file)",
+      "valueType": "model_file",
+      "target": { "node": "2", "input": "clip_name1" },
+      "required": true,
+      "default": "t5xxl_fp8_e4m3fn.safetensors",
+      "modelFolder": "text_encoders",
+      "modelFamily": "t5-xxl"
+    },
+    {
+      "id": "clip_l",
+      "label": "CLIP-L text encoder (expected file)",
+      "valueType": "model_file",
+      "target": { "node": "2", "input": "clip_name2" },
+      "required": true,
+      "default": "clip_l.safetensors",
+      "modelFolder": "text_encoders",
+      "modelFamily": "clip-l"
+    },
+    {
+      "id": "vae",
+      "label": "FLUX.1 VAE",
+      "valueType": "model_file",
+      "target": { "node": "3", "input": "vae_name" },
+      "required": true,
+      "default": "ae.safetensors",
+      "modelFolder": "vae",
+      "modelFamily": "flux1-vae"
+    },
+    {
+      "id": "prompt",
+      "label": "Prompt",
+      "valueType": "string",
+      "target": { "node": "4", "input": "text" },
+      "required": true
+    },
+    {
+      "id": "width",
+      "label": "Width",
+      "valueType": "int",
+      "target": { "node": "6", "input": "width" },
+      "required": true,
+      "default": 1024,
+      "fromTask": "media.output.width",
+      "min": 16,
+      "max": 16384
+    },
+    {
+      "id": "height",
+      "label": "Height",
+      "valueType": "int",
+      "target": { "node": "6", "input": "height" },
+      "required": true,
+      "default": 1024,
+      "fromTask": "media.output.height",
+      "min": 16,
+      "max": 16384
+    },
+    {
+      "id": "seed",
+      "label": "Seed",
+      "valueType": "seed",
+      "target": { "node": "7", "input": "seed" },
+      "required": true
+    }
+  ],
+  "outputs": [{ "role": "image", "node": "9" }],
+  "dependencies": {
+    "nodeClasses": [
+      "UNETLoader",
+      "DualCLIPLoader",
+      "VAELoader",
+      "CLIPTextEncode",
+      "ConditioningZeroOut",
+      "EmptyLatentImage",
+      "KSampler",
+      "VAEDecode",
+      "SaveImage"
+    ]
+  },
+  "certification": "proposed",
+  "evidence": [
+    {
+      "kind": "upstream_pack",
+      "source": "plugin/skills/flux-txt2img/SKILL.md at fork baseline 707474d2 (blob 3bc69dca)",
+      "observedAt": "2026-11-15T17:31:48+01:00",
+      "note": "The skill has no schnell section; the graph follows its FLUX.1 pattern: UNETLoader with weight_dtype default, DualCLIPLoader type flux with t5xxl_fp8_e4m3fn.safetensors and clip_l.safetensors, VAELoader ae.safetensors, CFG 1.0, ConditioningZeroOut as negative, EmptyLatentImage, 1024x1024, multiples of 8. The sampler values are its 4-step distilled settings (euler, simple). The skill's FluxGuidance or CLIPTextEncodeFlux guidance is left out because schnell has no guidance embedding (guidance_embed False for FluxSchnell in comfy/supported_models.py). The skill says Z-Image's VAE differs from this one although both are named ae.safetensors; which of the two the installed ae.safetensors is has not been checked."
+    },
+    {
+      "kind": "documentation",
+      "source": "ComfyUI workflow templates flux_schnell and flux_schnell_full_text_to_image (comfyui-workflow-templates 0.11.103, GET http://127.0.0.1:8188/templates/<name>.json)",
+      "observedAt": "2026-11-15T17:31:48+01:00",
+      "note": "Both templates sample schnell in 4 steps at CFG 1.0 with euler and simple, as this recipe does, and use EmptySD3LatentImage where the skill uses EmptyLatentImage. The flux_schnell template loads flux1-schnell-fp8.safetensors with CheckpointLoaderSimple: that file is the all-in-one checkpoint with T5-XXL, CLIP-L and VAE inside. This recipe loads only its diffusion model with UNETLoader and needs the separate encoder files."
+    },
+    {
+      "kind": "documentation",
+      "source": "GET http://127.0.0.1:8188/object_info/<class>, ComfyUI Desktop 0.44.0; captured in src/__tests__/architect/fixtures/object-info-desktop-0.44.0.json",
+      "observedAt": "2026-11-15T17:32:29+01:00",
+      "note": "Every node class, input name and COMBO value (weight_dtype default, DualCLIPLoader type flux, sampler euler, scheduler simple) is in the live schema; width and height bounds 16 to 16384 come from EmptyLatentImage."
+    }
+  ]
+}
