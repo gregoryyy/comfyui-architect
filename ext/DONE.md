@@ -4,7 +4,7 @@ The progress log, newest entry on top. Each entry: `## YYYY-MM-DD HH:MM — Titl
 
 ## 2026-11-15 18:28 — Milestone 2: one end-to-end planning slice
 
-TODO items: 2.1–2.7 with their subtasks; notes on 1.3.1. GAPS Q14–Q19 (new; Q17–Q19 answered). Branch `feat/milestone-2`.
+TODO items: 2.1–2.7 with their subtasks; notes on 1.3.1. GAPS Q14–Q19 (new; Q17–Q19 answered). PR #7, branch `feat/milestone-2`.
 
 Agent: Opus 5.5, subagents: implementer ×4 (Opus 5.5: the store, the compiler and validation, the environment models, the first recipes), assurance ×1 (Opus 5.5, read-only review).
 
