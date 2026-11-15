@@ -46,6 +46,7 @@ export class ArchitectService {
     const probeErrors: ProbeError[] = [];
     const snapshot: Record<string, unknown> = {
       schemaVersion: ARCHITECT_SCHEMA_VERSION,
+      id: `env-${this.deps.newId()}`,
       capturedAt: now().toISOString(),
       target: { baseUrl: upstream.comfyuiBaseUrl() },
     };

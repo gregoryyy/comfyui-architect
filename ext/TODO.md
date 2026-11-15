@@ -65,12 +65,32 @@ Exit (spec §20): the fork launches from an installed package, identifies itself
 
 ## 2. One end-to-end planning slice (spec Phase 1)
 
-Exit (spec §20): a user can describe an image task, compare installed-asset candidates and obtain an editable graph with explicit constraints and provenance. No downloads, no automatic execution. Detailed when milestone 1 is done.
+Exit (spec §20): a user can describe an image task, compare installed-asset candidates and obtain an editable graph with explicit constraints and provenance. No downloads, no automatic execution. The design decisions are in [ARCH](ARCH.md#decision-log) (2026-11-15, milestone 2 rows). The exit needs at least one shipped recipe, so it waits on GAPS Q12; everything else runs on fixture recipes.
 
 - [ ] 2.1 Domain schemas with migration tests: `TaskSpec`, `EnvironmentSnapshot`, `Recipe`, `PlanCandidate` (spec §7.1), with image-specific fields in a kind-specific part, so video and audio later add a kind without a migration of the core records (AGENTS, scope decisions)
+  - [ ] 2.1.1 `src/services/architect/schemas.ts`: `TaskSpecInput` and `TaskSpec` (kind-specific `media`), `Recipe` and `RecipeSlot`, `ApiGraph`, `CheckResult` and `ValidationReport`, `PlanCandidate`, `Plan` with the planning states, `PlanBlockers` (spec §9.5)
+  - [ ] 2.1.2 `parseStored`: step-wise upgrades by `schemaVersion`, refusal of newer versions; tests for valid, missing, newer and unknown-property records of each kind
 - [ ] 2.2 `architect.db`: store, WAL, migrations, the planning tables (spec §15)
+  - [ ] 2.2.1 `ARCHITECT_DATA_DIR` resolution and `src/services/architect/store.ts`: open with WAL and foreign keys, numbered migrations in `schema_migrations`, transactional writes
+  - [ ] 2.2.2 Repositories for tasks and task revisions, environments, catalog sources and recipes, plans and candidates; every read goes through `parseStored`
+  - [ ] 2.2.3 Tests on a temporary directory: migrations idempotent, a reopened database keeps its records, a tampered payload is refused on read, two connections in WAL mode
+  - [ ] 2.2.4 `ARCHITECT_DATA_DIR` reaches the panel agent's tool server (`buildComfyuiMcpEnv`, the TODO 1.12 seam)
 - [ ] 2.3 Environment snapshot through the facade, with freshness and probe errors (spec §8.3)
-- [ ] 2.4 Local catalog and three curated recipes for the families chosen in GAPS Q5 (spec §8)
+  - [ ] 2.3.1 Facade: installed models by folder from upstream's `listLocalModelsWithCoverage`, keeping answered, unanswered and absent folders apart (#796)
+  - [ ] 2.3.2 `installedModels` in the snapshot; freshness with a configurable maximum age; a stale or partial snapshot says so
+- [ ] 2.4 Local catalog and three curated recipes for the families chosen in GAPS Q12 (spec §8)
+  - [ ] 2.4.1 Recipe loader: shipped recipes from `architect/recipes/`, validated, content-hashed, recorded with their catalog source; an invalid file is reported, never skipped silently
+  - [ ] 2.4.2 Retrieval: filter by kind and operation, then rank by installed-dependency overlap, at most 20 (spec §8.5, §9.2)
+  - [ ] 2.4.3 Fixture recipes for tests (certification `fixture`)
+  - [ ] 2.4.4 Three curated recipes. Blocked on GAPS Q12
 - [ ] 2.5 `architect_inspect` and the planning actions of `architect_plan` (spec §16.1)
+  - [ ] 2.5.1 `architect_inspect`: `environment` with installed models, and `capabilities` (the catalog's recipes and their dependency status)
+  - [ ] 2.5.2 `architect_plan`: `prepare`, `propose`, `get`, `validate`, `select`, `export`; agent-supplied bindings are checked against the snapshot, so a model file the target doesn't list is refused (spec §9.2)
+  - [ ] 2.5.3 Candidate enumeration: bounded (24 expanded, 3 presented), hard constraints before ranking, blocked candidates and an unsatisfied-constraints report grouped by spec §9.5
 - [ ] 2.6 Template binding and layered validation, one task to a validated export (spec §10)
+  - [ ] 2.6.1 Compiler: recipe and bindings to an API graph, a role map and a canonical graph fingerprint (spec §10.2, §10.5)
+  - [ ] 2.6.2 Validation layers against the live node schemas: contract, structure, native types, dependencies, policy; semantic types where the recipe annotates families, otherwise unknown; runtime not applicable without execution (spec §10.3)
+  - [ ] 2.6.3 Export into `ARCHITECT_DATA_DIR/artifacts/<task>/<revision>/`: `task.json`, `plan.json`, `workflow.api.json`, `validation.json`, `dependencies.lock.json` (spec §15.1)
 - [ ] 2.7 The skill `plugin/skills/comfyui-architect/` and the command `plugin/commands/architect.md`
+  - [ ] 2.7.1 The skill: when to plan with Architect, the action order, what the agent may and may not supply (spec §9.2), and how to present candidates and blockers
+  - [ ] 2.7.2 The command, and the plugin's skill and command lists, checked by upstream's plugin tests

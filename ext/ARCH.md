@@ -47,6 +47,11 @@ Newest first. Each entry: date, decision, reason, where it's recorded.
 
 | Date | Decision | Reason | Recorded in |
 | --- | --- | --- | --- |
+| 2026-11-15 | Milestone 2 contracts in `src/services/architect/schemas.ts`: `TaskSpec` carries the kind-specific part in `media`, a union discriminated by `kind` with only `image` so far; `Recipe` slots write node inputs and say where values come from (`fromTask`, model folder); `PlanCandidate` keeps bindings, compiled-graph fingerprint, role map, layered validation report, dependency delta and an unknown resource estimate; `parseStored` reads stored records with step-wise upgrades and refuses newer versions | Kind-neutral core records (AGENTS); spec §7, §9, §10; a resource number nobody measured would be invented (spec §9.3) | TODO 2.1 |
+| 2026-11-15 | `architect.db` lives in `ARCHITECT_DATA_DIR`, default `<COMFYUI_MCP_DATA_DIR or ~/.comfyui-mcp>/architect/`, opened with WAL and foreign keys like upstream's `generations.db`; migrations are numbered and in code. Milestone 2 creates `schema_migrations`, `tasks`, `task_revisions`, `environments`, `catalog_sources`, `recipes`, `plans` and `plan_candidates`; the other spec §15.2 tables come with the milestones that use them | Next to upstream's data, never inside the ComfyUI install (upstream #872); tables only when something writes them | TODO 2.2 |
+| 2026-11-15 | Recipes are JSON files validated by the `Recipe` schema: shipped ones in `architect/recipes/`, test fixtures under `src/__tests__/architect/fixtures/` with certification `fixture`, never offered from the shipped catalog | JSON hashes deterministically and holds API graphs as they are; fixtures let the pipeline be tested before GAPS Q12 picks families | TODO 2.4 |
+| 2026-11-15 | Milestone 2 compiles and exports the API-format graph only; the UI graph (spec §10.4) comes with the first certified recipe, from its original UI template | The API graph is the execution authority; a UI graph built without a template would claim a round trip nobody tested | TODO 2.6 |
+| 2026-11-15 | Candidates rank by evidence tier (certified, curated, fixture), then by dependency delta; no quality or resource numbers until runs measure them | Spec §9.3 allows ordered evidence tiers and forbids fabricated scores | TODO 2.5 |
 | 2026-11-15 | Architect is switched on by the environment variable `COMFYUI_ARCHITECT` (`1`, `true`, `yes`, `on`), read in `src/services/architect/config.ts`; off by default | Keeps `src/config.ts` untouched; one place to read it; off means upstream | TODO 1.5 |
 | 2026-11-15 | The fork identifies itself through `src/fork-identity.ts`, `serverInfo.title` and a handshake line, while package, command and server name stay `comfyui-mcp` pending GAPS Q11 | Identity without touching launch paths; `boot-server-version.test.ts` pins the server name | TODO 1.4 |
 | 2026-11-15 | The first local planner profile is upstream's default `artokun/gemma4-comfyui-mcp:e4b`, named in configuration | Fastest start with a model trained on the tool suite; SPEC §12.3 forbids hardcoding a best model in code | GAPS Q9, TODO 1.2.2 |
@@ -68,6 +73,6 @@ Newest first. Each entry: date, decision, reason, where it's recorded.
 
 | Decision | Needed by | Tracked |
 | --- | --- | --- |
-| The first certified model families (2–3) | TODO 2.4 | GAPS Q12 |
+| The first certified model families (2–3); until then milestone 2 runs on fixture recipes and ships none | TODO 2.4 | GAPS Q12 |
 | The kind of workflow after images | ROAD phase 6 | GAPS Q10, decided after the MVP |
 | How far the rename reaches, and with it the fork's package version (upstream's version checks apply to the panel's version, not the server's; A9) | TODO 1.3 | GAPS Q11 |
