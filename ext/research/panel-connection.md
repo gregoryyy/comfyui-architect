@@ -23,7 +23,7 @@ How upstream's sidebar panel (`artokun/comfyui-mcp-panel`) connects to a comfyui
 
 ## Consequences
 
-- **The development setup:** start the fork's server first, then connect with the panel's "auto-start MCP" setting off. With the setting on, a live fork on 9199 is still found first, but if none runs, the launcher starts upstream's latest package from npm.
+- **The development setup:** start the fork's server first, then connect with the panel's "Autostart MCP" setting off. With the setting on, a live fork on 9199 is still found first, but if none runs, the launcher starts upstream's latest package from npm.
 - **For the rename (GAPS Q11):** while the launcher's command names `comfyui-mcp@latest`, the panel can only ever launch upstream. Launching the fork from the panel needs the launcher's command changed in the fork, and a fork launcher next to upstream's would compete for the single `launcher.json`. This hasn't been checked.
 - **Version floors:** the fork must not raise upstream's panel floors without a panel to match, or the stock panel gets refused.
 - **Not determined:** whether two launchers can coexist, and how the server behaves after giving up on the bind.

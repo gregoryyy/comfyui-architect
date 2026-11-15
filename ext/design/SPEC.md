@@ -90,7 +90,7 @@ Therefore:
 
 1. The first usable version MUST work through MCP and the unchanged panel's existing chat/choice controls.
 2. The fork MUST identify itself and its build at connection time. A connection to stock upstream must not appear to be an Architect-enabled connection.
-3. Development installation MUST start the fork explicitly and turn off the panel's "auto-start MCP" setting (`comfyui-mcp.autostartMcp`), so the panel connects to the running fork and never starts upstream through its launcher. *(Changed from v1.0, which named `COMFYUI_MCP_NO_AUTOSPAWN=1`; the panel's code doesn't read that variable, GAPS A6.)*
+3. Development installation MUST start the fork explicitly and turn off the panel's "Autostart MCP" setting (`comfyui-mcp.autostartMcp`), so the panel connects to the running fork and never starts upstream through its launcher. *(Changed from v1.0, which named `COMFYUI_MCP_NO_AUTOSPAWN=1`; the panel's code doesn't read that variable, GAPS A6.)*
 4. Rich candidate cards and an Architect drawer MAY be added through a small companion panel fork or upstream contribution. They are not a prerequisite for the core planner.
 5. The core and panel MUST negotiate capabilities; an old panel can fall back to text and existing choice controls.
 
@@ -869,7 +869,7 @@ Defining a cloud profile does not enable it under `local-private`; effective per
 
 Use a distinct scoped package identity and preserve the upstream CLI behavior where practical. The exact published name is an implementation choice; installation instructions must point to the fork, not to upstream `@latest`.
 
-For development: clone the fork, use its lockfile, build, and start its compiled CLI with the inherited connection configuration. Configure external MCP clients to launch that build. For the panel, turn off its "auto-start MCP" setting and connect to the manually started fork (GAPS A6).
+For development: clone the fork, use its lockfile, build, and start its compiled CLI with the inherited connection configuration. Configure external MCP clients to launch that build. For the panel, turn off its "Autostart MCP" setting and connect to the manually started fork (GAPS A6).
 
 Startup MUST expose package identity, fork version, upstream commit, Architect schema version, active policy and available features. Never expose secrets in this handshake.
 
