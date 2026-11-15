@@ -227,4 +227,13 @@ CREATE INDEX runs_action_plan_id ON runs(action_plan_id);
 CREATE INDEX evaluations_run_id ON evaluations(run_id);
 `,
   },
+  {
+    version: 3,
+    name: "one_submission_per_run",
+    sql: `
+-- spec §15.4: a run is submitted at most once. The store's claimSubmission checks this in
+-- an IMMEDIATE transaction; the index keeps a second attempt out even if a writer skipped it.
+CREATE UNIQUE INDEX run_events_one_submit_attempt ON run_events(run_id) WHERE kind = 'submit_attempt';
+`,
+  },
 ];

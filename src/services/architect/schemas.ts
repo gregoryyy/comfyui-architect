@@ -521,8 +521,33 @@ export const Effect = z.discriminatedUnion("kind", [
       outputNodes: z.array(z.string().min(1)).min(1),
     })
     .strict(),
+  z
+    .object({
+      /**
+       * Unload these models from a local Ollama before the render and load them back after
+       * it (spec §11.3; GAPS Q23). Listed only with ARCHITECT_MANAGE_RESIDENCY=1, from what
+       * Ollama held in the pool when the plan was prepared, so the user approves each one.
+       * A model not listed here is never unloaded.
+       */
+      kind: z.literal("release_residency"),
+      host: z.string().url(),
+      models: z
+        .array(
+          z
+            .object({
+              name: z.string().min(1),
+              /** Memory Ollama reported for it (`size_vram`), in bytes. */
+              sizeBytes: z.number().int().min(0),
+            })
+            .strict(),
+        )
+        .min(1),
+      reload: z.literal(true),
+    })
+    .strict(),
 ]);
 export type Effect = z.infer<typeof Effect>;
+export type ReleaseResidencyEffect = Extract<Effect, { kind: "release_residency" }>;
 
 const ActionPlanObject = z
   .object({

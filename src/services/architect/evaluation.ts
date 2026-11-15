@@ -1,9 +1,10 @@
 // Automatic output checks (spec §13.2; TODO 3.7, AT-08): run completion, output count,
 // readability, format and dimensions against the task, one `EvaluationRecord` each.
 //
-// Data in, data out: the controller fetches and probes the files, this module only judges
-// them. A file that couldn't be fetched or whose header couldn't be read is never a pass:
-// what can't be observed is `unknown` (spec §7.3, #796). `user_review` criteria aren't
+// Data in, data out: the controller fetches, probes and decodes the files, this module only
+// judges them. Format and size come from the header; readability needs the whole image to
+// decode, at the size the header states. A file that couldn't be fetched, read or decoded
+// is never a pass: what can't be observed is `unknown` (spec §7.3, #796). `user_review` criteria aren't
 // judged here; they stay pending until the user's verdict arrives through an approval
 // channel (ARCH milestone 3, evaluation).
 
@@ -21,7 +22,8 @@ import {
 import type { z } from "zod";
 
 export const OUTPUT_EVALUATOR_ID = "architect.output-basic";
-export const OUTPUT_EVALUATOR_VERSION = "1";
+/** 2: readability needs a full decode at the header's size, not the header alone. */
+export const OUTPUT_EVALUATOR_VERSION = "2";
 
 /** The criteria this evaluator adds for every image task, besides the task's own. */
 export const BUILT_IN_IMAGE_CRITERIA = [
@@ -41,9 +43,40 @@ export type OutputProbe =
   /** The bytes couldn't be fetched; nothing about the file was observed. */
   | { readable: false; fetched: false; reason: string };
 
+/** What decoding a file's whole image established (spec §13.2, readability). */
+export type DecodeResult =
+  | { state: "decoded"; width: number; height: number }
+  /** The bytes were fetched and don't decode: an observed failure. */
+  | { state: "failed"; reason: string }
+  /** No decode happened: the file wasn't fetched or read, or no decoder could be loaded. */
+  | { state: "not_attempted"; reason: string };
+
 export interface ProbedOutput {
   ref: RunOutput;
   probe: OutputProbe;
+  decode: DecodeResult;
+}
+
+/**
+ * One file's readability. A header that was fetched and doesn't parse is an observed
+ * failure, and so is an image that doesn't decode or decodes at another size than its
+ * header states; bytes that never arrived, or a decode that didn't happen, say nothing.
+ */
+function readability(f: ProbedOutput): { verdict: Verdict; note?: string } {
+  if (!f.probe.readable) return { verdict: "fetched" in f.probe ? "unknown" : "fail", note: f.probe.reason };
+  const d = f.decode;
+  switch (d.state) {
+    case "decoded":
+      if (d.width === f.probe.width && d.height === f.probe.height) return { verdict: "pass" };
+      return {
+        verdict: "fail",
+        note: `the header states ${f.probe.width}×${f.probe.height}, the image decodes at ${d.width}×${d.height}`,
+      };
+    case "failed":
+      return { verdict: "fail", note: `the image doesn't decode: ${d.reason}` };
+    case "not_attempted":
+      return { verdict: "unknown", note: `not decoded: ${d.reason}` };
+  }
 }
 
 export interface EvaluateOutputsInput {
@@ -156,12 +189,11 @@ function evaluateImage(
     );
   }
 
-  // A header that was fetched and doesn't parse is an observed failure; bytes that never
-  // arrived, or an entry that couldn't even be named, say nothing about the file.
-  const readable = combine(files.map((f): Verdict => (f.probe.readable ? "pass" : "fetched" in f.probe ? "unknown" : "fail")));
-  const unreadable = files.filter((f) => !f.probe.readable);
+  // An entry that couldn't even be named says nothing about the file it stands for.
+  const perFile = files.map((f) => ({ f, ...readability(f) }));
+  const readable = combine(perFile.map((r) => r.verdict));
   const readableVerdict = unparsed > 0 && readable !== "fail" ? "unknown" : readable;
-  const readableNotes = unreadable.map((f) => `${refOf(f.ref)}: ${f.probe.readable ? "" : f.probe.reason}`);
+  const readableNotes = perFile.filter((r) => r.note !== undefined).map((r) => `${refOf(r.f.ref)}: ${r.note}`);
   if (unparsed > 0) readableNotes.push(`${unparsed} history entr${unparsed === 1 ? "y" : "ies"} couldn't be read`);
   out.push(
     record(
@@ -171,7 +203,7 @@ function evaluateImage(
         ? readableNotes.join("; ")
         : files.length === 0
           ? "no output files to read"
-          : "every output file's header was read",
+          : "every output file decoded at the size its header states",
     ),
   );
 

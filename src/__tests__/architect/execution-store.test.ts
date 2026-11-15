@@ -120,6 +120,7 @@ describe("migration 2", () => {
     expect(check.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all()).toEqual([
       { version: 1, name: "planning_tables" },
       { version: 2, name: "execution_tables" },
+      { version: 3, name: "one_submission_per_run" },
     ]);
     const tables = check
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
@@ -475,25 +476,127 @@ describe("transitionRun", () => {
   });
 });
 
+/** A run in VALIDATING, the state a submission is claimed in. */
+function seedValidating(store: ArchitectStore) {
+  seedRun(store);
+  store.transitionRun({ runId: run.id, from: "PREPARING", to: "VALIDATING", principal: "controller", reason: "leased", at: at(T2) });
+}
+
+const OTHER_PROMPT_ID = "9d2e4b61-3c7a-4f5e-8b1d-2a6c8e0f4b37";
+
+describe("claimSubmission", () => {
+  it("writes the attempt with its prompt ID for a VALIDATING run, once", () => {
+    const store = open();
+    seedValidating(store);
+    const claim = store.claimSubmission({ runId: run.id, promptId: PROMPT_ID, at: at(T2) });
+    expect(claim).toMatchObject({ won: true, event: { seq: 3, kind: "submit_attempt", principal: "controller", data: { promptId: PROMPT_ID } } });
+    const again = store.claimSubmission({ runId: run.id, promptId: OTHER_PROMPT_ID, at: at(T2) });
+    expect(again).toMatchObject({ won: false });
+    expect(again.won ? "" : again.reason).toMatch(/already has a submission attempt/);
+    expect(store.listRunEvents(run.id).filter((e) => e.kind === "submit_attempt")).toHaveLength(1);
+  });
+
+  it("lets one of two connections to the same file win", () => {
+    const a = open();
+    seedValidating(a);
+    const b = open();
+    expect(a.claimSubmission({ runId: run.id, promptId: PROMPT_ID, at: at(T2) }).won).toBe(true);
+    expect(b.claimSubmission({ runId: run.id, promptId: OTHER_PROMPT_ID, at: at(T2) }).won).toBe(false);
+    expect(b.listRunEvents(run.id).filter((e) => e.kind === "submit_attempt").map((e) => e.data)).toEqual([{ promptId: PROMPT_ID }]);
+  });
+
+  it("refuses a run that isn't VALIDATING, an unknown run and a prompt ID that isn't a UUID, writing nothing", () => {
+    const store = open();
+    seedRun(store);
+    expect(store.claimSubmission({ runId: run.id, promptId: PROMPT_ID, at: at(T2) })).toMatchObject({ won: false });
+    store.transitionRun({ runId: run.id, from: "PREPARING", to: "CANCELLED", principal: "user", reason: "stop", at: at(T2) });
+    expect(store.claimSubmission({ runId: run.id, promptId: PROMPT_ID, at: at(T2) })).toMatchObject({ won: false });
+    expect(() => store.claimSubmission({ runId: "run-none", promptId: PROMPT_ID, at: at(T2) })).toThrow(StoreConflictError);
+    expect(() => store.claimSubmission({ runId: run.id, promptId: "not-a-uuid", at: at(T2) })).toThrow();
+    expect(store.listRunEvents(run.id).some((e) => e.kind === "submit_attempt")).toBe(false);
+  });
+
+  it("is backed by an index that refuses a second attempt from a writer that skips the check", () => {
+    const store = open();
+    seedValidating(store);
+    store.claimSubmission({ runId: run.id, promptId: PROMPT_ID, at: at(T2) });
+    const db = raw();
+    const insert = () =>
+      db
+        .prepare("INSERT INTO run_events (run_id, seq, at, kind, principal, payload) VALUES (?, 99, ?, 'submit_attempt', 'controller', '{}')")
+        .run(run.id, T2);
+    expect(insert).toThrow(/UNIQUE/);
+    db.close();
+  });
+});
+
+describe("setRunAcceptance", () => {
+  /** A run taken through to COMPLETED with the acceptance its checks gave. */
+  function seedCompleted(store: ArchitectStore) {
+    seedValidating(store);
+    const step = (from: Parameters<ArchitectStore["transitionRun"]>[0]["from"], to: Parameters<ArchitectStore["transitionRun"]>[0]["to"], patch = {}) =>
+      store.transitionRun({ runId: run.id, from, to, principal: "controller", reason: `${from} → ${to}`, patch, at: at(T2) });
+    step("VALIDATING", "QUEUED", { promptId: PROMPT_ID });
+    step("QUEUED", "EVALUATING");
+    step("EVALUATING", "COMPLETED", { acceptance: "pending" });
+  }
+
+  it("changes a COMPLETED run's acceptance and records the old and new value in a note", () => {
+    const store = open();
+    seedCompleted(store);
+    const later = "2026-11-15T12:30:00.000Z";
+    const set = store.setRunAcceptance({ runId: run.id, acceptance: "waived_by_user", principal: "user", reason: "the user accepted the image", at: at(later) });
+    expect(set.run).toMatchObject({ state: "COMPLETED", acceptance: "waived_by_user", updatedAt: later });
+    expect(store.getRun(run.id)).toEqual(set.run);
+    expect(set.event).toMatchObject({
+      kind: "note",
+      principal: "user",
+      reason: "the user accepted the image",
+      data: { previousAcceptance: "pending", acceptance: "waived_by_user" },
+    });
+    expect(store.listRunEvents(run.id).at(-1)).toEqual(set.event);
+  });
+
+  it("refuses every state but COMPLETED, an unknown run and an acceptance outside the enum, writing nothing", () => {
+    const store = open();
+    seedValidating(store);
+    const events = store.listRunEvents(run.id).length;
+    const set = (acceptance: string, runId = run.id) =>
+      store.setRunAcceptance({ runId, acceptance: untyped({ a: acceptance }).a, principal: "user", reason: "verdict", at: at(T2) });
+    expect(() => set("passed")).toThrow(StoreConflictError);
+    store.transitionRun({ runId: run.id, from: "VALIDATING", to: "QUEUED", principal: "controller", reason: "q", patch: { promptId: PROMPT_ID }, at: at(T2) });
+    store.transitionRun({ runId: run.id, from: "QUEUED", to: "EVALUATING", principal: "controller", reason: "e", at: at(T2) });
+    store.transitionRun({ runId: run.id, from: "EVALUATING", to: "AWAITING_REVIEW", principal: "controller", reason: "r", at: at(T2) });
+    expect(() => set("passed")).toThrow(/AWAITING_REVIEW/);
+    expect(() => set("passed", "run-none")).toThrow(/not stored/);
+    expect(store.getRun(run.id)?.acceptance).toBe("pending");
+    expect(() => set("great")).toThrow(/Invalid enum value|invalid/i);
+    expect(store.listRunEvents(run.id)).toHaveLength(events + 3);
+  });
+});
+
 describe("run events and listing", () => {
   it("append non-transition events with the next seq and refuse transitions and unknown runs", () => {
     const store = open();
     seedRun(store);
-    const attempt = store.appendRunEvent({
+    const result = store.appendRunEvent({
       runId: run.id,
-      kind: "submit_attempt",
+      kind: "submit_result",
       principal: "controller",
-      reason: "submitting",
-      data: { promptId: PROMPT_ID },
+      reason: "ComfyUI's answer",
+      data: { outcome: "accepted" },
       at: at(T2),
     });
-    expect(attempt).toMatchObject({ seq: 2, kind: "submit_attempt", data: { promptId: PROMPT_ID } });
+    expect(result).toMatchObject({ seq: 2, kind: "submit_result", data: { outcome: "accepted" } });
     store.transitionRun({ runId: run.id, from: "PREPARING", to: "CANCELLED", principal: "user", reason: "stop", at: at(T2) });
     expect(store.appendRunEvent({ runId: run.id, kind: "note", principal: "agent", reason: "after", at: at(T2) }).seq).toBe(4);
     expect(store.listRunEvents(run.id).map((e) => e.seq)).toEqual([1, 2, 3, 4]);
     expect(() =>
       store.appendRunEvent({ runId: run.id, kind: untyped({ k: "transition" }).k, principal: "agent", reason: "x", at: at(T2) }),
     ).toThrow(/transitionRun/);
+    expect(() =>
+      store.appendRunEvent({ runId: run.id, kind: untyped({ k: "submit_attempt" }).k, principal: "controller", reason: "x", at: at(T2) }),
+    ).toThrow(/claimSubmission/);
     expect(() =>
       store.appendRunEvent({ runId: "run-none", kind: "note", principal: "agent", reason: "x", at: at(T2) }),
     ).toThrow(/not stored/);

@@ -19,10 +19,13 @@ import {
 } from "../../comfyui/client.js";
 import type { ComfyUINodeDef, ObjectInfo, SystemStats } from "../../comfyui/types.js";
 import { isApiNode, isExternalServiceNode } from "../api-nodes.js";
-import { resolveOllamaHost, unloadAllOllama } from "../ollama-vram.js";
+import { resolveOllamaHost, warmOllama } from "../ollama-vram.js";
 import { type CancelQueuedResult, cancelQueuedJob } from "../queue-manager.js";
 import { WorkflowExecutionError } from "../../utils/errors.js";
-import { getComfyUIBaseUrl } from "../../config.js";
+import { resolveToolSurfacePolicy, toolAllowed } from "../../tools/tool-surface-filter.js";
+import { getComfyUIBaseUrl, isOwnHostAddress } from "../../config.js";
+import { sharpUnavailableMessage, tryLoadSharp } from "../sharp-loader.js";
+import { z } from "zod";
 import {
   type LocalModel,
   type ModelListingCoverage,
@@ -64,10 +67,41 @@ export interface UpstreamFacade {
   interruptPrompt(promptId: string): Promise<void>;
   /** An output file's bytes, through /view. */
   outputFile(ref: { filename: string; subfolder: string; type: "output" | "temp" }): Promise<{ bytes: Buffer; mimeType: string }>;
+  /**
+   * Decode an image fully with sharp and return its pixel size. Throws when the data
+   * doesn't decode (a truncated or corrupt file); throws ImageDecoderUnavailableError when
+   * sharp can't be loaded, which says nothing about the file.
+   */
+  decodeImage(bytes: Buffer): Promise<{ width: number; height: number }>;
+  /**
+   * Whether a host is this machine: loopback, or an address of one of its interfaces
+   * (upstream's `isOwnHostAddress`). False also for a name, which it doesn't resolve.
+   */
+  isOwnHostAddress(host: string): boolean;
   /** The Ollama host upstream would talk to (OLLAMA_HOST or the default). */
   ollamaHost(): string;
-  /** Ask Ollama to unload every resident model; returns the names it asked about. */
-  unloadOllama(host: string): Promise<string[]>;
+  /**
+   * Load a model into Ollama with a keep-alive, by upstream's warm-up request. True when
+   * Ollama answered OK; false only says the load wasn't confirmed (upstream swallows the
+   * error), so the caller checks /api/ps before it reports the model as loaded or not.
+   */
+  loadOllama(host: string, model: string, keepAlive: string): Promise<boolean>;
+}
+
+/**
+ * Whether upstream's operator preset withholds a tool when nothing else is configured: the
+ * check managed mode uses to refuse an allow list that would re-admit such a tool (#873).
+ */
+export function presetWithholds(preset: string, toolName: string): boolean {
+  return !toolAllowed(toolName, resolveToolSurfacePolicy({ COMFYUI_MCP_TOOL_PRESET: preset }));
+}
+
+/** sharp couldn't be loaded, so no image was decoded: not a verdict on the image. */
+export class ImageDecoderUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ImageDecoderUnavailableError";
+  }
 }
 
 /** What a POST /prompt established. */
@@ -92,10 +126,7 @@ export function createUpstreamFacade(): UpstreamFacade {
         return { kind: "accepted", promptId: r.prompt_id, ...(r.rejectedOutputs ? { rejectedOutputs: r.rejectedOutputs } : {}) };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        // Only a WorkflowExecutionError is ComfyUI's own refusal with its validation body.
-        // Every other failure, a generic non-2xx included, could come from something between
-        // us and ComfyUI, so it stays open and is reconciled by prompt id.
-        return err instanceof WorkflowExecutionError ? { kind: "rejected", message } : { kind: "unknown", message };
+        return isComfyRefusal(err) ? { kind: "rejected", message } : { kind: "unknown", message };
       }
     },
     queue: async () => {
@@ -109,9 +140,33 @@ export function createUpstreamFacade(): UpstreamFacade {
       const r = await fetchImage(ref.filename, ref.type, ref.subfolder);
       return { bytes: Buffer.from(r.base64, "base64"), mimeType: r.mimeType };
     },
+    decodeImage: async (bytes) => {
+      const loaded = await tryLoadSharp();
+      if (!loaded.ok) throw new ImageDecoderUnavailableError(sharpUnavailableMessage("Image decoding", loaded.err));
+      const { info } = await loaded.sharp(bytes).raw().toBuffer({ resolveWithObject: true });
+      return { width: info.width, height: info.height };
+    },
+    isOwnHostAddress: (host) => isOwnHostAddress(host),
     ollamaHost: () => resolveOllamaHost(),
-    unloadOllama: (host) => unloadAllOllama(host),
+    loadOllama: (host, model, keepAlive) => warmOllama(host, model, keepAlive),
   };
+}
+
+// The details upstream's `buildEnqueueError` attaches to the WorkflowExecutionError it
+// builds from a JSON error body: the HTTP status, ComfyUI's `error` and its `node_errors`.
+const EnqueueErrorDetails = z.object({ status: z.number() }).passthrough();
+
+/**
+ * Whether a failed POST /prompt is ComfyUI's own refusal, which proves the prompt wasn't
+ * queued. ComfyUI answers a prompt that fails validation with HTTP 400. Upstream also
+ * builds a WorkflowExecutionError from any JSON `{error: {message}}` body, which a gateway
+ * sends with a 502 or 504 while ComfyUI may have queued the prompt, so only a 400 counts;
+ * every other failure stays open and is reconciled by prompt id (spec §15.4).
+ */
+export function isComfyRefusal(err: unknown): boolean {
+  if (!(err instanceof WorkflowExecutionError)) return false;
+  const details = EnqueueErrorDetails.safeParse(err.details);
+  return details.success && details.data.status === 400;
 }
 
 /**

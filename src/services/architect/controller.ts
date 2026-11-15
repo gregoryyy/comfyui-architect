@@ -1,24 +1,32 @@
 // The durable run controller (spec §15.3, §15.4, §14.5; TODO 3.5.2, 3.5.3, AT-06, AT-07).
 //
 // A run is created by `createRunWithGrant` in PREPARING. From there the controller leases
-// the memory pool, compiles the graph again, stores a submission attempt with a fresh
-// client-chosen prompt ID and only then POSTs, so a lost response can be reconciled by
-// that ID against /queue and /history instead of being submitted again. Every state change
+// the memory pool, compiles the graph again, claims the run's one submission attempt with a
+// fresh client-chosen prompt ID and only then POSTs, so a lost response can be reconciled
+// by that ID against /queue and /history instead of being submitted again. The claim is a
+// compare-and-set in the store, so of two processes on one database only one POSTs. Every
+// state change
 // is a compare-and-set transition in the store, written with its event before anyone hears
 // of it; a run that another actor moved in the meantime is re-read and returned, never
 // overwritten.
 //
 // The store is the source of truth, not this object: a new controller on the same store
 // (after a restart, or in the panel agent's server) picks up every non-final run.
-// Cancellation touches only the run's own prompt ID, by dequeue or by an interrupt that
-// ComfyUI honours only for the running prompt with that ID; nothing here clears the queue
-// or interrupts without an ID.
+// Cancellation touches only the run's own prompt ID, by dequeue or by an interrupt with that
+// ID. ComfyUI honours the ID in /interrupt only from 0.3.57; an older one stops whatever
+// runs. So the queue is read right before every interrupt, and the interrupt is sent only
+// while the run's prompt is the one running. Nothing here clears the queue.
+//
+// Ollama models a run's acquisition unloaded, with the user's approval, are loaded back
+// once the render is over (GAPS Q23): when the run leaves the states in which the render
+// may be live, or when its prompt is taken as not live on the target. The reload runs
+// beside the run and never changes its state or acceptance.
 
 import { z } from "zod";
 import { graphFingerprint } from "./compile.js";
-import { acceptanceFrom, evaluateOutputs, needsUserReview, type ProbedOutput } from "./evaluation.js";
-import { probeMedia } from "./media-probe.js";
-import type { ResourceCoordinator } from "./resources.js";
+import { type DecodeResult, acceptanceFrom, evaluateOutputs, needsUserReview, type ProbedOutput } from "./evaluation.js";
+import { type MediaProbe, probeMedia } from "./media-probe.js";
+import { type ResourceCoordinator, residencyRestored, unloadedForRun } from "./resources.js";
 import {
   type ApiGraph,
   ArchitectErrorCode,
@@ -32,7 +40,7 @@ import {
   type TaskSpec,
 } from "./schemas.js";
 import { type ArchitectStore, type RunPatch, StoreConflictError } from "./store.js";
-import type { SubmitOutcome, UpstreamFacade } from "./upstream.js";
+import { ImageDecoderUnavailableError, type SubmitOutcome, type UpstreamFacade } from "./upstream.js";
 
 export const DEFAULT_POLL_INTERVAL_MS = 2_000;
 export const DEFAULT_MAX_CONSECUTIVE_ABSENT = 3;
@@ -45,8 +53,11 @@ export const DEFAULT_SUBMIT_GRACE_MS = 120_000;
 
 export interface RunControllerDeps {
   store: ArchitectStore;
-  upstream: Pick<UpstreamFacade, "submitPrompt" | "queue" | "history" | "dequeue" | "interruptPrompt" | "outputFile">;
-  resources: Pick<ResourceCoordinator, "acquire" | "heartbeat" | "release">;
+  upstream: Pick<
+    UpstreamFacade,
+    "submitPrompt" | "queue" | "history" | "dequeue" | "interruptPrompt" | "outputFile" | "decodeImage"
+  >;
+  resources: Pick<ResourceCoordinator, "acquire" | "heartbeat" | "release" | "restore">;
   now: () => Date;
   /** A fresh UUID per submission: the client-chosen prompt ID (ARCH milestone 3). */
   newUuid: () => string;
@@ -58,6 +69,12 @@ export interface RunControllerDeps {
   graphFor: (run: RunRecord) => Promise<ApiGraph>;
   /** The task revision the run serves. */
   taskFor: (run: RunRecord) => TaskSpec;
+  /**
+   * Check the run against a fresh environment snapshot before it is submitted. Called only
+   * for a run that waited in WAITING_FOR_RESOURCE, since the target may have changed while
+   * it waited. A throw fails the run with the error's code, as a `graphFor` error does.
+   */
+  revalidate?: (run: RunRecord) => Promise<void>;
   pollIntervalMs?: number;
   /** Absences from queue and history after which an OUTCOME_UNKNOWN run waits for the user. */
   maxConsecutiveAbsent?: number;
@@ -112,7 +129,9 @@ const ExecutionErrorData = z.object({
   exception_type: z.string().optional(),
   exception_message: z.string().optional(),
 });
-const NodeOutput = z.object({ images: z.array(z.unknown()).optional() });
+const NodeOutput = z.record(z.string(), z.unknown());
+/** Keys of a node's output that carry flags beside its images, not files (SaveAnimatedWEBP's `animated`). */
+const OUTPUT_FLAG_KEYS: readonly string[] = ["animated"];
 const ImageRef = z.object({ filename: z.unknown(), subfolder: z.unknown().optional(), type: z.unknown() });
 
 /** What a history entry says happened to the prompt. */
@@ -149,8 +168,9 @@ function classifyHistory(entry: unknown): HistoryOutcome {
 
 /**
  * The image files the effect's output nodes wrote. An entry that can't be represented
- * (no file name, a type other than output or temp) is counted, not dropped, so the output
- * count becomes unknown instead of a short count (#796).
+ * (no file name, a type other than output or temp) is counted, not dropped, and so is every
+ * entry under a key other than `images` (`gifs`, `audio`, `video`, …), which this
+ * milestone doesn't read: the output count becomes unknown instead of a short count (#796).
  */
 function collectOutputs(outputs: Record<string, unknown>, outputNodes: readonly string[] | undefined): { files: RunOutput[]; unparsed: number } {
   const files: RunOutput[] = [];
@@ -162,7 +182,14 @@ function collectOutputs(outputs: Record<string, unknown>, outputNodes: readonly 
       unparsed += 1;
       continue;
     }
-    for (const image of parsed.data.images ?? []) {
+    const images: unknown[] = [];
+    for (const [key, entries] of Object.entries(parsed.data)) {
+      if (OUTPUT_FLAG_KEYS.includes(key)) continue;
+      if (!Array.isArray(entries)) unparsed += 1;
+      else if (key === "images") images.push(...entries);
+      else unparsed += entries.length;
+    }
+    for (const image of images) {
       const ref = ImageRef.safeParse(image);
       const file = ref.success
         ? RunOutput.safeParse({ node, filename: ref.data.filename, subfolder: ref.data.subfolder ?? "", type: ref.data.type })
@@ -217,6 +244,8 @@ export class RunController {
   private readonly locks = new Map<string, Promise<void>>();
   private readonly leaseWarned = new Set<string>();
   private readonly lastError = new Map<string, string>();
+  /** Reloads of unloaded Ollama models in flight, by run; `settled` waits for them. */
+  private readonly restoring = new Map<string, Promise<void>>();
   private timer: NodeJS.Timeout | undefined;
   private ticking = false;
 
@@ -250,7 +279,11 @@ export class RunController {
     return this.exclusive(runId, () => this.cancelNow(runId, principal));
   }
 
-  /** Reconcile every non-final run, e.g. after a restart (spec §15.3). */
+  /**
+   * Reconcile every non-final run, e.g. after a restart (spec §15.3), then load back the
+   * Ollama models of runs whose render is over but whose reload never happened: the process
+   * stopped between the two. The reloads run beside the result; `settled` waits for them.
+   */
   async resumeAll(): Promise<RunRecord[]> {
     const out: RunRecord[] = [];
     const active = this.deps.store.listRuns({ states: RUN_STATES_NOT_FINAL });
@@ -262,7 +295,17 @@ export class RunController {
         out.push(this.deps.store.getRun(run.id) ?? run);
       }
     }
+    for (const run of this.deps.store.listRuns()) {
+      if (HOLDING.includes(run.state)) continue;
+      const events = this.deps.store.listRunEvents(run.id);
+      if (unloadedForRun(events) && !residencyRestored(events)) this.restoreResidency(run);
+    }
     return out;
+  }
+
+  /** Resolves when every reload of unloaded Ollama models this controller started is done. */
+  async settled(): Promise<void> {
+    while (this.restoring.size > 0) await Promise.all([...this.restoring.values()]);
   }
 
   /** Reconcile active runs every poll interval; the timer doesn't keep the process alive. */
@@ -325,7 +368,8 @@ export class RunController {
       data: {
         pool: acquired.lease.pool,
         ...(acquired.tookOverFrom ? { tookOverFrom: acquired.tookOverFrom } : {}),
-        ...(acquired.unloaded ? { unloadedOllamaModels: acquired.unloaded } : {}),
+        // What `restore` loads back after the render (GAPS Q23).
+        ...(acquired.unloaded ? { unloadedOllamaModels: acquired.unloaded, ollamaHost: acquired.ollamaHost } : {}),
       },
     });
     return validating.state === "VALIDATING" ? this.validateAndSubmit(validating) : validating;
@@ -362,20 +406,26 @@ export class RunController {
       const message = `the graph compiled now (${fingerprint.slice(0, 12)}) isn't the one the grant approved (${run.graphFingerprint.slice(0, 12)})`;
       return this.move(run, "FAILED", message, { patch: { error: { code: "APPROVAL_INVALIDATED", message } } });
     }
+    // A run that waited for the pool was checked against the environment of its start; the
+    // target may have changed since, so it is checked again before the POST (spec §15.3).
+    const waited = events.some((e) => e.kind === "transition" && e.to === "WAITING_FOR_RESOURCE");
+    if (waited && this.deps.revalidate) {
+      try {
+        await this.deps.revalidate(run);
+      } catch (err) {
+        const message = `the run no longer validates against a fresh snapshot: ${messageOf(err)}`;
+        return this.move(run, "FAILED", message, { patch: { error: { code: codeOf(err), message } } });
+      }
+    }
 
-    // Read again after the await: another process may have cancelled the run meanwhile.
-    // From here to the attempt event nothing awaits, so this process can't interleave.
-    const current = this.require(run.id);
-    if (current.state !== "VALIDATING") return current;
+    // spec §15.4: one submission per run. The claim checks state and attempt under the
+    // store's write lock and writes the attempt, so of two processes that both got here
+    // (two servers resuming one VALIDATING run, or a poll racing an advance) one POSTs. The
+    // loser, or a run another process cancelled during the awaits above, is returned as stored.
     const promptId = this.deps.newUuid();
-    store.appendRunEvent({
-      runId: run.id,
-      kind: "submit_attempt",
-      principal: "controller",
-      reason: `submitting prompt ${promptId} to ${run.target.baseUrl}`,
-      data: { promptId },
-      at: now(),
-    });
+    const claim = store.claimSubmission({ runId: run.id, promptId, at: now() });
+    if (!claim.won) return this.require(run.id);
+    const current = this.require(run.id);
 
     let outcome: SubmitOutcome;
     try {
@@ -505,7 +555,7 @@ export class RunController {
           data: { observation: "running" },
         });
       }
-      if (cancel && retryCancel && next.state === "RUNNING") await this.interrupt(promptId);
+      if (cancel && retryCancel && next.state === "RUNNING") await this.interruptIfRunning(next, promptId);
       return next;
     }
 
@@ -590,6 +640,8 @@ export class RunController {
     });
     if (!settled) return this.require(run.id);
     this.deps.resources.release(run);
+    // The prompt is taken as not live, so the pool is given back with what was unloaded.
+    this.restoreResidency(run);
     if (cancel) {
       return this.move(run, "CANCELLED", `prompt ${promptId} never appeared on the target, and the run was cancelled`, {
         patch: { error: null },
@@ -600,8 +652,9 @@ export class RunController {
 
   /**
    * Stop a prompt that ran past the grant's wall time (spec §14.2 limits), by its own ID,
-   * then fail the run with BUDGET_EXCEEDED. Undefined when the prompt is no longer in the
-   * queue, so the caller's observation decides from the history.
+   * then fail the run with BUDGET_EXCEEDED: dequeue it, and interrupt it when the dequeue
+   * finds it running. Undefined when the prompt is in neither place, so the caller's
+   * observation decides from the history.
    */
   private async stopForBudget(
     run: RunRecord,
@@ -613,19 +666,22 @@ export class RunController {
         patch: { error: { code: why.code, message: why.reason }, timings: { finishedAt: this.deps.now().toISOString() } },
         data,
       });
-    if (run.state === "QUEUED") {
-      let result: Awaited<ReturnType<UpstreamFacade["dequeue"]>>;
-      try {
-        result = await this.deps.upstream.dequeue(promptId);
-      } catch {
-        return this.require(run.id); // retried on the next observation
-      }
-      if (result.state === "removed") return fail({ dequeue: result });
-      if (result.state === "pending") return this.require(run.id);
-      if (result.state === "absent") return undefined;
+    // A RUNNING run is dequeued too: the dequeue reads /queue first, so a prompt that is
+    // pending, running or gone is told apart before anything is sent.
+    let result: Awaited<ReturnType<UpstreamFacade["dequeue"]>>;
+    try {
+      result = await this.deps.upstream.dequeue(promptId);
+    } catch {
+      return this.require(run.id); // retried on the next observation
     }
-    if (!(await this.interrupt(promptId))) return this.require(run.id);
-    return fail({ interrupted: promptId });
+    if (result.state === "removed") return fail({ dequeue: result });
+    if (result.state === "pending") return this.require(run.id);
+    if (result.state === "absent") return undefined;
+    const interrupted = await this.interruptIfRunning(run, promptId);
+    if (interrupted === "interrupted") return fail({ interrupted: promptId });
+    // It left the running slot between the two reads: the history decides.
+    if (interrupted === "not_running") return undefined;
+    return this.require(run.id);
   }
 
   // -------------------------------------------------------------------------------------
@@ -657,9 +713,14 @@ export class RunController {
       case "QUEUED":
       case "OUTCOME_UNKNOWN":
         return this.cancelSubmitted(run, this.promptIdOf(run), principal, false);
-      case "RUNNING":
-        await this.interrupt(this.promptIdOf(run));
+      case "RUNNING": {
+        const promptId = this.promptIdOf(run);
+        // Not running any more: it finished, was interrupted or vanished, which the
+        // observation reads from the history. The cancel event is stored, so an
+        // interruption is seen as the cancellation.
+        if ((await this.interruptIfRunning(run, promptId)) === "not_running") return this.observe(this.require(runId), false);
         return this.require(runId);
+      }
       default:
         return run;
     }
@@ -692,7 +753,7 @@ export class RunController {
                 patch: { error: null, timings: { startedAt: run.timings.startedAt ?? this.deps.now().toISOString() } },
                 data: { observation: "running" },
               });
-        await this.interrupt(promptId);
+        if (next.state === "RUNNING") await this.interruptIfRunning(next, promptId);
         return next.state === "RUNNING" ? this.require(run.id) : next;
       }
       case "absent":
@@ -702,13 +763,40 @@ export class RunController {
     }
   }
 
-  /** Interrupt by the run's own prompt ID; ComfyUI ignores it unless that prompt is running. */
-  private async interrupt(promptId: string): Promise<boolean> {
+  /**
+   * Interrupt the run's own prompt, only while /queue, read right before, shows it as the
+   * one prompt running. ComfyUI before 0.3.57 ignores the ID and stops whatever runs, so an
+   * interrupt sent while another job runs, or without having looked, could stop a job that
+   * isn't Architect's (spec §14.5). The version gate is admission's; this check holds on any
+   * version. A queue that can't be read, or a running slot shared with another prompt,
+   * sends nothing and leaves a note; the stored cancel request or budget retries it on the
+   * next observation.
+   */
+  private async interruptIfRunning(run: RunRecord, promptId: string): Promise<"interrupted" | "not_running" | "not_sent"> {
+    const note = (reason: string) => {
+      // A cancel request is retried on every poll; one note per distinct reason, not one per poll.
+      const last = this.deps.store.listRunEvents(run.id).at(-1);
+      if (last?.kind === "note" && last.reason === reason) return;
+      this.deps.store.appendRunEvent({ runId: run.id, kind: "note", principal: "controller", reason, data: { promptId }, at: this.deps.now() });
+    };
+    let queue: { running: string[]; pending: string[] };
+    try {
+      queue = await this.deps.upstream.queue();
+    } catch (err) {
+      note(bounded(`didn't interrupt prompt ${promptId}: /queue couldn't be read to confirm it is the one running (${messageOf(err)})`));
+      return "not_sent";
+    }
+    if (!queue.running.includes(promptId)) return "not_running";
+    if (queue.running.some((id) => id !== promptId)) {
+      note(`didn't interrupt prompt ${promptId}: another prompt is running beside it, and an interrupt might stop that one`);
+      return "not_sent";
+    }
     try {
       await this.deps.upstream.interruptPrompt(promptId);
-      return true;
-    } catch {
-      return false; // retried on the next observation while the cancel request stands
+      return "interrupted";
+    } catch (err) {
+      note(bounded(`the interrupt of prompt ${promptId} failed: ${messageOf(err)}`));
+      return "not_sent";
     }
   }
 
@@ -718,7 +806,13 @@ export class RunController {
     try {
       const result = await this.deps.upstream.dequeue(promptId);
       if (result.state === "running") {
-        note = (await this.interrupt(promptId)) ? `prompt ${promptId} was running; interrupted it` : `prompt ${promptId} is running; the interrupt failed`;
+        const interrupted = await this.interruptIfRunning(run, promptId);
+        note =
+          interrupted === "interrupted"
+            ? `prompt ${promptId} was running; interrupted it`
+            : interrupted === "not_running"
+              ? `prompt ${promptId} was running and isn't any more`
+              : `prompt ${promptId} is running and wasn't interrupted`;
       } else {
         note = `prompt ${promptId}: ${result.state}`;
       }
@@ -767,12 +861,16 @@ export class RunController {
 
     const files: ProbedOutput[] = [];
     for (const ref of run.outputs) {
+      let bytes: Buffer;
       try {
-        const { bytes } = await upstream.outputFile({ filename: ref.filename, subfolder: ref.subfolder, type: ref.type });
-        files.push({ ref, probe: probeMedia(bytes) });
+        ({ bytes } = await upstream.outputFile({ filename: ref.filename, subfolder: ref.subfolder, type: ref.type }));
       } catch (err) {
-        files.push({ ref, probe: { readable: false, fetched: false, reason: `couldn't fetch the file: ${messageOf(err)}` } });
+        const reason = `couldn't fetch the file: ${messageOf(err)}`;
+        files.push({ ref, probe: { readable: false, fetched: false, reason }, decode: { state: "not_attempted", reason } });
+        continue;
       }
+      const probe = probeMedia(bytes);
+      files.push({ ref, probe, decode: await this.decode(bytes, probe) });
     }
     const stored = new Set(store.listEvaluations(run.id).map((e) => e.id));
     for (const input of evaluateOutputs({ run, task, files, unparsedOutputs, at: now() })) {
@@ -783,6 +881,21 @@ export class RunController {
     return this.move(run, review ? "AWAITING_REVIEW" : "COMPLETED", review ? `automatic checks done (${acceptance}); waiting for the user's review` : `automatic checks done: ${acceptance}`, {
       patch: { acceptance },
     });
+  }
+
+  /**
+   * Decode the whole image (spec §13.2 readability): a header can parse over data that is
+   * truncated or corrupt. A decoder that can't be loaded observes nothing about the file.
+   */
+  private async decode(bytes: Buffer, probe: MediaProbe): Promise<DecodeResult> {
+    if (!probe.readable) return { state: "not_attempted", reason: "the header couldn't be read" };
+    try {
+      const { width, height } = await this.deps.upstream.decodeImage(bytes);
+      return { state: "decoded", width, height };
+    } catch (err) {
+      if (err instanceof ImageDecoderUnavailableError) return { state: "not_attempted", reason: messageOf(err) };
+      return { state: "failed", reason: bounded(messageOf(err), 500) };
+    }
   }
 
   // -------------------------------------------------------------------------------------
@@ -815,8 +928,27 @@ export class RunController {
       if (!(err instanceof StoreConflictError)) throw err;
       next = this.require(run.id);
     }
-    if (!HOLDING.includes(next.state)) this.deps.resources.release(next);
+    if (!HOLDING.includes(next.state)) {
+      this.deps.resources.release(next);
+      // The render is over, so the Ollama models unloaded for it go back. A run that never
+      // held the pool unloaded nothing; one another actor moved first is covered too.
+      if (HOLDING.includes(run.state)) this.restoreResidency(next);
+    }
     return next;
+  }
+
+  /**
+   * Start loading back the Ollama models the run's acquisition unloaded, once per run in
+   * this process. `move` is synchronous, so the reload is tracked here instead of awaited;
+   * a rejection (the store failed) goes where polling errors go.
+   */
+  private restoreResidency(run: RunRecord): void {
+    if (this.restoring.has(run.id)) return;
+    const work = this.deps.resources
+      .restore(run)
+      .catch((err: unknown) => this.reportError(err, run.id))
+      .finally(() => this.restoring.delete(run.id));
+    this.restoring.set(run.id, work);
   }
 
   private heartbeat(run: RunRecord): void {

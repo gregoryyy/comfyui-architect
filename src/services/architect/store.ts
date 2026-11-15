@@ -1130,13 +1130,88 @@ export class ArchitectStore {
   }
 
   /**
-   * Record an event that changes no state: a submission attempt before the network call
-   * (spec §15.4), its result, a reconciliation, a cancellation request, a note. Transitions
-   * go through `transitionRun`, which writes their event with the state.
+   * Claim the run's one submission (spec §15.4) and write its `submit_attempt` event with
+   * the prompt ID, before the network call. The claim wins only while the run is VALIDATING
+   * and has no attempt yet, checked and written under the write lock, so of two processes
+   * on one database exactly one goes on to POST; the loser gets `won: false` and why.
+   * Migration 3's unique index refuses a second attempt even from a writer that skipped
+   * this check.
+   */
+  claimSubmission(args: { runId: string; promptId: string; at: Date }): { won: true; event: RunEvent } | { won: false; reason: string } {
+    const promptId = z.string().uuid().parse(args.promptId);
+    const at = args.at.toISOString();
+    return this.immediate((): { won: true; event: RunEvent } | { won: false; reason: string } => {
+      const current = this.getRun(args.runId);
+      if (!current) throw new StoreConflictError(`run ${args.runId} is not stored`);
+      if (current.state !== "VALIDATING") return { won: false, reason: `run ${current.id} is ${current.state}, not VALIDATING` };
+      const attempt = this.listRunEvents(current.id).find((e) => e.kind === "submit_attempt");
+      if (attempt) return { won: false, reason: `run ${current.id} already has a submission attempt (event ${attempt.seq})` };
+      const event = this.insertEvent({
+        runId: current.id,
+        at,
+        kind: "submit_attempt",
+        principal: "controller",
+        reason: `submitting prompt ${promptId} to ${current.target.baseUrl}`,
+        data: { promptId },
+      });
+      return { won: true, event };
+    });
+  }
+
+  /**
+   * Change a COMPLETED run's acceptance, as the user's verdict after the run finished does
+   * (spec §4.2: acceptance is kept apart from completion, so it can change while the state
+   * can't). Refused with a StoreConflictError in every other state, where the run controller
+   * owns the field. The `note` event records the old and the new acceptance, written in the
+   * same transaction as the change.
+   */
+  setRunAcceptance(args: {
+    runId: string;
+    acceptance: Acceptance;
+    principal: RunPrincipal;
+    reason: string;
+    at: Date;
+  }): { run: RunRecord; event: RunEvent } {
+    const acceptance = Acceptance.parse(args.acceptance);
+    const principal = RunPrincipal.parse(args.principal);
+    const at = args.at.toISOString();
+    return this.immediate(() => {
+      const current = this.getRun(args.runId);
+      if (!current) throw new StoreConflictError(`run ${args.runId} is not stored`);
+      if (current.state !== "COMPLETED") {
+        throw new StoreConflictError(`run ${current.id} is ${current.state}; acceptance changes here only on a COMPLETED run`);
+      }
+      const next = RunRecord.parse({ ...current, acceptance, updatedAt: at });
+      const result = this.stmts.updateRun.run(
+        next.state,
+        next.promptId ?? null,
+        utc(at),
+        canonicalJson(next),
+        next.id,
+        "COMPLETED",
+      );
+      if (result.changes !== 1) throw new StoreConflictError(`run ${current.id} changed while its acceptance was set`);
+      const event = this.insertEvent({
+        runId: next.id,
+        at,
+        kind: "note",
+        principal,
+        reason: args.reason,
+        data: { previousAcceptance: current.acceptance, acceptance },
+      });
+      return { run: next, event };
+    });
+  }
+
+  /**
+   * Record an event that changes no state: a submission's result, a reconciliation, a
+   * cancellation request, a note. Transitions go through `transitionRun`, which writes their
+   * event with the state; the submission attempt goes through `claimSubmission`, which
+   * decides whether there may be one.
    */
   appendRunEvent(args: {
     runId: string;
-    kind: Exclude<RunEventKind, "transition">;
+    kind: Exclude<RunEventKind, "transition" | "submit_attempt">;
     principal: RunPrincipal;
     reason: string;
     data?: Record<string, unknown>;
@@ -1144,6 +1219,7 @@ export class ArchitectStore {
   }): RunEvent {
     const kind = RunEventKind.parse(args.kind);
     if (kind === "transition") throw new StoreConflictError("a transition event is written by transitionRun");
+    if (kind === "submit_attempt") throw new StoreConflictError("a submission attempt is written by claimSubmission");
     return this.immediate(() => {
       if (!this.getRun(args.runId)) throw new StoreConflictError(`run ${args.runId} is not stored`);
       return this.insertEvent({

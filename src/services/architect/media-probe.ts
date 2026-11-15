@@ -1,8 +1,9 @@
 // Reads an output file's format and pixel dimensions from its header (TODO 3.7).
 //
 // The automatic checks compare a run's outputs with the task: count, format and size
-// (spec §13.2). Only the header is read, so a probe is cheap and decodes nothing. A file
-// whose header can't be parsed is reported as unreadable, never guessed at: the check
+// (spec §13.2). Only the header is read, so a probe is cheap and decodes nothing; whether
+// the image itself reads is the full decode's question (the facade's `decodeImage`). A
+// file whose header can't be parsed is reported as unreadable, never guessed at: the check
 // built on it is `unknown` or `fail`, not a pass (spec §7.3).
 
 export type ProbedFormat = "png" | "jpeg" | "webp";

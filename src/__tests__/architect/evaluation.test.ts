@@ -18,8 +18,12 @@ function task(overrides: Record<string, unknown> = {}): TaskSpec {
   return TaskSpec.parse({ ...taskFixture, ...overrides });
 }
 
-function file(name: string, probe: ProbedOutput["probe"]): ProbedOutput {
-  return { ref: { node: "9", filename: name, subfolder: "", type: "output" }, probe };
+/** A probed file; by default its image decoded at the size its header states. */
+function file(name: string, probe: ProbedOutput["probe"], decode?: ProbedOutput["decode"]): ProbedOutput {
+  const decoded: ProbedOutput["decode"] = probe.readable
+    ? { state: "decoded", width: probe.width, height: probe.height }
+    : { state: "not_attempted", reason: "the header couldn't be read" };
+  return { ref: { node: "9", filename: name, subfolder: "", type: "output" }, probe, decode: decode ?? decoded };
 }
 const png1024 = (name = "a.png") => file(name, { readable: true, format: "png", width: 1024, height: 1024 });
 
@@ -42,7 +46,7 @@ describe("evaluateOutputs, image tasks", () => {
       output_dimensions: "pass",
     });
     for (const r of stored(records)) {
-      expect(r).toMatchObject({ evaluatorId: OUTPUT_EVALUATOR_ID, evaluatorVersion: "1", source: "automatic", runId: evaluating.id });
+      expect(r).toMatchObject({ evaluatorId: OUTPUT_EVALUATOR_ID, evaluatorVersion: "2", source: "automatic", runId: evaluating.id });
       expect(r.id).toBe(evaluationId(evaluating.id, r.criterionId));
     }
     expect(records.find((r) => r.criterionId === "output_count")?.measurement).toEqual({ value: 1, unit: "files" });
@@ -84,6 +88,44 @@ describe("evaluateOutputs, image tasks", () => {
       }),
     );
     expect(v).toMatchObject({ output_readable: "unknown", output_format: "unknown", output_dimensions: "unknown" });
+  });
+
+  it("fails readability for an image whose header parses but whose data doesn't decode", () => {
+    const header = { readable: true, format: "png", width: 1024, height: 1024 } as const;
+    const records = evaluateOutputs({
+      run: evaluating,
+      task: task(),
+      files: [file("a.png", header, { state: "failed", reason: "vipspng: libpng read error" })],
+      at: AT,
+    });
+    // Format and size come from the header; readability needs the decode.
+    expect(verdicts(records)).toMatchObject({ output_readable: "fail", output_format: "pass", output_dimensions: "pass" });
+    expect(records.find((r) => r.criterionId === "output_readable")?.explanation).toMatch(/doesn't decode: vipspng/);
+    expect(acceptanceFrom(task(), stored(records))).toBe("failed");
+  });
+
+  it("fails readability when the decoded size isn't the header's", () => {
+    const header = { readable: true, format: "png", width: 1024, height: 1024 } as const;
+    const records = evaluateOutputs({
+      run: evaluating,
+      task: task(),
+      files: [file("a.png", header, { state: "decoded", width: 512, height: 512 })],
+      at: AT,
+    });
+    expect(verdicts(records).output_readable).toBe("fail");
+    expect(records.find((r) => r.criterionId === "output_readable")?.explanation).toMatch(/1024×1024.*512×512/);
+  });
+
+  it("calls readability unknown, never passed, when no decode happened", () => {
+    const header = { readable: true, format: "png", width: 1024, height: 1024 } as const;
+    const records = evaluateOutputs({
+      run: evaluating,
+      task: task(),
+      files: [file("a.png", header, { state: "not_attempted", reason: "sharp couldn't be loaded" })],
+      at: AT,
+    });
+    expect(verdicts(records).output_readable).toBe("unknown");
+    expect(acceptanceFrom(task(), stored(records))).toBe("pending");
   });
 
   it("makes the count unknown when history entries couldn't be read", () => {
