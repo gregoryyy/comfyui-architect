@@ -37,8 +37,10 @@ Every upstream file the fork changes, and why. Changing any other upstream file 
 | `src/services/panel-secrets.ts` | `buildComfyuiMcpEnv` forwards Architect's variables (`architectChildEnv`: `COMFYUI_ARCHITECT`, `ARCHITECT_DATA_DIR`, `ARCHITECT_ENV_MAX_AGE_SECONDS`) to the panel agent's tool server, after upstream's tool-policy variables, outside the window `tool-surface-filter.test.ts` reads; one import | TODO 1.12, 2.2.4 |
 | `package.json` | `architect` in `files`, so the packed package carries the recipes and the prompt texts; the rest of the identity waits on GAPS Q11 | TODO 1.3.1 (part), 2.4 |
 | `.github/pull_request_template.md` | New file; upstream has none | PR #3 |
+| `README.md` → `README_BASE.md` | Upstream's README, kept unchanged as `README_BASE.md`; a new `README.md` describes the fork (owner, 2026-11-15). Git sees no rename on a merge, since `README.md` still exists, so each upstream sync keeps the fork's `README.md` and copies upstream's README to `README_BASE.md` ([SDLC](SDLC.md#upstream-sync)) | GAPS Q11 |
+| `scripts/asset-counts.mjs` | The eight count checks read `README_BASE.md`, where upstream's counts now are | GAPS Q11 |
 | Planned with the rename (GAPS Q11) | the rest of `package.json`, `package-lock.json`, `src/services/self-update.ts`, `server.json`, `.claude-plugin/marketplace.json`, and whatever else Q11's answer includes | TODO 1.3 |
-| Planned when Architect tools are on by default | upstream's `README.md` tool counts, `docs/tools/` pages and `scripts/gen-tool-docs.ts` categories, `docs/design/tool-vocabulary.json`, `src/tools/vocabulary.ts` | Later |
+| Planned when Architect tools are on by default | upstream's tool counts in `README_BASE.md`, `docs/tools/` pages and `scripts/gen-tool-docs.ts` categories, `docs/design/tool-vocabulary.json`, `src/tools/vocabulary.ts` | Later |
 
 Untouched on purpose: `src/config.ts` (Architect reads its flag in `src/services/architect/config.ts`), `src/handshake-instructions.ts` (the fork line is appended in `boot.ts`, so upstream's byte budget and its test stay as they are), and `src/orchestrator/panel-tools.ts`.
 
