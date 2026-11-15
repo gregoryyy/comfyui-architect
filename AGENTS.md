@@ -6,7 +6,7 @@ The project's documents are in [ext/](ext/README.md), which plays the role `docs
 
 ## Current status
 
-Milestone 2 (spec Phase 1) is done (PRs #7, #8): with `COMFYUI_ARCHITECT` on, `architect_plan` takes a task to validated candidates from the recipe catalog and the installed models, and exports the chosen graph, with no downloads or renders. Z-Image Turbo and FLUX.1-schnell both plan to feasible candidates on the reference machine; three recipes are `curated`, the checkpoint recipe for FLUX.1-schnell is `proposed`. The package keeps the name `comfyui-mcp` until a rename milestone before the first publish, which also brings a new README.md, command shorthands and the publishing preparation (GAPS Q11). Panel work waits for the panel phase (ROAD phase 4). Still open from milestone 1: the first CI run, which waits on the owner confirming the fork's workflows in the Actions tab. Next is spec Phase 2, managed execution (ROAD phase 2), which TODO doesn't detail yet.
+Milestone 2 (spec Phase 1) is done (PRs #7, #8): with `COMFYUI_ARCHITECT` on, `architect_plan` takes a task to validated candidates from the recipe catalog and the installed models, and exports the chosen graph, with no downloads or renders. Z-Image Turbo and FLUX.1-schnell both plan to feasible candidates on the reference machine; three recipes are `curated`, the checkpoint recipe for FLUX.1-schnell is `proposed`. The package keeps the name `comfyui-mcp` until a rename milestone before the first publish, which also brings command shorthands and the publishing preparation (GAPS Q11). The fork's README is `README.md`; upstream's is `README_BASE.md`. Panel work waits for the panel phase (ROAD phase 4). Still open from milestone 1: the first CI run, which waits on the owner confirming the fork's workflows in the Actions tab. Next is spec Phase 2, managed execution (ROAD phase 2), which TODO doesn't detail yet.
 
 - The design authority is `ext/design/SPEC.md`, a working copy of the input spec v1.0 (GAPS Q1); spec section numbers (§) refer to it. Design changes go there, never into `ext/input/`.
 - Before proposing an architecture or technology choice, check it against the design rules below and the spec.
@@ -48,6 +48,7 @@ Treat these as hard requirements. If a change would violate one, stop and raise 
 ## Layout
 
 ```text
+README.md                     the fork's README; upstream's is README_BASE.md, renamed unchanged
 AGENTS.md, CLAUDE.md          this file and @AGENTS.md (force-added: upstream ignores them)
 .claude/agents/               the subagent roles of BOOT (implementer, assurance, upstream-syncer, e2e-runner,
                               gap-researcher), force-added

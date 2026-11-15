@@ -2,6 +2,26 @@
 
 The progress log, newest entry on top. Each entry: `## YYYY-MM-DD HH:MM — Title` (time from `date`), the TODO items and PR or commit, an `Agent:` line, then **Implementation notes**, **Deviations** and **Insights**. The plan is in [TODO](TODO.md).
 
+## 2026-11-15 21:05 — The fork's own README
+
+GAPS Q11 (answer of 21:05). PR on branch `docs/readme`.
+
+Agent: Opus 5.5, subagents: none.
+
+### Implementation notes
+
+- Upstream's `README.md` is kept unchanged as `README_BASE.md`. A merge from upstream sees no rename, because `README.md` still exists: upstream's README changes conflict with the fork's `README.md`. The sync step in [SDLC](SDLC.md#upstream-sync) resolves it by rule: keep the fork's `README.md`, copy upstream's README to `README_BASE.md`.
+- A new `README.md` describes the fork for visitors of the repository: what Architect does today, its rules, the recipes and their tiers, how to run it from a clone with Claude Code, how it relates to upstream, the roadmap and the documents in `ext/`.
+- `scripts/asset-counts.mjs` reads its eight README count checks from `README_BASE.md`. It's an upstream file outside the recorded seams; the change is recorded in [ARCH](ARCH.md#upstream-footprint) with the rename.
+
+### Deviations
+
+- Q11's answer of 20:21 put the new README into the rename milestone. The owner moved it ahead (21:05); the rename milestone keeps the package name, the command shorthands, the publishing preparation and the README's install section.
+
+### Insights
+
+- Upstream's CI reads counts out of its README, so the README's file name is part of a CI contract. Keeping upstream's text under another name keeps that check meaningful without copying upstream's marketing into the fork's README.
+
 ## 2026-11-15 20:49 — Installed fit that matches the validator; milestone 2 closed
 
 TODO items: 2.4.2 (fix). PR on branch `fix/installed-fit`.

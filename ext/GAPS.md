@@ -1,6 +1,6 @@
 # Gaps
 
-Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-15 20:21.
+Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-15 21:05.
 
 How this file works:
 - Answers are recorded with date, time and author: `**Answer** (2026-11-15 13:30, Gregor Heinrich): …`. Corrections of assumptions record the same in the **Correction** column. Short answers are fine.
@@ -107,6 +107,8 @@ Q2 chose the package `@gregoryyy/comfyui-architect` and the command `comfyui-arc
 - **Resolved** (2026-11-15 18:49, Opus 5.5 for Gregor Heinrich): package, command and MCP server name stay `comfyui-mcp` while the fork runs from a source checkout and isn't published; the fork identifies itself through `src/fork-identity.ts`, `serverInfo.title` and the handshake line. The full rename, through one identity module, is its own milestone before the first publish ([ROAD](ROAD.md)); TODO 1.3.1–1.3.3 wait for it.
 - **Answer** (2026-11-15 20:21, Gregor Heinrich): keep `comfyui-mcp` for now; the rename comes together with a new README.md, command shorthands and the publishing preparation.
 - **Resolved** (2026-11-15 20:21, Opus 5.5 for Gregor Heinrich): the rename milestone also covers a new README.md, command shorthands and the publishing preparation ([ROAD](ROAD.md#unscheduled-ideas), TODO 1.3).
+- **Answer** (2026-11-15 21:05, Gregor Heinrich): rename `README.md` to `README_BASE.md` and write a new README for the project now.
+- **Resolved** (2026-11-15 21:05, Opus 5.5 for Gregor Heinrich): the new README comes ahead of the rename milestone. Upstream's README is `README_BASE.md`, and `scripts/asset-counts.mjs` reads its counts there ([ARCH](ARCH.md#upstream-footprint)). The package rename, command shorthands and publishing preparation stay in the rename milestone, which updates the README's install section.
 
 ### Q12. Which image model families does the MVP certify first?
 
