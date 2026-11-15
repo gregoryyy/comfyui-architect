@@ -5,50 +5,108 @@
   "title": "Z-Image Turbo: image to image",
   "description": "Prompt-guided image to image with Z-Image Turbo: the source image is encoded to a latent and sampled again at a denoise below 1, so the prompt reshapes the image while lower denoise keeps more of its structure. It is not instruction editing: the model doesn't follow edit instructions, it renders the prompt starting from the source. The output has the source image's size. The source image slot takes a file name in ComfyUI's input folder.",
   "kind": "image",
-  "operations": ["image_edit"],
+  "operations": [
+    "image_edit"
+  ],
   "graph": {
     "1": {
       "class_type": "UNETLoader",
-      "inputs": { "unet_name": "z_image_turbo_bf16.safetensors", "weight_dtype": "default" },
-      "_meta": { "title": "Diffusion model" }
+      "inputs": {
+        "unet_name": "z_image_turbo_bf16.safetensors",
+        "weight_dtype": "default"
+      },
+      "_meta": {
+        "title": "Diffusion model"
+      }
     },
     "2": {
       "class_type": "CLIPLoader",
-      "inputs": { "clip_name": "qwen_3_4b.safetensors", "type": "qwen_image" },
-      "_meta": { "title": "Text encoder" }
+      "inputs": {
+        "clip_name": "qwen_3_4b.safetensors",
+        "type": "qwen_image"
+      },
+      "_meta": {
+        "title": "Text encoder"
+      }
     },
     "3": {
       "class_type": "VAELoader",
-      "inputs": { "vae_name": "ae.safetensors" },
-      "_meta": { "title": "VAE" }
+      "inputs": {
+        "vae_name": "ae.safetensors"
+      },
+      "_meta": {
+        "title": "VAE"
+      }
     },
     "4": {
       "class_type": "CLIPTextEncode",
-      "inputs": { "clip": ["2", 0], "text": "" },
-      "_meta": { "title": "Positive" }
+      "inputs": {
+        "clip": [
+          "2",
+          0
+        ],
+        "text": ""
+      },
+      "_meta": {
+        "title": "Positive"
+      }
     },
     "5": {
       "class_type": "ConditioningZeroOut",
-      "inputs": { "conditioning": ["4", 0] },
-      "_meta": { "title": "Negative (zeroed)" }
+      "inputs": {
+        "conditioning": [
+          "4",
+          0
+        ]
+      },
+      "_meta": {
+        "title": "Negative (zeroed)"
+      }
     },
     "6": {
       "class_type": "LoadImage",
-      "inputs": { "image": "" },
-      "_meta": { "title": "Source image" }
+      "inputs": {
+        "image": ""
+      },
+      "_meta": {
+        "title": "Source image"
+      }
     },
     "7": {
       "class_type": "VAEEncode",
-      "inputs": { "pixels": ["6", 0], "vae": ["3", 0] },
-      "_meta": { "title": "Encode source" }
+      "inputs": {
+        "pixels": [
+          "6",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      },
+      "_meta": {
+        "title": "Encode source"
+      }
     },
     "8": {
       "class_type": "KSampler",
       "inputs": {
-        "model": ["1", 0],
-        "positive": ["4", 0],
-        "negative": ["5", 0],
-        "latent_image": ["7", 0],
+        "model": [
+          "1",
+          0
+        ],
+        "positive": [
+          "4",
+          0
+        ],
+        "negative": [
+          "5",
+          0
+        ],
+        "latent_image": [
+          "7",
+          0
+        ],
         "seed": 0,
         "steps": 10,
         "cfg": 1,
@@ -56,17 +114,38 @@
         "scheduler": "beta",
         "denoise": 1
       },
-      "_meta": { "title": "Sampler" }
+      "_meta": {
+        "title": "Sampler"
+      }
     },
     "9": {
       "class_type": "VAEDecode",
-      "inputs": { "samples": ["8", 0], "vae": ["3", 0] },
-      "_meta": { "title": "Decode" }
+      "inputs": {
+        "samples": [
+          "8",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      },
+      "_meta": {
+        "title": "Decode"
+      }
     },
     "10": {
       "class_type": "SaveImage",
-      "inputs": { "images": ["9", 0], "filename_prefix": "architect/zimage-turbo-img2img" },
-      "_meta": { "title": "Save" }
+      "inputs": {
+        "images": [
+          "9",
+          0
+        ],
+        "filename_prefix": "architect/zimage-turbo-img2img"
+      },
+      "_meta": {
+        "title": "Save"
+      }
     }
   },
   "slots": [
@@ -74,7 +153,10 @@
       "id": "diffusion_model",
       "label": "Z-Image Turbo diffusion model",
       "valueType": "model_file",
-      "target": { "node": "1", "input": "unet_name" },
+      "target": {
+        "node": "1",
+        "input": "unet_name"
+      },
       "required": true,
       "default": "z_image_turbo_bf16.safetensors",
       "modelFolder": "diffusion_models",
@@ -84,7 +166,10 @@
       "id": "text_encoder",
       "label": "Qwen 3 4B text encoder",
       "valueType": "model_file",
-      "target": { "node": "2", "input": "clip_name" },
+      "target": {
+        "node": "2",
+        "input": "clip_name"
+      },
       "required": true,
       "default": "qwen_3_4b.safetensors",
       "modelFolder": "text_encoders",
@@ -94,7 +179,10 @@
       "id": "vae",
       "label": "Z-Image VAE",
       "valueType": "model_file",
-      "target": { "node": "3", "input": "vae_name" },
+      "target": {
+        "node": "3",
+        "input": "vae_name"
+      },
       "required": true,
       "default": "ae.safetensors",
       "modelFolder": "vae",
@@ -104,21 +192,31 @@
       "id": "prompt",
       "label": "Prompt",
       "valueType": "string",
-      "target": { "node": "4", "input": "text" },
-      "required": true
+      "target": {
+        "node": "4",
+        "input": "text"
+      },
+      "required": true,
+      "fromTask": "intent"
     },
     {
       "id": "source_image",
       "label": "Source image (file name in ComfyUI's input folder)",
       "valueType": "string",
-      "target": { "node": "6", "input": "image" },
+      "target": {
+        "node": "6",
+        "input": "image"
+      },
       "required": true
     },
     {
       "id": "denoise",
       "label": "Denoise (below 1 keeps more of the source)",
       "valueType": "float",
-      "target": { "node": "8", "input": "denoise" },
+      "target": {
+        "node": "8",
+        "input": "denoise"
+      },
       "required": true,
       "min": 0,
       "max": 1
@@ -127,11 +225,20 @@
       "id": "seed",
       "label": "Seed",
       "valueType": "seed",
-      "target": { "node": "8", "input": "seed" },
-      "required": true
+      "target": {
+        "node": "8",
+        "input": "seed"
+      },
+      "required": true,
+      "default": 0
     }
   ],
-  "outputs": [{ "role": "image", "node": "10" }],
+  "outputs": [
+    {
+      "role": "image",
+      "node": "10"
+    }
+  ],
   "dependencies": {
     "nodeClasses": [
       "UNETLoader",

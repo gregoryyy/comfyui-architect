@@ -5,45 +5,94 @@
   "title": "Z-Image Turbo: text to image",
   "description": "Text to image with Z-Image Turbo from separate components: diffusion model, Qwen 3 4B text encoder and VAE. Turbo is DMD-distilled, so it samples in 10 steps at CFG 1.0 and ignores the negative prompt; the negative input is the zeroed positive conditioning. Width and height should be divisible by 16.",
   "kind": "image",
-  "operations": ["text_to_image"],
+  "operations": [
+    "text_to_image"
+  ],
   "graph": {
     "1": {
       "class_type": "UNETLoader",
-      "inputs": { "unet_name": "z_image_turbo_bf16.safetensors", "weight_dtype": "default" },
-      "_meta": { "title": "Diffusion model" }
+      "inputs": {
+        "unet_name": "z_image_turbo_bf16.safetensors",
+        "weight_dtype": "default"
+      },
+      "_meta": {
+        "title": "Diffusion model"
+      }
     },
     "2": {
       "class_type": "CLIPLoader",
-      "inputs": { "clip_name": "qwen_3_4b.safetensors", "type": "qwen_image" },
-      "_meta": { "title": "Text encoder" }
+      "inputs": {
+        "clip_name": "qwen_3_4b.safetensors",
+        "type": "qwen_image"
+      },
+      "_meta": {
+        "title": "Text encoder"
+      }
     },
     "3": {
       "class_type": "VAELoader",
-      "inputs": { "vae_name": "ae.safetensors" },
-      "_meta": { "title": "VAE" }
+      "inputs": {
+        "vae_name": "ae.safetensors"
+      },
+      "_meta": {
+        "title": "VAE"
+      }
     },
     "4": {
       "class_type": "CLIPTextEncode",
-      "inputs": { "clip": ["2", 0], "text": "" },
-      "_meta": { "title": "Positive" }
+      "inputs": {
+        "clip": [
+          "2",
+          0
+        ],
+        "text": ""
+      },
+      "_meta": {
+        "title": "Positive"
+      }
     },
     "5": {
       "class_type": "ConditioningZeroOut",
-      "inputs": { "conditioning": ["4", 0] },
-      "_meta": { "title": "Negative (zeroed)" }
+      "inputs": {
+        "conditioning": [
+          "4",
+          0
+        ]
+      },
+      "_meta": {
+        "title": "Negative (zeroed)"
+      }
     },
     "6": {
       "class_type": "EmptySD3LatentImage",
-      "inputs": { "width": 1024, "height": 1024, "batch_size": 1 },
-      "_meta": { "title": "Latent" }
+      "inputs": {
+        "width": 1024,
+        "height": 1024,
+        "batch_size": 1
+      },
+      "_meta": {
+        "title": "Latent"
+      }
     },
     "7": {
       "class_type": "KSampler",
       "inputs": {
-        "model": ["1", 0],
-        "positive": ["4", 0],
-        "negative": ["5", 0],
-        "latent_image": ["6", 0],
+        "model": [
+          "1",
+          0
+        ],
+        "positive": [
+          "4",
+          0
+        ],
+        "negative": [
+          "5",
+          0
+        ],
+        "latent_image": [
+          "6",
+          0
+        ],
         "seed": 0,
         "steps": 10,
         "cfg": 1,
@@ -51,17 +100,38 @@
         "scheduler": "beta",
         "denoise": 1
       },
-      "_meta": { "title": "Sampler" }
+      "_meta": {
+        "title": "Sampler"
+      }
     },
     "8": {
       "class_type": "VAEDecode",
-      "inputs": { "samples": ["7", 0], "vae": ["3", 0] },
-      "_meta": { "title": "Decode" }
+      "inputs": {
+        "samples": [
+          "7",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      },
+      "_meta": {
+        "title": "Decode"
+      }
     },
     "9": {
       "class_type": "SaveImage",
-      "inputs": { "images": ["8", 0], "filename_prefix": "architect/zimage-turbo-t2i" },
-      "_meta": { "title": "Save" }
+      "inputs": {
+        "images": [
+          "8",
+          0
+        ],
+        "filename_prefix": "architect/zimage-turbo-t2i"
+      },
+      "_meta": {
+        "title": "Save"
+      }
     }
   },
   "slots": [
@@ -69,7 +139,10 @@
       "id": "diffusion_model",
       "label": "Z-Image Turbo diffusion model",
       "valueType": "model_file",
-      "target": { "node": "1", "input": "unet_name" },
+      "target": {
+        "node": "1",
+        "input": "unet_name"
+      },
       "required": true,
       "default": "z_image_turbo_bf16.safetensors",
       "modelFolder": "diffusion_models",
@@ -79,7 +152,10 @@
       "id": "text_encoder",
       "label": "Qwen 3 4B text encoder",
       "valueType": "model_file",
-      "target": { "node": "2", "input": "clip_name" },
+      "target": {
+        "node": "2",
+        "input": "clip_name"
+      },
       "required": true,
       "default": "qwen_3_4b.safetensors",
       "modelFolder": "text_encoders",
@@ -89,7 +165,10 @@
       "id": "vae",
       "label": "Z-Image VAE",
       "valueType": "model_file",
-      "target": { "node": "3", "input": "vae_name" },
+      "target": {
+        "node": "3",
+        "input": "vae_name"
+      },
       "required": true,
       "default": "ae.safetensors",
       "modelFolder": "vae",
@@ -99,14 +178,21 @@
       "id": "prompt",
       "label": "Prompt",
       "valueType": "string",
-      "target": { "node": "4", "input": "text" },
-      "required": true
+      "target": {
+        "node": "4",
+        "input": "text"
+      },
+      "required": true,
+      "fromTask": "intent"
     },
     {
       "id": "width",
       "label": "Width",
       "valueType": "int",
-      "target": { "node": "6", "input": "width" },
+      "target": {
+        "node": "6",
+        "input": "width"
+      },
       "required": true,
       "default": 1024,
       "fromTask": "media.output.width",
@@ -117,7 +203,10 @@
       "id": "height",
       "label": "Height",
       "valueType": "int",
-      "target": { "node": "6", "input": "height" },
+      "target": {
+        "node": "6",
+        "input": "height"
+      },
       "required": true,
       "default": 1024,
       "fromTask": "media.output.height",
@@ -128,11 +217,20 @@
       "id": "seed",
       "label": "Seed",
       "valueType": "seed",
-      "target": { "node": "7", "input": "seed" },
-      "required": true
+      "target": {
+        "node": "7",
+        "input": "seed"
+      },
+      "required": true,
+      "default": 0
     }
   ],
-  "outputs": [{ "role": "image", "node": "9" }],
+  "outputs": [
+    {
+      "role": "image",
+      "node": "9"
+    }
+  ],
   "dependencies": {
     "nodeClasses": [
       "UNETLoader",

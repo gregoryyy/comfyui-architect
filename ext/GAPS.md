@@ -1,6 +1,6 @@
 # Gaps
 
-Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-15 17:05.
+Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-15 17:43.
 
 How this file works:
 - Answers are recorded with date, time and author: `**Answer** (2026-11-15 13:30, Gregor Heinrich): …`. Corrections of assumptions record the same in the **Correction** column. Short answers are fine.
@@ -108,6 +108,14 @@ SPEC §2.2 certifies 12–20 recipe variants across 2–3 families. The referenc
 - **Proposed:** two families with upstream skills and packs that run on 48 GB of unified memory, for example Flux and Qwen-Image, chosen by the owner with the download size in view.
 - **Answer** (2026-11-15 17:27, Gregor Heinrich): the models in `~/Documents/model/comfyui/models`. That folder is the Desktop install's second model root (`comfy.desktop_1` in its model-path configuration), which the first survey missed. Its image families are **Z-Image Turbo** (diffusion model, its Qwen 3 4B text encoder and the `ae` VAE: complete) and **FLUX.1-schnell** (diffusion model fp8 and the `ae` VAE; its T5-XXL and CLIP-L text encoders aren't installed). Its Wan 2.2 models are video (ROAD phase 6).
 - **Resolved** (2026-11-15 17:27, Opus 5.5 for Gregor Heinrich): the first recipes are for Z-Image Turbo and FLUX.1-schnell (TODO 2.4.4). They ship as `proposed`, the tier for recipes an agent wrote and the owner hasn't reviewed (spec §8.4: an agent can't certify its own recipe); the owner's review makes them `curated`. The FLUX.1-schnell recipe stays blocked on this machine until its text encoders are installed, which milestone 2 can't do. [research/reference-target.md](research/reference-target.md) is corrected.
+- **Correction** (2026-11-15 17:43, Opus 5.5): the FLUX.1-schnell file is Comfy-Org's all-in-one checkpoint. Its safetensors header holds the diffusion model (776 tensors), both text encoders (`text_encoders.clip_l`, 198; `text_encoders.t5xxl`, 220) and the VAE. So nothing has to be downloaded; the file sits in `diffusion_models/`, where `CheckpointLoaderSimple` doesn't look. How to run it here is Q13.
+
+### Q13. How should FLUX.1-schnell run on this machine?
+
+The installed `diffusion_models/flux1-schnell-fp8.safetensors` is an all-in-one checkpoint (Q12, correction). The shipped recipe loads the diffusion model with `UNETLoader` and expects separate T5-XXL and CLIP-L files, which aren't installed, so it's blocked. ComfyUI's own `flux_schnell` template loads the all-in-one file with `CheckpointLoaderSimple`, which lists only `checkpoints/`.
+
+- **Proposed:** add a second FLUX.1-schnell recipe that uses `CheckpointLoaderSimple`, and make the file visible in `checkpoints/` (a symlink, or moving it), which is a change to the owner's model folders the owner makes. The alternative is downloading the two separate encoders (about 5 GB), which needs approval and comes with managed acquisition (ROAD phase 3).
+- **Answer:**
 
 ## Assumptions
 

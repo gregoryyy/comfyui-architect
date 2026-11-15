@@ -119,14 +119,14 @@ export class ArchitectPlanning {
       const readiness = planningReadiness(current, now(), baseUrl);
       if (readiness.usable) return { snapshot: current, readiness };
     }
-    const snapshot = store.putEnvironment(await service.inspectEnvironment());
+    const snapshot = store.putSnapshot(await service.inspectEnvironment());
     return { snapshot, readiness: planningReadiness(snapshot, now(), baseUrl) };
   }
 
   /** The catalog's recipes and whether the target could fill their model slots (`architect_inspect capabilities`). */
   async capabilities() {
     const sync = this.syncCatalog();
-    const { snapshot } = await this.environment(this.deps.store.latestEnvironment(this.deps.upstream.comfyuiBaseUrl()));
+    const { snapshot } = await this.environment(this.deps.store.latestSnapshot(this.deps.upstream.comfyuiBaseUrl()));
     const recipes = this.recipes().map((r) => {
       const [fit] = retrieveRecipes([r], { media: { kind: "image", operation: r.operations[0] as TaskSpec["media"]["operation"], output: { width: 1, height: 1, count: 1, format: "png" } } }, snapshot, 1);
       return {
@@ -226,7 +226,7 @@ export class ArchitectPlanning {
     if (plan.state === "SELECTED" || plan.state === "SUPERSEDED") {
       throw new PlanningError("GRAPH_CONFLICT", `plan ${plan.id} is ${plan.state}`, "Call prepare for a new plan.");
     }
-    const { snapshot, readiness } = await this.environment(store.getEnvironment(plan.environmentId));
+    const { snapshot, readiness } = await this.environment(store.getSnapshot(plan.environmentId));
     const out = planCandidates({
       task,
       snapshot,
@@ -332,7 +332,7 @@ export class ArchitectPlanning {
     }
     const candidate = this.requireCandidate(plan, plan.selectedCandidateId);
     const { recipe, graph, fingerprint } = this.compiledGraph(candidate, task);
-    const env = this.deps.store.getEnvironment(candidate.environmentId);
+    const env = this.deps.store.getSnapshot(candidate.environmentId);
     const root = resolve(this.deps.dataDir, "artifacts");
     const dir = resolve(root, task.id, plan.id);
     // IDs are generated here, but a stored ID is still data: never write outside artifacts/.

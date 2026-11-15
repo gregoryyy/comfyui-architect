@@ -188,7 +188,7 @@ function prepareStatements(db: Database.Database) {
     insertEnvironment: db.prepare(
       "INSERT INTO environments (id, base_url, captured_at, node_schema_digest, payload) VALUES (?, ?, ?, ?, ?)",
     ),
-    latestEnvironment: db.prepare(
+    latestSnapshot: db.prepare(
       "SELECT id, payload FROM environments WHERE base_url = ? ORDER BY captured_at DESC, rowid DESC LIMIT 1",
     ),
 
@@ -335,7 +335,7 @@ export class ArchitectStore {
    * Store an environment snapshot. A snapshot records one moment, so it is immutable:
    * the same snapshot again is a no-op, a different one under the same id is refused.
    */
-  putEnvironment(input: z.input<typeof EnvironmentSnapshot>): EnvironmentSnapshot {
+  putSnapshot(input: z.input<typeof EnvironmentSnapshot>): EnvironmentSnapshot {
     const snapshot = EnvironmentSnapshot.parse(input);
     const payload = canonicalJson(snapshot);
     return this.transaction(() => {
@@ -357,14 +357,14 @@ export class ArchitectStore {
   }
 
   /** An environment snapshot by id; undefined when not stored. */
-  getEnvironment(id: string): EnvironmentSnapshot | undefined {
+  getSnapshot(id: string): EnvironmentSnapshot | undefined {
     const row = parseRow(IdPayloadRow, this.stmts.environment.get(id));
     return row && readStored("environment", row.payload, { id: row.id });
   }
 
   /** The most recently captured snapshot of a target; undefined when none is stored. */
-  latestEnvironment(baseUrl: string): EnvironmentSnapshot | undefined {
-    const row = parseRow(IdPayloadRow, this.stmts.latestEnvironment.get(baseUrl));
+  latestSnapshot(baseUrl: string): EnvironmentSnapshot | undefined {
+    const row = parseRow(IdPayloadRow, this.stmts.latestSnapshot.get(baseUrl));
     return row && readStored("environment", row.payload, { id: row.id });
   }
 

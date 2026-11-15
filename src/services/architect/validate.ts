@@ -151,8 +151,8 @@ function contractLayer(input: ValidateInput, compiled: CompileResult): CheckResu
   if (input.graph !== undefined && compiled.fingerprint !== undefined) {
     checks.push(
       graphFingerprint(input.graph) === compiled.fingerprint
-        ? c("graph_matches_recipe", "pass", true, "graph is the recipe compiled with these bindings")
-        : c("graph_matches_recipe", "fail", true, "graph differs from the recipe compiled with these bindings"),
+        ? c("compiled_from_recipe", "pass", true, "graph is the recipe compiled with these bindings")
+        : c("compiled_from_recipe", "fail", true, "graph differs from the recipe compiled with these bindings"),
     );
   }
   return checks;

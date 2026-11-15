@@ -1,6 +1,6 @@
 # Reference target: environment record
 
-The machine, ComfyUI installs, models and local LLMs that milestone 1 found on 2026-11-15, for GAPS Q5 (reference target) and Q9 (local planner), and as input to the choice of the first certified model families (TODO 1.2.1). Facts were read with `curl` against the running ComfyUI and Ollama, and from the file system. Status: 2026-11-15 17:27.
+The machine, ComfyUI installs, models and local LLMs that milestone 1 found on 2026-11-15, for GAPS Q5 (reference target) and Q9 (local planner), and as input to the choice of the first certified model families (TODO 1.2.1). Facts were read with `curl` against the running ComfyUI and Ollama, and from the file system. Status: 2026-11-15 17:43.
 
 ## Machine
 
@@ -39,7 +39,7 @@ The first survey missed that the active Desktop configuration (`~/Library/Applic
 | `vae` | `ae.safetensors` (Flux and Z-Image), Wan 2.1 VAE, MiniMax H3 video and audio VAEs; also a copy of `qwen_3_4b.safetensors`, a text encoder in the VAE folder |
 | `loras` | Wan 2.2 i2v 4-step LoRAs, MiniMax H3 FL2V turbo |
 
-So two image families are present: Z-Image Turbo is complete; FLUX.1-schnell lacks its T5-XXL and CLIP-L text encoders. The reference install on port 8190 doesn't read this root.
+So two image families are present: Z-Image Turbo is complete. FLUX.1-schnell is Comfy-Org's all-in-one checkpoint: its header holds the diffusion model, both text encoders (CLIP-L, T5-XXL) and the VAE, so nothing is missing, but it sits in `diffusion_models/`, where `CheckpointLoaderSimple` doesn't look (GAPS Q13). The reference install on port 8190 doesn't read this root.
 
 Before the correction, this note said: **no image-only model family is installed** (no Flux, SDXL, SD 3.x, Qwen-Image or Z-Image checkpoint); the installed models are for video and audio. That held for the first root only.
 
@@ -49,6 +49,6 @@ Fifteen models are installed, among them `gemma4:31b-mlx`, `qwen3.8:27b-mlx`, `q
 
 ## Consequences
 
-- **Image families (GAPS Q12, answered):** Z-Image Turbo runs on the Desktop install as installed; FLUX.1-schnell needs its two text encoders first. The reference install on 8190 needs `extra_model_paths.yaml` pointing at the second root to see either.
+- **Image families (GAPS Q12, answered):** Z-Image Turbo runs on the Desktop install as installed; FLUX.1-schnell needs either the all-in-one file visible in `checkpoints/` or separate encoders (GAPS Q13). The reference install on 8190 needs `extra_model_paths.yaml` pointing at the second root to see either.
 - **The installed models fit video and audio,** the kinds ROAD phase 6 schedules after the MVP (GAPS Q10).
 - **The reference install has to run** for integration tests (TODO 1.1.3); its nested layout should be checked before relying on it.

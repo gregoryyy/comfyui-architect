@@ -179,8 +179,11 @@ describe("shipped recipes", () => {
         expect(slot.modelFamily, `${recipe.id}.${slot.id}`).toBeTruthy();
       }
       const fromTask = recipe.slots.flatMap((s) => (s.fromTask ? [s.fromTask] : []));
+      // The prompt always comes from the task's intent, so planning can compile without an
+      // agent-supplied binding; text to image also takes its size from the task.
+      expect(fromTask, recipe.id).toContain("intent");
       if (recipe.operations.includes("text_to_image")) {
-        expect(fromTask.sort(), recipe.id).toEqual(["media.output.height", "media.output.width"]);
+        expect(fromTask.sort(), recipe.id).toEqual(["intent", "media.output.height", "media.output.width"]);
       }
     }
   });

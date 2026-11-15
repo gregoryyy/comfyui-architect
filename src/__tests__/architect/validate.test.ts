@@ -90,7 +90,7 @@ describe("validateGraph: complete environment", () => {
 
   it("validates a graph the caller passes, when it is the compiled one", () => {
     const { report } = run({ graph: compiledT2i() });
-    expect(byId(report.checks, "contract.graph_matches_recipe").verdict).toBe("pass");
+    expect(byId(report.checks, "contract.compiled_from_recipe").verdict).toBe("pass");
     expect(report.overall).toBe("pass");
   });
 });
@@ -127,7 +127,7 @@ describe("contract layer", () => {
     const g = compiledT2i();
     g["5"].inputs.steps = 60;
     const { report } = run({ graph: g });
-    expect(byId(report.checks, "contract.graph_matches_recipe")).toMatchObject({ verdict: "fail", hard: true });
+    expect(byId(report.checks, "contract.compiled_from_recipe")).toMatchObject({ verdict: "fail", hard: true });
   });
 
   it("carries the compiler's failures and checks no graph when compilation failed", () => {

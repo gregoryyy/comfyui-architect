@@ -4,14 +4,19 @@
 // architect_inspect against the configured ComfyUI. Upstream's smoke-install checks the
 // packed tarball; this checks what an MCP client sees, with the Architect flag off and on.
 //
-// Usage: node scripts/architect/stdio-smoke.mjs [off|on|both] [--offline]
+// Usage: node scripts/architect/stdio-smoke.mjs [off|on|both] [--offline] [--plan]
 //   both (default)  runs off, then on, and checks that on adds exactly the architect_* tools
 //   --offline       accepts the STALE_ENVIRONMENT error when no ComfyUI answers, so the
 //                   wiring can be checked without a running ComfyUI
+//   --plan          with the flag on, also plans a 1024x1024 text-to-image task through
+//                   architect_plan (prepare, propose, select, export) into a temporary
+//                   ARCHITECT_DATA_DIR; needs a feasible candidate on the target
 // The target comes from the usual environment (COMFYUI_URL, COMFYUI_HOST/PORT, ...).
 // Needs `npm run build` first. Exits 1 if any check fails.
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -19,6 +24,8 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 const ENTRY = fileURLToPath(new URL("../../dist/index.js", import.meta.url));
 const args = process.argv.slice(2);
 const offline = args.includes("--offline");
+const plan = args.includes("--plan");
+const dataDir = mkdtempSync(join(tmpdir(), "architect-smoke-"));
 const mode = args.find((a) => !a.startsWith("--")) ?? "both";
 if (!["off", "on", "both"].includes(mode)) {
   console.error(`unknown mode "${mode}"; use off, on or both`);
@@ -39,6 +46,7 @@ async function session(flagOn) {
   const env = { ...process.env };
   if (flagOn) env.COMFYUI_ARCHITECT = "1";
   else delete env.COMFYUI_ARCHITECT;
+  env.ARCHITECT_DATA_DIR = dataDir;
   // --full lists every tool directly; compact mode would hide them behind call_tool.
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -79,10 +87,41 @@ async function session(flagOn) {
     const acceptedOffline = offline && envelope.error?.code === "STALE_ENVIRONMENT";
     check(reachable || acceptedOffline, `${label} architect_inspect status ${envelope.status}${acceptedOffline ? " (offline accepted)" : ""}`);
     for (const w of envelope.warnings ?? []) console.log(`      warning: ${w}`);
+    if (plan) await planTask(client, label);
     return { tools };
   } finally {
     await client.close();
   }
+}
+
+async function callPlan(client, args) {
+  const res = await client.callTool({ name: "architect_plan", arguments: args });
+  return JSON.parse(res.content?.[0]?.type === "text" ? res.content[0].text : "{}");
+}
+
+async function planTask(client, label) {
+  const task = {
+    intent: "A red bicycle leaning against a white wall, soft morning light.",
+    media: { kind: "image", operation: "text_to_image", output: { width: 1024, height: 1024 } },
+  };
+  const prepared = await callPlan(client, { action: "prepare", task });
+  console.log(`${label} prepare: ${prepared.status}: ${prepared.summary}`);
+  check(prepared.status !== "error", `${label} prepare stored the task`);
+  const planId = prepared.data?.plan?.id;
+  if (!planId) return;
+  const proposed = await callPlan(client, { action: "propose", planId });
+  console.log(`${label} propose: ${proposed.status}: ${proposed.summary}`);
+  for (const c of proposed.data?.candidates ?? []) {
+    console.log(`      ${c.status.padEnd(10)} ${c.recipe} ${JSON.stringify(c.bindings)}`);
+    for (const b of c.blocking) console.log(`        blocking: ${b}`);
+  }
+  const best = (proposed.data?.candidates ?? []).find((c) => c.status === "feasible");
+  check(best !== undefined, `${label} a feasible candidate`);
+  if (!best) return;
+  const selected = await callPlan(client, { action: "select", planId, candidateId: best.id });
+  check(selected.status === "ok", `${label} select: ${selected.summary}`);
+  const exported = await callPlan(client, { action: "export", planId });
+  check(exported.status === "ok" && exported.artifacts?.length === 5, `${label} export: ${exported.summary}`);
 }
 
 const off = mode === "on" ? undefined : await session(false);
@@ -94,6 +133,7 @@ if (off && on) {
   check(removed.length === 0 && added.every((n) => n.startsWith("architect_")), `flag on adds only architect_* tools (${added.join(", ") || "none"})`);
 }
 
+rmSync(dataDir, { recursive: true, force: true });
 if (failures.length) {
   console.log(`\n${failures.length} check(s) failed`);
   process.exit(1);

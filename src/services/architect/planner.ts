@@ -71,10 +71,12 @@ const EMPTY_BLOCKERS = (): PlanBlockers => ({
 });
 
 /**
- * Binding sets to try for a recipe: the agent's proposals for it, or else every combination
- * of installed files for its model slots, in name order. A slot whose folder lists no file
- * (or couldn't be read) stays unbound, so the candidate is built once and blocked with the
- * reason, rather than filled with a file nobody saw (spec §9.2).
+ * Binding sets to try for a recipe: the agent's proposals for it, or else enumerated ones.
+ * A model slot with a default names the file the recipe was written for: it's used as it
+ * is, and when the target doesn't list it the candidate is blocked naming that file, never
+ * filled with another file from the same folder, whose family nothing has checked (spec
+ * §9.2, §8.1). Only a model slot without a default is enumerated over the folder's files,
+ * in name order. A slot whose folder lists no file stays unbound and blocks with the reason.
  */
 function bindingSets(
   recipe: Recipe,
@@ -87,7 +89,7 @@ function bindingSets(
   let sets: Record<string, string | number>[] = [{}];
   let truncated = false;
   for (const slot of recipe.slots) {
-    if (slot.valueType !== "model_file") continue;
+    if (slot.valueType !== "model_file" || slot.default !== undefined) continue;
     const files = snapshot.installedModels?.folders[slot.modelFolder ?? ""] ?? [];
     if (files.length === 0) continue;
     const next: Record<string, string | number>[] = [];
@@ -103,6 +105,16 @@ function bindingSets(
     sets = next;
   }
   return { sets, truncated };
+}
+
+/** The resolved values of a recipe's model slots. */
+function modelValues(recipe: Recipe, values: Record<string, string | number>): Record<string, string | number> {
+  const out: Record<string, string | number> = {};
+  for (const slot of recipe.slots) {
+    const v = values[slot.id];
+    if (slot.valueType === "model_file" && v !== undefined) out[slot.id] = v;
+  }
+  return out;
 }
 
 const STATUS_ORDER = { feasible: 0, diagnostic: 1, blocked: 2 } as const;
@@ -151,8 +163,11 @@ export function planCandidates(input: PlanningInput): PlanningOutput {
 
   const built: PlanCandidate[] = [];
   let truncated = false;
+  // Each recipe gets an equal share of the expansion budget, so one recipe's combinations
+  // can't crowd out every other recipe (spec §9.2 step 6: distinct trade-offs).
+  const share = Math.max(1, Math.floor(MAX_EXPANDED_CANDIDATES / retrieved.length));
   for (const { recipe } of retrieved) {
-    const budget = MAX_EXPANDED_CANDIDATES - built.length;
+    const budget = Math.min(share, MAX_EXPANDED_CANDIDATES - built.length);
     if (budget <= 0) {
       truncated = true;
       break;
@@ -172,7 +187,10 @@ export function planCandidates(input: PlanningInput): PlanningOutput {
         recipeId: recipe.id,
         recipeRevision: recipe.revision,
         environmentId: snapshot.id,
-        bindings,
+        // The model files the graph actually binds, defaults included, so the candidate,
+        // the agent and the export's lock name every file (compiling these again gives the
+        // same graph).
+        bindings: { ...modelValues(recipe, compiled.values), ...bindings },
         transforms: [],
         ...(compiled.fingerprint ? { graphFingerprint: compiled.fingerprint } : {}),
         roleMap: compiled.roleMap,

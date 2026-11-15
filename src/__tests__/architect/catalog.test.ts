@@ -102,7 +102,7 @@ describe("loadRecipeDir", () => {
     expect(loadRecipeDir(dirWith({})).dirFound).toBe(true);
   });
 
-  it("finds the shipped folder, which holds no recipe until GAPS Q12 is answered", () => {
+  it("finds the shipped folder and loads it without errors, with no fixture recipe in it", () => {
     const res = loadRecipeDir(SHIPPED_RECIPES_DIR);
     expect(res.dirFound).toBe(true);
     expect(res.errors).toEqual([]);

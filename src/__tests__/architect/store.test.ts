@@ -127,7 +127,7 @@ function untyped(value: object) {
 function seed(): void {
   const store = open();
   store.putTaskRevision(task);
-  store.putEnvironment(env);
+  store.putSnapshot(env);
   store.putPlan(plan);
   store.putCandidate(candidate);
   store.close();
@@ -153,9 +153,13 @@ describe("architectDataDir", () => {
   });
 
   it("falls back to ~/.comfyui-mcp/architect when neither is set or both are blank", () => {
-    const fallback = join(homedir(), ".comfyui-mcp", "architect");
-    expect(architectDataDir({})).toBe(fallback);
-    expect(architectDataDir({ ARCHITECT_DATA_DIR: "  ", COMFYUI_MCP_DATA_DIR: "" })).toBe(fallback);
+    // The suite's setup file points homedir() at a temporary directory; this only reads the
+    // resolved path and writes nothing there.
+    for (const env of [{}, { ARCHITECT_DATA_DIR: "  ", COMFYUI_MCP_DATA_DIR: "" }]) {
+      const dir = architectDataDir(env);
+      expect(dir.startsWith(homedir())).toBe(true);
+      expect(dir.endsWith(join(".comfyui-mcp", "architect"))).toBe(true);
+    }
   });
 });
 
@@ -200,7 +204,7 @@ describe("persistence", () => {
 
     const again = open();
     expect(again.getTask("task-a1")).toMatchObject({ id: "task-a1", revision: 1, intent: task.intent });
-    expect(again.getEnvironment("env-1")).toMatchObject({ id: "env-1", nodeSchemaDigest: "d1" });
+    expect(again.getSnapshot("env-1")).toMatchObject({ id: "env-1", nodeSchemaDigest: "d1" });
     expect(again.getPlan("plan-1")).toMatchObject({ state: "PROPOSED", candidateIds: ["cand-1"] });
     expect(again.getCandidate("cand-1")).toMatchObject({ planId: "plan-1", status: "feasible" });
     expect(again.getRecipe("recipe-fixture.t2i")).toMatchObject({ revision: 1, certification: "fixture" });
@@ -211,8 +215,8 @@ describe("persistence", () => {
     const store = open();
     expect(store.getTask("task-none")).toBeUndefined();
     expect(store.getTask("task-none", 1)).toBeUndefined();
-    expect(store.getEnvironment("env-none")).toBeUndefined();
-    expect(store.latestEnvironment("http://nowhere")).toBeUndefined();
+    expect(store.getSnapshot("env-none")).toBeUndefined();
+    expect(store.latestSnapshot("http://nowhere")).toBeUndefined();
     expect(store.getRecipe("recipe-none")).toBeUndefined();
     expect(store.getPlan("plan-none")).toBeUndefined();
     expect(store.getCandidate("cand-none")).toBeUndefined();
@@ -268,18 +272,18 @@ describe("task revisions", () => {
 describe("environments", () => {
   it("returns the latest snapshot of a target by capture time, not by insertion order", () => {
     const store = open();
-    store.putEnvironment({ ...env, id: "env-late", capturedAt: T2 });
+    store.putSnapshot({ ...env, id: "env-late", capturedAt: T2 });
     // An offset timestamp that is earlier in UTC than T2 must not sort after it.
-    store.putEnvironment({ ...env, id: "env-early", capturedAt: "2026-11-15T13:30:00.000+01:00" });
-    store.putEnvironment({ ...env, id: "env-other", capturedAt: T2, target: { baseUrl: "http://other:8188" } });
-    expect(store.latestEnvironment(env.target.baseUrl)?.id).toBe("env-late");
+    store.putSnapshot({ ...env, id: "env-early", capturedAt: "2026-11-15T13:30:00.000+01:00" });
+    store.putSnapshot({ ...env, id: "env-other", capturedAt: T2, target: { baseUrl: "http://other:8188" } });
+    expect(store.latestSnapshot(env.target.baseUrl)?.id).toBe("env-late");
   });
 
   it("is idempotent for the same snapshot and refuses a different one under the same id", () => {
     const store = open();
-    store.putEnvironment(env);
-    expect(() => store.putEnvironment(env)).not.toThrow();
-    expect(() => store.putEnvironment({ ...env, nodeSchemaDigest: "d2" })).toThrow(StoreConflictError);
+    store.putSnapshot(env);
+    expect(() => store.putSnapshot(env)).not.toThrow();
+    expect(() => store.putSnapshot({ ...env, nodeSchemaDigest: "d2" })).toThrow(StoreConflictError);
   });
 });
 
@@ -343,7 +347,7 @@ describe("plans and candidates", () => {
     expect(() => store.putPlan(plan)).toThrow(/FOREIGN KEY/);
     store.putTaskRevision(task);
     expect(() => store.putPlan(plan)).toThrow(/FOREIGN KEY/);
-    store.putEnvironment(env);
+    store.putSnapshot(env);
     expect(() => store.putPlan({ ...plan, taskRevision: 2 })).toThrow(/FOREIGN KEY/);
     expect(() => store.putPlan(plan)).not.toThrow();
   });
@@ -366,7 +370,7 @@ describe("plans and candidates", () => {
   it("refuses an update that changes what a plan was made for", () => {
     seed();
     const store = open();
-    store.putEnvironment({ ...env, id: "env-2" });
+    store.putSnapshot({ ...env, id: "env-2" });
     expect(() => store.putPlan({ ...plan, environmentId: "env-2" })).toThrow(StoreConflictError);
     expect(store.getPlan("plan-1")?.environmentId).toBe("env-1");
   });
@@ -389,12 +393,12 @@ describe("transactions", () => {
     expect(() =>
       store.transaction(() => {
         store.putTaskRevision(task);
-        store.putEnvironment(env);
+        store.putSnapshot(env);
         throw new Error("abort");
       }),
     ).toThrow("abort");
     expect(store.getTask("task-a1")).toBeUndefined();
-    expect(store.getEnvironment("env-1")).toBeUndefined();
+    expect(store.getSnapshot("env-1")).toBeUndefined();
   });
 
   it("returns the function's value when it commits", () => {
@@ -417,7 +421,7 @@ describe("reading tampered payloads", () => {
 
   const READS = [
     ["task_revisions", (s: ArchitectStore) => s.getTask("task-a1")],
-    ["environments", (s: ArchitectStore) => s.getEnvironment("env-1")],
+    ["environments", (s: ArchitectStore) => s.getSnapshot("env-1")],
     ["plans", (s: ArchitectStore) => s.getPlan("plan-1")],
     ["plan_candidates", (s: ArchitectStore) => s.getCandidate("cand-1")],
   ] as const;
@@ -459,7 +463,7 @@ describe("reading tampered payloads", () => {
     editPayload("environments", (p) => {
       p.id = "env-swapped";
     });
-    expect(() => open().getEnvironment("env-1")).toThrow(/identity of env-swapped/);
+    expect(() => open().getSnapshot("env-1")).toThrow(/identity of env-swapped/);
   });
 
   it("refuses a payload that is not JSON", () => {
