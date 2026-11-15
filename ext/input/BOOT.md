@@ -28,7 +28,7 @@ Lakeshore started from an empty repository. ComfyUI Architect lives inside someo
 
 | # | Step | Produces | ComfyUI Architect |
 | --- | --- | --- | --- |
-| 1 | Collect the input | `ext/input/` | Open. The source is the ChatGPT conversation linked from `ext/README.md`; nothing is copied yet |
+| 1 | Collect the input | `ext/input/` | Done: the spec v1.0 moved to `ext/input/` on 2026-11-15, unchanged from `874c4489` (`254ad1fc`) |
 | 2 | Assess it critically, state the idea, list the gaps | `ext/IDEA.md`, `ext/GAPS.md`, notes in the first DONE entry | Open. Spec §1–3 is the starting point; the fork assessment of 2026-11-15 goes into DONE |
 | 3 | Write the design concept and its security implications | `ext/design/`, `ext/SEC.md`, `AGENTS.md`, `CLAUDE.md` | Concept and security are in the spec (§4–14), `874c4489`. AGENTS and CLAUDE are open |
 | 4 | Plan the architecture, evaluations and work | `ext/ARCH.md`, `ext/EVAL.md`, `ext/TODO.md`, `ext/ROAD.md`, `ext/DONE.md` | Architecture (§5, §15–18), evaluation (§19) and phases (§20) are in the spec. TODO and DONE are open |
@@ -36,13 +36,15 @@ Lakeshore started from an empty repository. ComfyUI Architect lives inside someo
 | 6 | Put it under version control | Public fork, remotes, working branch | Done 2026-11-15 12:54: `gregoryyy/comfyui-mcp`, branch `architect/spec` |
 | 7 | Start the foundation, then TODO mode | TODO 0 remainder, then TODO 1 (spec Phase 0) | Not started |
 
-**The spec and the standard documents** *(decision)*. `ext/comfy-architect-system-spec.md` already covers most of what Lakeshore splits into IDEA, design concept, SEC, ARCH, EVAL and ROAD. Two ways to go on:
-- *(variant, proposed)* The spec stays the one design authority and is renamed to `ext/design/SPEC.md`, upper case as a central document. IDEA, SEC, ARCH, EVAL and ROAD are written only where the spec doesn't already say it, and they link to its sections rather than repeat them. TODO, DONE, GAPS, AGENTS, SDLC, STYLE and SBOM are new, since the spec has no equivalent.
-- *(variant)* The spec v1.0 is frozen in `ext/input/` as the record of where the design came from, and its content is split into the standard documents, which then evolve on their own. This is cleaner later but duplicates 1,000 lines now.
+**The spec and the standard documents** *(decision)*. `ext/input/comfy-architect-system-spec.md` covers most of what Lakeshore splits into IDEA, design concept, SEC, ARCH, EVAL and ROAD. Since it's now input, it's the frozen record of where the design came from and isn't edited further. The design documents derive from it in one of two ways:
+- *(variant, proposed)* A working copy, `ext/design/SPEC.md`, becomes the one design authority, upper case as a central document, and evolves from there. IDEA, SEC, ARCH, EVAL and ROAD are written only where the spec doesn't already say it, and they link to its sections rather than repeat them.
+- *(variant)* The spec's content is split into the standard documents, which then evolve on their own. This is cleaner later but means rewriting 1,000 lines now.
+
+Either way, TODO, DONE, GAPS, AGENTS, SDLC, STYLE and SBOM are new, since the spec has no equivalent. Until this is decided, "the spec" in this file means the input version, and its section numbers (§) refer to it.
 
 ### 1. Collect the input
 
-Put the raw material in `ext/input/`: original notes, conversations with other assistants, sketches, links. Don't edit it later. It's the record of where the idea came from, and later documents cite it. Unlike Lakeshore, nothing in this repository is confidential, because the repository is public. Input that shouldn't be published stays outside it, for example in a private repository or local notes that `ext/input/` only names. The spec came out of a ChatGPT conversation; an export of it belongs here only if it's fine to publish.
+Put the raw material in `ext/input/`: original notes, conversations with other assistants, sketches, links. Don't edit it later. It's the record of where the idea came from, and later documents cite it. Unlike Lakeshore, nothing in this repository is confidential, because the repository is public. Input that shouldn't be published stays outside it, for example in a private repository or local notes that `ext/input/` only names. The first input is the spec v1.0. It came out of a ChatGPT conversation, which `ext/README.md` names but doesn't link. An export of that conversation belongs here only if it's fine to publish.
 
 ### 2. Assess it critically
 
@@ -60,7 +62,7 @@ Start `ext/GAPS.md` at the same time. It lists **questions** for the owner (`Q1`
 
 ### 3. Write the design concept
 
-`ext/design/` holds the design documents. Central ones are upper case (the spec, once moved); other design notes are lower case. Mockups are ASCII in fenced `text` blocks, at 100 columns or fewer.
+`ext/design/` holds the design documents. Central ones are upper case (`SPEC.md`, under the proposed variant); other design notes are lower case. Mockups are ASCII in fenced `text` blocks, at 100 columns or fewer.
 
 `ext/SEC.md` covers the assets, data protection obligations, threats with their consequences for the design, controls by phase and how they're verified. The spec's §14 (policy, approvals, trust boundaries) is the basis. Add what the fork brings with it: a public repository, upstream's HTTP transport and tunnel, the panel bridge, and third-party custom nodes.
 
@@ -249,15 +251,14 @@ comfyui-mcp/                    the fork; everything not listed is upstream's
 │   └── workflows/              upstream's; release and registry disabled or retargeted
 ├── ext/                        the project's docs folder
 │   ├── README.md               what it is, status, document map, build, layout
-│   ├── comfy-architect-system-spec.md   the spec (to design/SPEC.md, decision)
 │   ├── IDEA.md GAPS.md SEC.md ARCH.md EVAL.md        (open)
 │   ├── TODO.md ROAD.md DONE.md                       (open)
 │   ├── SDLC.md STYLE.md SBOM.md                      (open)
 │   ├── UPSTREAM_BASELINE.md    pinned upstream commit (open, spec §17.4)
 │   ├── GLOS.md SOTA.md         (optional)
-│   ├── design/                 central design documents and notes (open)
+│   ├── design/                 SPEC.md (decision) and design notes (open)
 │   ├── research/               research notes (open)
-│   ├── input/                  raw input, not edited, publishable only: this file (moved 2026-11-15)
+│   ├── input/                  bootstrap input, publishable only: the spec v1.0, this file, BASE.md
 │   ├── utils/                  pdf/, ci/, hooks/ (options)
 │   └── .gitignore              generated files under ext/ (open)
 ├── architect/                  recipes/, rules/, fixtures/ (open, spec §17.1)
@@ -271,4 +272,4 @@ comfyui-mcp/                    the fork; everything not listed is upstream's
 └── docs/                       upstream's site; Architect adds generated tool pages only
 ```
 
-**Names:** upper case only for documents of central importance (`README.md`, `IDEA.md`, `ARCH.md`, `EVAL.md`, `SEC.md`, `GAPS.md`, `SDLC.md`, `STYLE.md`, `SBOM.md`, `TODO.md`, `ROAD.md`, `DONE.md`, `BOOT.md`, `UPSTREAM_BASELINE.md`, the optional `GLOS.md` and `SOTA.md`, the spec once moved). Everything else is lower case: input, research, notes, code.
+**Names:** upper case only for documents of central importance (`README.md`, `IDEA.md`, `ARCH.md`, `EVAL.md`, `SEC.md`, `GAPS.md`, `SDLC.md`, `STYLE.md`, `SBOM.md`, `TODO.md`, `ROAD.md`, `DONE.md`, `BOOT.md`, `UPSTREAM_BASELINE.md`, the optional `GLOS.md` and `SOTA.md`, `design/SPEC.md`). Everything else is lower case: input, research, notes, code. Everything in `input/` keeps the name it arrived with.

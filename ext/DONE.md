@@ -2,6 +2,20 @@
 
 The progress log, newest entry on top. Each entry: `## YYYY-MM-DD HH:MM — Title` (time from `date`), the TODO items and PR or commit, an `Agent:` line, then **Implementation notes**, **Deviations** and **Insights**. The plan is in [TODO](TODO.md).
 
+## 2026-11-15 13:31 — BOOT edits restored
+
+TODO item: 0.1. Branch `architect/spec`, PR #1, not yet committed.
+
+Agent: Opus 5.5, subagents: none.
+
+### Implementation notes
+
+- Restored the seven BOOT edits lost before commit `254ad1fc` (owner, 2026-11-15): step 1's state, the GAPS Q1 variants with the spec as frozen input, the first input named in step 1, `SPEC.md` as the central design document, the file tree (no spec at `ext/` root, `design/SPEC.md` as the decision, `input/` with the spec, BOOT and BASE), and the names rule for `input/`.
+
+### Deviations
+
+- Two edits differ from the lost ones: step 1 says the move is done and committed, and the `input/` line lists BOOT and BASE, which moved there after the edits were first written.
+
 ## 2026-11-15 13:29 — STYLE as the central standard; BOOT and BASE to input
 
 TODO items: 0.5.2.2. Branch `architect/spec`, not yet committed.
