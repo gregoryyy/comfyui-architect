@@ -486,7 +486,9 @@ function policyLayer(
   }
 
   checks.push(c("new_custom_nodes", "not_applicable", false, "milestone 2 installs no custom nodes"));
-  checks.push(c("model_downloads", "not_applicable", false, "milestone 2 downloads no models"));
+  // Downloads are decided after validation, from the recipe's pinned sources and the task's
+  // modelDownloads (acquisition-policy.ts); a missing file stays a failing check here.
+  checks.push(c("model_downloads", "not_applicable", false, "validation downloads nothing; missing model files are decided by the acquisition policy"));
   return checks;
 }
 

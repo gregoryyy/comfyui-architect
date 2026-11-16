@@ -7,6 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ObjectInfo, SystemStats } from "../../comfyui/types.js";
+import { requireAdmissible, requireFeasible } from "../../services/architect/admission.js";
 import { ArchitectPlanning, PlanningError, type RecipeSource } from "../../services/architect/planning.js";
 import { ResultEnvelope, type TaskSpecInput } from "../../services/architect/schemas.js";
 import { ArchitectService } from "../../services/architect/service.js";
@@ -213,6 +214,132 @@ describe("ArchitectPlanning, prepare to export", () => {
     const caps = await planning.capabilities();
     expect(caps.recipes.map((r) => r.id)).toEqual(expect.arrayContaining(["recipe-fixture.t2i-basic", "recipe-fixture.upscale-model"]));
     expect(caps.catalog.missingSources).toEqual([]);
+  });
+});
+
+describe("acquirable candidates through select, validate, export and admission (TODO 4.2, 4.3)", () => {
+  const MISSING = "missing.safetensors";
+  const SOURCE = {
+    kind: "huggingface",
+    repo: "Comfy-Org/Real-ESRGAN",
+    revision: "5fd49b7b278836f48af63ecd314d0f98ab336105",
+    path: "split_files/checkpoints/missing.safetensors",
+    sha256: "37f9a931c215f040aa6d50f711f2cb115f713c46df1d0d6469a8bd7bfe9a60bb",
+    sizeBytes: 66857836,
+  };
+
+  /** A planning instance over one recipe: the t2i fixture with a missing, pinned checkpoint. */
+  function acquirableSetup(over: Parameters<typeof setup>[0] = {}) {
+    const dir = mkdtempSync(join(tmpdir(), "architect-recipes-"));
+    dirs.push(dir);
+    const recipe = JSON.parse(readFileSync(join(FIXTURES.dir, "t2i-basic.recipe.json"), "utf-8"));
+    recipe.id = "recipe-fixture.t2i-acquire";
+    recipe.slots = recipe.slots.map((s: { id: string }) => (s.id === "checkpoint" ? { ...s, default: MISSING } : s));
+    recipe.modelSources = [{ folder: "checkpoints", file: MISSING, source: SOURCE }];
+    writeFileSync(join(dir, "acquire.recipe.json"), JSON.stringify(recipe));
+    const base = setup(over);
+    const planning = new ArchitectPlanning({
+      store: base.store,
+      service: base.service,
+      upstream: base.upstream,
+      dataDir: base.dataDir,
+      sources: [{ ...FIXTURES, id: "source-acquire", dir }],
+      now: () => new Date(),
+      newId: () => `q${Math.random().toString(36).slice(2)}`,
+    });
+    return { ...base, planning };
+  }
+
+  async function proposed(planning: ArchitectPlanning) {
+    const prepared = await planning.prepare({ task: TASK });
+    const out = await planning.propose({ planId: prepared.plan.id });
+    return { planId: prepared.plan.id, candidate: out.candidates[0], plan: out.plan };
+  }
+
+  it("proposes it with the files to acquire, and the plan is PROPOSED, not BLOCKED", async () => {
+    const { planning } = acquirableSetup();
+    const { candidate, plan } = await proposed(planning);
+    expect(candidate.status).toBe("acquirable");
+    expect(plan?.state).toBe("PROPOSED");
+    expect(candidate.acquisition).toEqual({
+      files: [{ slot: "checkpoint", folder: "checkpoints", file: MISSING, size: "63.8 MiB", source: `Comfy-Org/Real-ESRGAN@5fd49b7b:${SOURCE.path}` }],
+      total: "63.8 MiB",
+      totalBytes: SOURCE.sizeBytes,
+    });
+  });
+
+  it("selects it, keeps it acquirable on validate, and exports a lock that lists the pinned source", async () => {
+    const { planning } = acquirableSetup();
+    const { planId, candidate } = await proposed(planning);
+    expect(planning.select({ planId, candidateId: candidate.id }).state).toBe("SELECTED");
+    const rechecked = await planning.validate({ planId, candidateId: candidate.id });
+    expect(rechecked.candidate.status).toBe("acquirable");
+    expect(rechecked.planState).toBe("SELECTED");
+    const exported = planning.export({ planId });
+    const lock = JSON.parse(readFileSync(join(exported.dir, "dependencies.lock.json"), "utf-8"));
+    expect(lock.acquire).toEqual({ files: [{ slot: "checkpoint", folder: "checkpoints", file: MISSING, source: SOURCE }], totalBytes: SOURCE.sizeBytes });
+    expect(lock.models).toEqual([expect.objectContaining({ slot: "checkpoint", file: MISSING })]);
+  });
+
+  it("becomes feasible on validate once the file is installed and offered, and drops its acquisition", async () => {
+    let models = fixtureSnapshot().installedModels ?? { folders: {}, unanswered: [], absent: [] };
+    const info = fixtureObjectInfo();
+    const { planning, store } = acquirableSetup({ models: async () => models, objectInfo: async () => info });
+    const { planId, candidate } = await proposed(planning);
+    models = { ...models, folders: { ...models.folders, checkpoints: [...(models.folders.checkpoints ?? []), MISSING] } };
+    info.CheckpointLoaderSimple.input = { required: { ckpt_name: [[MISSING]] } };
+    expect((await planning.validate({ planId, candidateId: candidate.id })).candidate.status).toBe("feasible");
+    expect(store.getCandidate(candidate.id)?.acquisition).toBeUndefined();
+  });
+
+  it("won't select a stored candidate edited to acquirable without the acquisition its checks give", async () => {
+    const { planning, store } = acquirableSetup();
+    const { planId, candidate } = await proposed(planning);
+    const stored = store.getCandidate(candidate.id);
+    if (!stored?.acquisition) throw new Error("candidate not stored as acquirable");
+    // The schema refuses acquirable without an acquisition outright.
+    const { acquisition: _a, ...bare } = stored;
+    expect(() => store.putCandidate({ ...bare, status: "acquirable" })).toThrow();
+    // A schema-valid edit: the same file from another commit.
+    const edited = {
+      ...stored,
+      acquisition: { ...stored.acquisition, files: stored.acquisition.files.map((f) => ({ ...f, source: { ...f.source, revision: "0".repeat(40) } })) },
+    };
+    store.putCandidate(edited);
+    expect(() => planning.select({ planId, candidateId: candidate.id })).toThrow(/recorded as acquirable/);
+    // A blocked candidate relabelled acquirable is refused the same way.
+    const blocked = await planning.propose({
+      planId,
+      proposals: [{ recipeId: "recipe-fixture.t2i-acquire", bindings: { checkpoint: "invented.safetensors" } }],
+    });
+    const b = store.getCandidate(blocked.candidates[0].id);
+    if (!b) throw new Error("candidate not stored");
+    expect(b.status).toBe("blocked");
+    store.putCandidate({ ...b, status: "acquirable", acquisition: stored.acquisition });
+    expect(() => planning.select({ planId, candidateId: b.id })).toThrow(/recorded as acquirable/);
+  });
+
+  it("is refused at admission unless the caller allows acquirable, and then comes back with its acquisition", async () => {
+    const { planning } = acquirableSetup();
+    const { planId, candidate } = await proposed(planning);
+    planning.select({ planId, candidateId: candidate.id });
+    await expect(requireFeasible(planning, planId, candidate.id)).rejects.toThrow(/is acquirable/);
+    await expect(requireAdmissible(planning, planId, candidate.id)).rejects.toThrow(/is acquirable/);
+    const admitted = await requireAdmissible(planning, planId, candidate.id, { allowAcquirable: true });
+    expect(admitted.status).toBe("acquirable");
+    expect(admitted.acquisition?.files.map((f) => f.source.sha256)).toEqual([SOURCE.sha256]);
+    expect(() => planning.selectedForRun(planId)).toThrow(/is acquirable/);
+    expect(planning.selectedForRun(planId, { allowAcquirable: true }).candidate.id).toBe(candidate.id);
+  });
+
+  it("stays blocked, with the reason, when the task forbids downloads", async () => {
+    const { planning } = acquirableSetup();
+    const prepared = await planning.prepare({ task: { ...TASK, constraints: { modelDownloads: "forbidden" } } });
+    const out = await planning.propose({ planId: prepared.plan.id });
+    expect(out.candidates[0].status).toBe("blocked");
+    expect(out.plan?.state).toBe("BLOCKED");
+    expect(out.plan?.blockers.policy_conflicts.join(" ")).toContain("downloads forbidden by the task");
+    expect(() => planning.select({ planId: prepared.plan.id, candidateId: out.candidates[0].id })).toThrow(/blocked/);
   });
 });
 

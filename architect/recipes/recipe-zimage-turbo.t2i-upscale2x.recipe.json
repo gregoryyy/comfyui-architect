@@ -1,0 +1,387 @@
+{
+  "schemaVersion": 1,
+  "id": "recipe-zimage-turbo.t2i-upscale2x",
+  "revision": 1,
+  "title": "Z-Image Turbo: text to image, upscaled 2x",
+  "description": "Text to image with Z-Image Turbo at half the task's width and height, then a 4x upscale model (RealESRGAN x4plus) and a lanczos downscale by 0.5, so the saved image has the task's size at twice the generated resolution. The Z-Image part is recipe-zimage-turbo.t2i: 10 steps at CFG 1.0, the zeroed positive as negative. The generated sides should be divisible by 16, so the task's by 32; a task size that isn't even fails the contract check.",
+  "kind": "image",
+  "operations": [
+    "text_to_image"
+  ],
+  "graph": {
+    "1": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "z_image_turbo_bf16.safetensors",
+        "weight_dtype": "default"
+      },
+      "_meta": {
+        "title": "Diffusion model"
+      }
+    },
+    "2": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen_3_4b.safetensors",
+        "type": "qwen_image"
+      },
+      "_meta": {
+        "title": "Text encoder"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "ae.safetensors"
+      },
+      "_meta": {
+        "title": "VAE"
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "2",
+          0
+        ],
+        "text": ""
+      },
+      "_meta": {
+        "title": "Positive"
+      }
+    },
+    "5": {
+      "class_type": "ConditioningZeroOut",
+      "inputs": {
+        "conditioning": [
+          "4",
+          0
+        ]
+      },
+      "_meta": {
+        "title": "Negative (zeroed)"
+      }
+    },
+    "6": {
+      "class_type": "EmptySD3LatentImage",
+      "inputs": {
+        "width": 512,
+        "height": 512,
+        "batch_size": 1
+      },
+      "_meta": {
+        "title": "Latent"
+      }
+    },
+    "7": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "positive": [
+          "4",
+          0
+        ],
+        "negative": [
+          "5",
+          0
+        ],
+        "latent_image": [
+          "6",
+          0
+        ],
+        "seed": 0,
+        "steps": 10,
+        "cfg": 1,
+        "sampler_name": "dpmpp_sde",
+        "scheduler": "beta",
+        "denoise": 1
+      },
+      "_meta": {
+        "title": "Sampler"
+      }
+    },
+    "8": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "7",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      },
+      "_meta": {
+        "title": "Decode"
+      }
+    },
+    "9": {
+      "class_type": "UpscaleModelLoader",
+      "inputs": {
+        "model_name": "RealESRGAN_x4plus.safetensors"
+      },
+      "_meta": {
+        "title": "Upscale model"
+      }
+    },
+    "10": {
+      "class_type": "ImageUpscaleWithModel",
+      "inputs": {
+        "upscale_model": [
+          "9",
+          0
+        ],
+        "image": [
+          "8",
+          0
+        ]
+      },
+      "_meta": {
+        "title": "Upscale 4x"
+      }
+    },
+    "11": {
+      "class_type": "ImageScaleBy",
+      "inputs": {
+        "image": [
+          "10",
+          0
+        ],
+        "upscale_method": "lanczos",
+        "scale_by": 0.5
+      },
+      "_meta": {
+        "title": "Scale to 2x"
+      }
+    },
+    "12": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "11",
+          0
+        ],
+        "filename_prefix": "architect/zimage-turbo-t2i-upscale2x"
+      },
+      "_meta": {
+        "title": "Save"
+      }
+    }
+  },
+  "slots": [
+    {
+      "id": "diffusion_model",
+      "label": "Z-Image Turbo diffusion model",
+      "valueType": "model_file",
+      "target": {
+        "node": "1",
+        "input": "unet_name"
+      },
+      "required": true,
+      "default": "z_image_turbo_bf16.safetensors",
+      "modelFolder": "diffusion_models",
+      "modelFamily": "z-image-turbo"
+    },
+    {
+      "id": "text_encoder",
+      "label": "Qwen 3 4B text encoder",
+      "valueType": "model_file",
+      "target": {
+        "node": "2",
+        "input": "clip_name"
+      },
+      "required": true,
+      "default": "qwen_3_4b.safetensors",
+      "modelFolder": "text_encoders",
+      "modelFamily": "qwen3-4b"
+    },
+    {
+      "id": "vae",
+      "label": "Z-Image VAE",
+      "valueType": "model_file",
+      "target": {
+        "node": "3",
+        "input": "vae_name"
+      },
+      "required": true,
+      "default": "ae.safetensors",
+      "modelFolder": "vae",
+      "modelFamily": "z-image-vae"
+    },
+    {
+      "id": "upscale_model",
+      "label": "4x upscale model",
+      "valueType": "model_file",
+      "target": {
+        "node": "9",
+        "input": "model_name"
+      },
+      "required": true,
+      "default": "RealESRGAN_x4plus.safetensors",
+      "modelFolder": "upscale_models",
+      "modelFamily": "esrgan-4x"
+    },
+    {
+      "id": "prompt",
+      "label": "Prompt",
+      "valueType": "string",
+      "target": {
+        "node": "4",
+        "input": "text"
+      },
+      "required": true,
+      "fromTask": "intent"
+    },
+    {
+      "id": "width",
+      "label": "Width (generated at half, upscaled to the task's)",
+      "valueType": "int",
+      "target": {
+        "node": "6",
+        "input": "width"
+      },
+      "required": true,
+      "default": 512,
+      "fromTask": "media.output.width",
+      "min": 16,
+      "max": 8192,
+      "fromTaskDivisor": 2
+    },
+    {
+      "id": "height",
+      "label": "Height (generated at half, upscaled to the task's)",
+      "valueType": "int",
+      "target": {
+        "node": "6",
+        "input": "height"
+      },
+      "required": true,
+      "default": 512,
+      "fromTask": "media.output.height",
+      "min": 16,
+      "max": 8192,
+      "fromTaskDivisor": 2
+    },
+    {
+      "id": "seed",
+      "label": "Seed",
+      "valueType": "seed",
+      "target": {
+        "node": "7",
+        "input": "seed"
+      },
+      "required": true,
+      "default": 0
+    }
+  ],
+  "outputs": [
+    {
+      "role": "image",
+      "node": "12",
+      "format": "png",
+      "count": 1
+    }
+  ],
+  "dependencies": {
+    "nodeClasses": [
+      "UNETLoader",
+      "CLIPLoader",
+      "VAELoader",
+      "CLIPTextEncode",
+      "ConditioningZeroOut",
+      "EmptySD3LatentImage",
+      "KSampler",
+      "VAEDecode",
+      "UpscaleModelLoader",
+      "ImageUpscaleWithModel",
+      "ImageScaleBy",
+      "SaveImage"
+    ]
+  },
+  "modelSources": [
+    {
+      "folder": "diffusion_models",
+      "file": "z_image_turbo_bf16.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Z-Image-Turbo",
+        "revision": "6fc90a3b1b653e935a0d175e260736de25b84df5",
+        "path": "split_files/diffusion_models/z_image_turbo_bf16.safetensors",
+        "sha256": "2407613050b809ffdff18a4ac99af83ea6b95443ecebdf80e064a79c825574a6",
+        "sizeBytes": 12309866400,
+        "license": "apache-2.0"
+      }
+    },
+    {
+      "folder": "text_encoders",
+      "file": "qwen_3_4b.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Z-Image-Turbo",
+        "revision": "6fc90a3b1b653e935a0d175e260736de25b84df5",
+        "path": "split_files/text_encoders/qwen_3_4b.safetensors",
+        "sha256": "6c671498573ac2f7a5501502ccce8d2b08ea6ca2f661c458e708f36b36edfc5a",
+        "sizeBytes": 8044982048,
+        "license": "apache-2.0"
+      }
+    },
+    {
+      "folder": "vae",
+      "file": "ae.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Z-Image-Turbo",
+        "revision": "6fc90a3b1b653e935a0d175e260736de25b84df5",
+        "path": "split_files/vae/ae.safetensors",
+        "sha256": "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38",
+        "sizeBytes": 335304388,
+        "license": "apache-2.0"
+      }
+    },
+    {
+      "folder": "upscale_models",
+      "file": "RealESRGAN_x4plus.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Real-ESRGAN",
+        "revision": "5fd49b7b278836f48af63ecd314d0f98ab336105",
+        "path": "RealESRGAN_x4plus.safetensors",
+        "sha256": "37f9a931c215f040aa6d50f711f2cb115f713c46df1d0d6469a8bd7bfe9a60bb",
+        "sizeBytes": 66857836,
+        "license": "bsd-3-clause"
+      }
+    }
+  ],
+  "certification": "proposed",
+  "evidence": [
+    {
+      "kind": "upstream_pack",
+      "source": "plugin/skills/z-image-txt2img/SKILL.md at fork baseline 707474d2 (blob 3dafc274)",
+      "observedAt": "2026-11-15T17:31:48+01:00",
+      "note": "Components (UNETLoader z_image_turbo_bf16, CLIPLoader type qwen_image with qwen_3_4b, VAELoader), the Turbo preset marked sharpest (10 steps, CFG 1.0, dpmpp_sde, beta), 1024x1024, sides divisible by 16, negative prompt not effective. The skill names the VAE z-image-ae.safetensors, a renamed copy of ae.safetensors from Comfy-Org/z_image_turbo; the installed file and the template keep the name ae.safetensors. The skill also says this VAE has different weights from FLUX.1's ae.safetensors; which of the two the installed file is has not been checked. The skill's author pick res_2s is not a KSampler sampler on this install."
+    },
+    {
+      "kind": "upstream_pack",
+      "source": "plugin/skills/comfyui-core/SKILL.md at fork baseline 707474d2 (blob f7bb340d), section Upscale",
+      "observedAt": "2026-11-16T03:33:12+01:00",
+      "note": "The upscale chain UpscaleModelLoader -> ImageUpscaleWithModel (upscale_model, image) -> SaveImage. The skill's chain starts from LoadImage; here the image comes from the Z-Image decode, and ImageScaleBy (lanczos, 0.5) turns the 4x result into 2x of the generated size."
+    },
+    {
+      "kind": "documentation",
+      "source": "GET http://127.0.0.1:8188/object_info/<class>, ComfyUI Desktop 0.44.0; captured in src/__tests__/architect/fixtures/object-info-desktop-0.44.0.json",
+      "observedAt": "2026-11-16T03:33:12+01:00",
+      "note": "UpscaleModelLoader (model_name, a COMBO of upscale_models; empty on the capture's machine), ImageUpscaleWithModel (upscale_model, image) and ImageScaleBy (upscale_method with lanczos, scale_by 0.01 to 8) are in the live schema; the Z-Image classes are as in recipe-zimage-turbo.t2i."
+    },
+    {
+      "kind": "documentation",
+      "source": "Hugging Face API: /api/models/<repo>/revision/main and /api/models/<repo>/tree/<commit>, read by scripts/architect/pin-source.mjs",
+      "observedAt": "2026-11-16T03:33:12+01:00",
+      "note": "modelSources pinned to commits: Comfy-Org/Z-Image-Turbo (requested as Comfy-Org/z_image_turbo, renamed) and Comfy-Org/Real-ESRGAN (requested as Comfy-Org/Real-ESRGAN_repackaged, renamed); sha256 and size are the LFS values Hugging Face reports. RealESRGAN_x4plus is BSD-3-Clause per the repository card."
+    }
+  ]
+}

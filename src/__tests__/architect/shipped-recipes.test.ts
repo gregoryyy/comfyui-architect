@@ -8,8 +8,12 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { z } from "zod";
+import type { ObjectInfo as ComfyObjectInfo } from "../../comfyui/types.js";
 import { SHIPPED_RECIPES_DIR, loadRecipeDir } from "../../services/architect/catalog.js";
-import type { Recipe } from "../../services/architect/schemas.js";
+import { compileRecipe } from "../../services/architect/compile.js";
+import { candidateStatus } from "../../services/architect/planner.js";
+import { EnvironmentSnapshot, type Recipe, TaskSpec } from "../../services/architect/schemas.js";
+import { validateGraph } from "../../services/architect/validate.js";
 
 /** One input spec: `[type]` or `[type, options]`, where a COMBO's type is its list of choices. */
 const InputSpec = z.tuple([z.union([z.string(), z.array(z.string())])]).rest(z.unknown());
@@ -104,7 +108,10 @@ function schemaProblems(recipe: Recipe, info: ObjectInfo): string[] {
       continue;
     }
     const [type, rawOptions] = spec;
-    if (slot.valueType === "model_file" && !Array.isArray(type)) problems.push(`slot ${slot.id}: model_file slot writes a ${type} input`);
+    // A loader's file list is a classic COMBO (the choices as the type) or a V3 one ("COMBO").
+    if (slot.valueType === "model_file" && !Array.isArray(type) && type !== "COMBO") {
+      problems.push(`slot ${slot.id}: model_file slot writes a ${type} input`);
+    }
     if (slot.valueType === "enum") {
       const bad = (slot.choices ?? []).filter((c) => !Array.isArray(type) || !type.includes(c));
       if (bad.length > 0) problems.push(`slot ${slot.id}: choices ${bad.join(", ")} aren't in the schema`);
@@ -145,6 +152,7 @@ describe("shipped recipes", () => {
       "recipe-flux1-schnell.t2i",
       "recipe-zimage-turbo.img2img",
       "recipe-zimage-turbo.t2i",
+      "recipe-zimage-turbo.t2i-upscale2x",
     ]);
   });
 
@@ -155,6 +163,7 @@ describe("shipped recipes", () => {
     }
     expect(shipped("recipe-flux1-schnell.ckpt-t2i").certification).toBe("proposed");
     expect(shipped("recipe-zimage-turbo.t2i").certification).toBe("curated");
+    expect(shipped("recipe-zimage-turbo.t2i-upscale2x").certification).toBe("proposed");
   });
 
   it("names the operation each recipe solves", () => {
@@ -162,9 +171,16 @@ describe("shipped recipes", () => {
     expect(shipped("recipe-flux1-schnell.t2i").operations).toEqual(["text_to_image"]);
     expect(shipped("recipe-flux1-schnell.ckpt-t2i").operations).toEqual(["text_to_image"]);
     expect(shipped("recipe-zimage-turbo.img2img").operations).toEqual(["image_edit"]);
+    expect(shipped("recipe-zimage-turbo.t2i-upscale2x").operations).toEqual(["text_to_image"]);
   });
 
-  it.each(["recipe-zimage-turbo.t2i", "recipe-flux1-schnell.t2i", "recipe-flux1-schnell.ckpt-t2i", "recipe-zimage-turbo.img2img"])(
+  it.each([
+    "recipe-zimage-turbo.t2i",
+    "recipe-flux1-schnell.t2i",
+    "recipe-flux1-schnell.ckpt-t2i",
+    "recipe-zimage-turbo.img2img",
+    "recipe-zimage-turbo.t2i-upscale2x",
+  ])(
     "%s fits the node schemas of ComfyUI Desktop 0.44.0",
     (id) => {
       expect(schemaProblems(shipped(id), objectInfo)).toEqual([]);
@@ -264,5 +280,91 @@ describe("the schema check catches what a recipe gets wrong", () => {
     expect(r.graph["2"].inputs.clip_name1).toBe("t5xxl_fp8_e4m3fn.safetensors");
     r.graph["2"].inputs.type = "flux1";
     expect(schemaProblems(r, objectInfo)).toEqual([expect.stringContaining('"flux1" is not one of its choices')]);
+  });
+});
+
+describe("pinned model sources and the 2x upscale recipe (TODO 4.3)", () => {
+  /** The capture as the validator reads it, a fresh copy per test. */
+  function liveSchemas(): ComfyObjectInfo {
+    const parsed: ComfyObjectInfo = JSON.parse(
+      readFileSync(new URL("./fixtures/object-info-desktop-0.44.0.json", import.meta.url), "utf-8"),
+    );
+    return parsed;
+  }
+  const T = "2026-11-16T03:00:00.000Z";
+  const task = TaskSpec.parse({
+    schemaVersion: 1,
+    id: "task-up1",
+    revision: 1,
+    createdAt: T,
+    updatedAt: T,
+    intent: "A lighthouse at dusk.",
+    media: { kind: "image", operation: "text_to_image", output: { width: 1024, height: 768 } },
+  });
+  function snapshot(upscaleModels: string[]) {
+    return EnvironmentSnapshot.parse({
+      schemaVersion: 1,
+      id: "env-up1",
+      capturedAt: T,
+      target: { baseUrl: "http://127.0.0.1:8188" },
+      installedModels: {
+        folders: {
+          diffusion_models: ["z_image_turbo_bf16.safetensors"],
+          text_encoders: ["qwen_3_4b.safetensors"],
+          vae: ["ae.safetensors"],
+          upscale_models: upscaleModels,
+        },
+        unanswered: [],
+        absent: [],
+      },
+      probeErrors: [],
+    });
+  }
+
+  it("pins each source of the Z-Image recipes to a model slot's folder and default file", () => {
+    for (const id of ["recipe-zimage-turbo.t2i", "recipe-zimage-turbo.img2img", "recipe-zimage-turbo.t2i-upscale2x"]) {
+      const r = shipped(id);
+      const defaults = r.slots.filter((s) => s.valueType === "model_file").map((s) => `${s.modelFolder}/${String(s.default)}`);
+      const pinned = (r.modelSources ?? []).map((m) => `${m.folder}/${m.file}`);
+      expect(pinned.sort(), id).toEqual(defaults.sort());
+      for (const m of r.modelSources ?? []) {
+        expect(m.source.path.endsWith(".safetensors"), `${id} ${m.file}`).toBe(true);
+        expect(m.source.path.split("/").pop(), `${id} ${m.file}`).toBe(m.file);
+      }
+    }
+  });
+
+  it("generates at half the task's size and saves through the 4x model and a 0.5 scale", () => {
+    const r = shipped("recipe-zimage-turbo.t2i-upscale2x");
+    const compiled = compileRecipe(r, task, {});
+    expect(compiled.checks.filter((c) => c.verdict === "fail")).toEqual([]);
+    expect(compiled.graph?.["6"].inputs).toMatchObject({ width: 512, height: 384 });
+    expect(compiled.graph?.["9"].inputs.model_name).toBe("RealESRGAN_x4plus.safetensors");
+    expect(compiled.graph?.["11"].inputs).toMatchObject({ upscale_method: "lanczos", scale_by: 0.5, image: ["10", 0] });
+    expect(compiled.graph?.["12"].inputs.images).toEqual(["11", 0]);
+  });
+
+  it("refuses a task size the divisor doesn't divide", () => {
+    const odd = TaskSpec.parse({ ...task, media: { ...task.media, output: { ...task.media.output, width: 1025 } } });
+    const compiled = compileRecipe(shipped("recipe-zimage-turbo.t2i-upscale2x"), odd, {});
+    expect(compiled.graph).toBeUndefined();
+    expect(compiled.checks.find((c) => c.id === "contract.slot.width")?.message).toMatch(/isn't divisible by 2/);
+  });
+
+  it("is acquirable against the capture when only the upscale model is missing, and feasible once it's offered", () => {
+    const r = shipped("recipe-zimage-turbo.t2i-upscale2x");
+    const missing = validateGraph({ recipe: r, task, bindings: {}, objectInfo: liveSchemas(), snapshot: snapshot([]) });
+    const failing = missing.report.checks.filter((c) => c.hard && c.verdict !== "pass" && c.verdict !== "not_applicable");
+    expect(failing.map((c) => c.id).sort()).toEqual(["dependencies.model.upscale_model", "native_types.combo.9.model_name"]);
+    const status = candidateStatus({ recipe: r, task, report: missing.report, bindings: { upscale_model: "RealESRGAN_x4plus.safetensors" }, snapshot: snapshot([]) });
+    expect(status.status).toBe("acquirable");
+    expect(status.acquisition?.files.map((f) => [f.folder, f.file, f.source.repo])).toEqual([
+      ["upscale_models", "RealESRGAN_x4plus.safetensors", "Comfy-Org/Real-ESRGAN"],
+    ]);
+
+    const schemas = liveSchemas();
+    schemas.UpscaleModelLoader.input = { required: { model_name: ["COMBO", { options: ["RealESRGAN_x4plus.safetensors"] }] } };
+    const present = validateGraph({ recipe: r, task, bindings: {}, objectInfo: schemas, snapshot: snapshot(["RealESRGAN_x4plus.safetensors"]) });
+    expect(present.report.overall).toBe("pass");
   });
 });

@@ -6,7 +6,7 @@ model: haiku
 effort: low
 ---
 
-You run live checks for ComfyUI Architect against a ComfyUI the brief names (its URL, and the path when needed). Read `ext/SDLC.md` (Testing) for what the checks are.
+You run live checks for ComfyUI Architect against a ComfyUI the brief names (its URL, and the path when needed). Read `dev/SDLC.md` (Testing) for what the checks are.
 
 - Build first if `dist/` is older than `src/`: `npm run build`.
 - The stdio smoke: `COMFYUI_URL=<url> node scripts/architect/stdio-smoke.mjs` (flag off, then on). Add the commands the brief lists.

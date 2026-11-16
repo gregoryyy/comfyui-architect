@@ -4,7 +4,7 @@ ComfyUI Architect plans a ComfyUI workflow before an agent builds it. You descri
 
 It's a fork of [`artokun/comfyui-mcp`](https://github.com/artokun/comfyui-mcp), the MCP server and sidebar agent for ComfyUI. Everything upstream does keeps working; Architect adds a planning layer next to it, switched on with one environment variable. Upstream's README is kept as [README_BASE.md](README_BASE.md), and it describes all the inherited tools.
 
-> **Status: early.** Planning, export and approved local renders work for images. Architect doesn't download models or install nodes yet; that comes with the next phases ([roadmap](#roadmap)). The package isn't published: run it from a clone.
+> **Status: early.** Planning, export, approved local renders and approved model downloads work for images. Architect doesn't install custom nodes; more recipes, repair and the acceptance suite come with the next milestones ([roadmap](#roadmap)). The package isn't published: run it from a clone.
 
 ## What it does today
 
@@ -14,7 +14,7 @@ With `COMFYUI_ARCHITECT=1`, the server adds three tools and two prompts to upstr
 |---|---|---|
 | `architect_inspect` | `environment`, `capabilities` | Reads the connected ComfyUI: versions, devices, loaded node classes, installed model files, and which probes failed. Lists the recipe catalog and how well the installed files fit each recipe. |
 | `architect_plan` | `prepare`, `propose`, `get`, `validate`, `select`, `export` | Stores the task, builds and validates candidates, records your choice and writes the chosen graph with its evidence to disk. |
-| `architect_run` | `prepare`, `start`, `status`, `cancel`, `evaluate`, `finalize` | Renders the chosen candidate on your ComfyUI once you approve it, follows the job, checks the output and records your verdict. |
+| `architect_run` | `prepare`, `start`, `status`, `cancel`, `evaluate`, `finalize` | Renders the chosen candidate on your ComfyUI once you approve it, follows the job, checks the output and records your verdict. When the candidate needs model files a recipe pins, the same approval covers downloading them from Hugging Face; each file is checked against its pinned sha256 before it goes into your model folder. |
 
 A planning run looks like this:
 
@@ -40,7 +40,7 @@ Selecting a candidate records a choice and authorizes nothing. To render it:
 - **Unknown is not pass.** Every check is `pass`, `fail`, `unknown` or `not_applicable`. A hard unknown keeps a candidate from being feasible.
 - **Nothing is relaxed silently.** No lower resolution, other model or dropped constraint without your approval.
 - **Verdicts stay separate.** A graph that validates, a run that finished, an output that passed its checks and an output you accepted are four different statements.
-- **Approvals are yours.** A render needs your approval for that exact plan, given in a client dialog or your terminal. An agent that has a shell on your account could still run the terminal command itself, so a strict setup also restricts the agent's host ([SEC](ext/SEC.md#known-issues)).
+- **Approvals are yours.** A render needs your approval for that exact plan, given in a client dialog or your terminal. An agent that has a shell on your account could still run the terminal command itself, so a strict setup also restricts the agent's host ([SEC](dev/SEC.md#known-issues)).
 
 ### Recipes
 
@@ -52,6 +52,7 @@ Recipes live in [`architect/recipes/`](architect/recipes/). Each records its gra
 | Z-Image Turbo | image to image | curated |
 | FLUX.1-schnell, separate components | text to image | curated |
 | FLUX.1-schnell, all-in-one checkpoint | text to image | proposed |
+| Z-Image Turbo at half size, upscaled 2× with RealESRGAN (downloads the 67 MB upscaler) | text to image | proposed |
 
 ## Try it
 
@@ -98,9 +99,9 @@ Don't install `comfyui-mcp` from npm or let upstream's panel launcher start a se
 ## How it relates to upstream
 
 - **Architect off means upstream.** Without the flag, the tool list, the tool contracts, the panel surface and the behaviour are those of the pinned upstream version, and upstream's test suite runs unchanged.
-- **Additive code.** Architect lives in `src/services/architect/`, `src/tools/architect.ts`, `architect/` and `src/__tests__/architect/`, and reaches upstream's services through one facade. Upstream files change only at a few recorded seams ([ARCH](ext/ARCH.md#upstream-footprint)).
+- **Additive code.** Architect lives in `src/services/architect/`, `src/tools/architect.ts`, `architect/` and `src/__tests__/architect/`, and reaches upstream's services through one facade. Upstream files change only at a few recorded seams ([ARCH](dev/ARCH.md#upstream-footprint)).
 - **Separate data.** Architect keeps its own `architect.db`. Upstream's database and configuration aren't touched, and model weights are referenced, never copied.
-- **Pinned and merged.** The fork builds against a recorded upstream commit ([BASE](ext/input/BASE.md)) and takes upstream changes by merge.
+- **Pinned and merged.** The fork builds against a recorded upstream commit ([BASE](dev/input/BASE.md)) and takes upstream changes by merge.
 - **The sidebar panel** is upstream's [`comfyui-mcp-panel`](https://github.com/artokun/comfyui-mcp-panel), unchanged. It connects to a fork server you started yourself when its "Autostart MCP" setting is off. Architect-specific panel controls come in a later phase.
 
 ## Roadmap
@@ -109,25 +110,25 @@ Don't install `comfyui-mcp` from npm or let upstream's panel launcher start a se
 |---|---|---|
 | 0 | Reproducible fork, feature flag, seam audit | done, except the first CI run |
 | 1 | One end-to-end planning slice: tasks, catalog, recipes, validation, export | done |
-| 2 | Managed execution: action plans, approvals you give, a durable run controller, output checks, your review | in review |
-| 3 | More recipes, approved downloads and installs, bounded repair | planned |
+| 2 | Managed execution: action plans, approvals you give, a durable run controller, output checks, your review | done |
+| 3 | Approved downloads (in review), the certified recipe set, bounded repair and the acceptance suite | in progress |
 | 4 | Architect controls in the ComfyUI sidebar | planned |
 | 5 | Learning from measured runs | planned |
 | 6 | Video, audio, 3D and combined pipelines | planned |
 
-Details are in [ROAD](ext/ROAD.md), the plan in [TODO](ext/TODO.md) and progress in [DONE](ext/DONE.md).
+Details are in [ROAD](dev/ROAD.md), the plan in [TODO](dev/TODO.md) and progress in [DONE](dev/DONE.md).
 
 ## Project documents
 
-The project's documents are in [`ext/`](ext/), since upstream's `docs/` is its published documentation site:
+The project's documents are in [`dev/`](dev/), since upstream's `docs/` is its published documentation site:
 
-- [SPEC](ext/design/SPEC.md): the design;
-- [IDEA](ext/IDEA.md): purpose, users and approach;
-- [ARCH](ext/ARCH.md): architecture map, decisions and the upstream footprint;
-- [SEC](ext/SEC.md): threats and controls;
-- [EVAL](ext/EVAL.md): claims and how they're tested;
-- [GAPS](ext/GAPS.md): open questions;
-- [SDLC](ext/SDLC.md): the development process.
+- [SPEC](dev/design/SPEC.md): the design;
+- [IDEA](dev/IDEA.md): purpose, users and approach;
+- [ARCH](dev/ARCH.md): architecture map, decisions and the upstream footprint;
+- [SEC](dev/SEC.md): threats and controls;
+- [EVAL](dev/EVAL.md): claims and how they're tested;
+- [GAPS](dev/GAPS.md): open questions;
+- [SDLC](dev/SDLC.md): the development process.
 
 Contributors and coding agents start with [AGENTS.md](AGENTS.md).
 

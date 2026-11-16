@@ -10,10 +10,10 @@ import {
 } from "../../fork-identity.js";
 
 describe("fork identity", () => {
-  // TODO 1.3.4: the code and ext/input/BASE.md must name the same upstream commit, or a
+  // TODO 1.3.4: the code and dev/input/BASE.md must name the same upstream commit, or a
   // bug report quotes a baseline the docs don't record.
-  it("names the upstream commit recorded as the current baseline in ext/input/BASE.md", () => {
-    const base = readFileSync(new URL("../../../ext/input/BASE.md", import.meta.url), "utf-8");
+  it("names the upstream commit recorded as the current baseline in dev/input/BASE.md", () => {
+    const base = readFileSync(new URL("../../../dev/input/BASE.md", import.meta.url), "utf-8");
     const current = base.split(/^## /m).find((s) => s.startsWith("Current baseline"));
     expect(current, "BASE.md has a 'Current baseline' section").toBeDefined();
     expect(current).toContain(UPSTREAM_BASELINE.commit);

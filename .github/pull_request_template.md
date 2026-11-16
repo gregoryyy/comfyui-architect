@@ -15,10 +15,10 @@ TODO items:
 
 ## Security impact
 
-<!-- Against ext/SEC.md: none, or which threats and controls are affected. -->
+<!-- Against dev/SEC.md: none, or which threats and controls are affected. -->
 
 ## Definition of done
 
-- [ ] Docs current (AGENTS layout, affected `ext/` documents, generated tool pages)
+- [ ] Docs current (AGENTS layout, affected `dev/` documents, generated tool pages)
 - [ ] TODO items ticked, DONE entry on top
-- [ ] Upstream files changed outside the seams in `ext/ARCH.md` (Upstream footprint) are named here, in DONE and in that list
+- [ ] Upstream files changed outside the seams in `dev/ARCH.md` (Upstream footprint) are named here, in DONE and in that list

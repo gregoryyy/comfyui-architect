@@ -7,7 +7,10 @@
 // dialog only the user can answer, or the terminal command. A verdict the agent relays is
 // stored as the agent's report and never counts as the user's (spec §16.1).
 
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { join, sep } from "node:path";
+import { z } from "zod";
+import { type ModelAcquirer, acquiredLockEntry, acquisitionView } from "./acquisition.js";
 import {
   type AdmissionDeps,
   ApprovalError,
@@ -42,6 +45,13 @@ export interface RunDriver {
   reconcile(runId: string): Promise<RunRecord>;
   /** Cancel the run's own prompt only (spec §14.5). */
   cancel(runId: string, principal: RunPrincipal): Promise<RunRecord>;
+  /**
+   * Start driving a run without waiting for it; failures go where the controller reports
+   * polling errors, and its poller continues the run. Used for runs that download first.
+   */
+  schedule?(runId: string): void;
+  /** Whether a call on the run is in progress in this process (a download step, a submission). */
+  busy?(runId: string): boolean;
 }
 
 /** A dialog the client shows the user; undefined when there is none on this route. */
@@ -53,6 +63,32 @@ export interface ExecutionDeps extends AdmissionDeps {
   dataDir: string;
   /** The dependency lock of a candidate's graph (planning's `dependencyLock`), for a run's lineage. */
   dependencyLock: (candidateId: string, task: TaskSpec) => unknown;
+  /** A run's acquisitions with download progress, for status; without it, progress isn't shown. */
+  acquirer?: Pick<ModelAcquirer, "view">;
+}
+
+const LockObject = z.record(z.string(), z.unknown());
+
+/**
+ * A copy of `value` with machine-specific paths made portable (spec §15.5): a model root
+ * becomes the path below it (`checkpoints/x.safetensors`), the root itself `<model root>`,
+ * and the home directory `~`. Applied to the exported run record, not to the store.
+ */
+export function portablePaths(value: unknown, roots: readonly string[]): unknown {
+  const ordered = [...new Set(roots)].sort((a, b) => b.length - a.length);
+  const home = homedir();
+  const fix = (text: string): string => {
+    let out = text;
+    for (const root of ordered) out = out.split(`${root}${sep}`).join("").split(root).join("<model root>");
+    return home.length > 1 ? out.split(home).join("~") : out;
+  };
+  const walk = (v: unknown): unknown => {
+    if (typeof v === "string") return fix(v);
+    if (Array.isArray(v)) return v.map(walk);
+    if (v !== null && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+    return v;
+  };
+  return walk(value);
 }
 
 /** The idempotency key of a run: one per target, task revision, plan and action plan (spec §15.4). */
@@ -254,6 +290,15 @@ export class ArchitectExecution {
       principal: "agent",
       reason: `started under grant ${grant.id} (${grant.channel}, ${grant.issuer})`,
     });
+    // A run that downloads first is handed to the controller without waiting: resolving a
+    // download's destination calls upstream's live-server probes, which can take many
+    // seconds each, and the client's request would time out. The poller continues it; status
+    // shows its downloads. A run without downloads is advanced to submission as before.
+    if (actionPlan.effects.some((e) => e.kind === "acquire_models")) {
+      if (driver.schedule) driver.schedule(created.run.id);
+      else void driver.advance(created.run.id).catch(() => undefined); // the poller retries; the controller records its errors
+      return { run: created.run, resumed: false, grant: { id: grant.id, channel: grant.channel } };
+    }
     const run = await driver.advance(created.run.id);
     return { run, resumed: false, grant: { id: grant.id, channel: grant.channel } };
   }
@@ -262,11 +307,17 @@ export class ArchitectExecution {
   async status(request: { runId: string }) {
     const { store, driver } = this.deps;
     const before = this.requireRun(request.runId);
-    const run = FINAL_RUN_STATES.includes(before.state) ? before : await driver.reconcile(before.id);
+    // A step already running on this run (a download being started) isn't waited for: the
+    // stored record is current as far as it goes, and the next status sees the step's result.
+    const run = FINAL_RUN_STATES.includes(before.state) || driver.busy?.(before.id) ? before : await driver.reconcile(before.id);
     const records = store.listEvaluations(run.id);
     const events = store.listRunEvents(run.id);
+    const acquisitions = this.deps.acquirer
+      ? await this.deps.acquirer.view(run.id)
+      : store.listAcquisitions(run.id).map((a) => acquisitionView(a));
     return {
       run,
+      ...(acquisitions.length > 0 ? { acquisitions } : {}),
       verdicts: verdictsOf(run, records, this.submitted(run.id)),
       evaluations: records.map((r) => ({ criterion: r.criterionId, verdict: r.verdict, source: r.source, explanation: r.explanation })),
       recentEvents: events.slice(-5).map((e) => ({ seq: e.seq, at: e.at, kind: e.kind, ...(e.to ? { to: e.to } : {}), reason: e.reason })),
@@ -343,10 +394,18 @@ export class ArchitectExecution {
     const actionPlan = store.getActionPlan(run.actionPlanId);
     const grant = run.grantId ? store.getGrant(run.grantId) : undefined;
     const task = store.getTask(run.taskId, run.taskRevision);
-    const lock = task ? this.deps.dependencyLock(run.candidateId, task) : undefined;
+    // FR-11: each file the run acquired, with its source, commit and the sha256 observed
+    // before it was placed. Only placed files: the others never reached a model folder.
+    const acquisitions = store.listAcquisitions(run.id);
+    const acquired = acquisitions.filter((a) => a.state === "placed").map(acquiredLockEntry);
+    const baseLock = task ? this.deps.dependencyLock(run.candidateId, task) : undefined;
+    const lockFields = LockObject.safeParse(baseLock);
+    const lock =
+      baseLock === undefined || acquired.length === 0 ? baseLock : { ...(lockFields.success ? lockFields.data : { lock: baseLock }), acquired };
     const lockText = lock === undefined ? undefined : `${JSON.stringify(lock, null, 2)}\n`;
     const files: Record<string, string> = {
       "run.json": `${JSON.stringify(
+        portablePaths(
         {
           run,
           lineage: {
@@ -358,11 +417,25 @@ export class ArchitectExecution {
             actionPlan: actionPlan ? { id: actionPlan.id, hash: actionPlan.hash } : run.actionPlanId,
             grant: grant ? { id: grant.id, channel: grant.channel, issuer: grant.issuer, issuedAt: grant.issuedAt } : undefined,
             promptId: run.promptId,
+            ...(acquisitions.length > 0
+              ? {
+                  acquisitions: acquisitions.map((a) => ({
+                    ...acquiredLockEntry(a),
+                    ...(a.placedPath ? { placed: `${a.folder}/${a.file}` } : {}),
+                    state: a.state,
+                    pinnedSha256: a.source.sha256,
+                    pinnedSizeBytes: a.source.sizeBytes,
+                    ...(a.error ? { error: a.error } : {}),
+                  })),
+                }
+              : {}),
             dependencyLock: lockText ? { file: "dependencies.lock.json", sha256: sha256Hex(lockText) } : "unknown: the task revision is not stored",
           },
           verdicts: verdictsOf(run, records, this.submitted(run.id)),
           events: store.listRunEvents(run.id),
         },
+          acquisitions.map((a) => a.destinationRoot),
+        ),
         null,
         2,
       )}\n`,

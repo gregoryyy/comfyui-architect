@@ -1,6 +1,6 @@
 # Gaps
 
-Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-16 03:19.
+Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-16 07:50.
 
 How this file works:
 - Answers are recorded with date, time and author: `**Answer** (2026-11-15 13:30, Gregor Heinrich): …`. Corrections of assumptions record the same in the **Correction** column. Short answers are fine.
@@ -70,7 +70,7 @@ Actions is off on a new fork. Public repositories run it at no cost, but enablin
 
 The stock panel works through its chat and choice controls (spec §3.2). Candidate cards, approvals and graph diffs need a change to `artokun/comfyui-mcp-panel`, a separate repository.
 
-- **Proposed:** not before Phase 4; until then, test the stock panel with autospawn off. Its documents then go in that fork's own `ext/`.
+- **Proposed:** not before Phase 4; until then, test the stock panel with autospawn off. Its documents then go in that fork's own `dev/` (called `ext/` until 2026-11-16).
 - **Answer** (2026-11-15 13:45, Gregor Heinrich): In ROAD phase 4, as proposed.
 - **Resolved** (2026-11-15 13:45, Opus 5.5 for Gregor Heinrich): ROAD phase 4; until then the stock panel with autospawn off (TODO 1.2.4, 1.10).
 
@@ -279,6 +279,32 @@ Spec §13.2 makes visual evaluators optional plugins whose verdicts stay advisor
 - **Proposed:** one optional evaluator, an OCR check through `glm-ocr` for tasks that ask for text in the image. An uncertain reading is `unknown`, never `pass`. A vision-model rubric waits until you choose a vision model.
 - **Answer** (2026-11-16 03:19, Gregor Heinrich): as proposed.
 - **Resolved** (2026-11-16 03:19, Opus 5.5 for Gregor Heinrich): one optional OCR evaluator through `glm-ocr`, advisory (TODO 6.4); [ARCH](ARCH.md#decision-log).
+
+### Q30. May a `proposed` recipe download its pinned files? — blocking for TODO 4.7
+
+Milestone 4's review found that acquisition doesn't look at a recipe's tier. The live test's recipe, `recipe-zimage-turbo.t2i-upscale2x`, is `proposed`: an agent wrote it and pinned its upscaler (`Comfy-Org/Real-ESRGAN` at `5fd49b7b`, 67 MB, BSD-3-Clause) with `pin-source.mjs`, and no one has reviewed it. Spec §9.2 forbids the agent to invent download URLs; the pin was read from Hugging Face's API, but its choice of repository was the agent's.
+
+- **Proposed:** yes. Every download needs your approval, and the approval shows each file's repository, commit, size and destination, and the recipe's tier. A `proposed` recipe's acquisition is marked as such in the approval text.
+- **Alternative:** only `curated` and `certified` recipes may download. Then the live test waits until you've reviewed the upscale recipe.
+- **Answer** (2026-11-16 07:50, Gregor Heinrich): as proposed.
+- **Resolved** (2026-11-16 07:50, Opus 5.5 for Gregor Heinrich): a `proposed` recipe may download after the user's approval; the approval names the recipe's tier and, for a proposed recipe, that an agent pinned its sources and no maintainer has reviewed it ([ARCH](ARCH.md#decision-log), TODO 4.5).
+
+### Q31. Is rendering at half size and upscaling to the task's size a lower resolution?
+
+The new recipe renders Z-Image Turbo at half the task's width and height and upscales 2× with RealESRGAN, so the saved image has the task's size, and the output check verifies it after the run. Spec §4.3 forbids a lower resolution without the user's approval.
+
+- **Proposed:** it's no relaxation, since the delivered size is the task's. The candidate states the generated size and the upscale chain before you select it, so the choice is visible.
+- **Alternative:** treat it as a relaxation that needs explicit approval, like a smaller output.
+- **Answer** (2026-11-16 07:50, Gregor Heinrich): as proposed.
+- **Resolved** (2026-11-16 07:50, Opus 5.5 for Gregor Heinrich): rendering at a fraction of the task's size and upscaling to it isn't a relaxation; the candidate states the generated size and the upscale chain, and the output check verifies the delivered size ([ARCH](ARCH.md#decision-log)).
+
+### Q32. Do recipe-pinned sources stand in for the source registry of spec §8.5?
+
+Spec §8.5 asks for a configured source registry: adapter, root or URL, allowed operations, trust status, refresh policy, last successful refresh. Milestone 4 takes its sources from recipe pins, with Hugging Face as the only allowed source (Q25), and has no registry table.
+
+- **Proposed:** for Hugging Face downloads the pins and Q25's rules are enough. The registry comes with the template sources in milestone 5 (TODO 5.2), whose configured roots and refresh state need it.
+- **Answer** (2026-11-16 07:50, Gregor Heinrich): as proposed.
+- **Resolved** (2026-11-16 07:50, Opus 5.5 for Gregor Heinrich): recipe pins and Q25's rules serve Hugging Face downloads; the source registry of spec §8.5 comes with the template sources (TODO 5.2).
 
 ## Assumptions
 

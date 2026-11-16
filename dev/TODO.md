@@ -1,6 +1,6 @@
 # TODO
 
-The plan: milestones (`## 1.`), tasks (`1.1`) and subtasks (`1.1.1`) with checkboxes. Numbers never change; new work gets new numbers. *(decision)* marks a choice to settle before dependent work starts, *(variant)* an alternative built for comparison. When an item is done, tick it here and add an entry to [DONE](DONE.md); the process is in [AGENTS](../AGENTS.md#process). Phases beyond the current milestones are in [ROAD](ROAD.md), questions for the owner in [GAPS](GAPS.md). Status: 2026-11-16 03:19.
+The plan: milestones (`## 1.`), tasks (`1.1`) and subtasks (`1.1.1`) with checkboxes. Numbers never change; new work gets new numbers. *(decision)* marks a choice to settle before dependent work starts, *(variant)* an alternative built for comparison. When an item is done, tick it here and add an entry to [DONE](DONE.md); the process is in [AGENTS](../AGENTS.md#process). Phases beyond the current milestones are in [ROAD](ROAD.md), questions for the owner in [GAPS](GAPS.md). Status: 2026-11-16 07:50.
 
 Goal: the spec's first usable MVP, an approved candidate that executes locally and records its outcome (ROAD phase 2, done with milestone 3), then the certified recipe set with approved acquisition (ROAD phase 3, milestones 4 to 6). Milestone 1 is spec Phase 0, milestone 2 spec Phase 1, milestone 3 spec Phase 2. Spec section numbers (§) refer to [SPEC](design/SPEC.md).
 
@@ -8,7 +8,7 @@ Goal: the spec's first usable MVP, an approved candidate that executes locally a
 
 The steps of [BOOT](input/BOOT.md), on 2026-11-15.
 
-- [x] 0.1 Collect the input: the spec v1.0 in `ext/input/`
+- [x] 0.1 Collect the input: the spec v1.0 in `dev/input/`
 - [x] 0.2 Assess it and state the idea: [IDEA](IDEA.md), [GAPS](GAPS.md); the fork assessment in the first DONE entry
 - [x] 0.3 Design concept and security
   - [x] 0.3.1 `AGENTS.md`, `CLAUDE.md` at the root, force-added past upstream's `.gitignore`
@@ -18,7 +18,7 @@ The steps of [BOOT](input/BOOT.md), on 2026-11-15.
   - [x] 0.4.1 This file, [ROAD](ROAD.md), [DONE](DONE.md), [BASE](input/BASE.md)
   - [x] 0.4.2 [ARCH](ARCH.md) with the decision log, and [EVAL](EVAL.md) from spec §19, as GAPS Q1 decides
 - [x] 0.5 Readable and buildable
-  - [x] 0.5.1 `ext/README.md`, [BOOT](input/BOOT.md)
+  - [x] 0.5.1 `dev/README.md`, [BOOT](input/BOOT.md)
   - [x] 0.5.2 Process and conventions
     - [x] 0.5.2.1 [SDLC](SDLC.md)
     - [x] 0.5.2.2 [STYLE](STYLE.md): code, tools and interfaces, written output, and the writing style from Lakeshore
@@ -47,7 +47,7 @@ Exit (spec §20): the fork launches from an installed package, identifies itself
   - [ ] 1.3.1 `package.json`: `name` `@gregoryyy/comfyui-architect`, `bin` `comfyui-architect`, `mcpName` `io.github.gregoryyy/comfyui-architect`, `repository` and `homepage` on `gregoryyy/comfyui-architect`, `version` 0.1.0; `architect/` in `files` (GAPS Q2, Q3). `architect` is in `files` since milestone 2; the rest waits on GAPS Q11
   - [ ] 1.3.2 `PACKAGE_NAME` in `src/services/self-update.ts`, with a test that self-update never resolves upstream's package
   - [ ] 1.3.3 `server.json` and `.claude-plugin/marketplace.json`
-  - [x] 1.3.4 `ext/input/BASE.md` and build metadata carry the upstream commit (spec §17.4): `src/fork-identity.ts`, checked against BASE by a test
+  - [x] 1.3.4 `dev/input/BASE.md` and build metadata carry the upstream commit (spec §17.4): `src/fork-identity.ts`, checked against BASE by a test
 - [x] 1.4 Startup handshake (spec §18.2): package identity, fork version, upstream commit, Architect schema version, active policy, available features; no secrets. Done in `src/boot.ts`: `serverInfo.title` and a line after upstream's stdio instructions with product, fork version, upstream version and commit, and whether the Architect tools are on; `handshake-instructions.ts` and its byte budget stay untouched. Active policy and the schema version join the line when they exist beyond Phase 0
 - [x] 1.5 Feature flag
   - [x] 1.5.1 Configuration read in one place, default off: `COMFYUI_ARCHITECT` in `src/services/architect/config.ts`, so `src/config.ts` stays upstream's
@@ -122,17 +122,17 @@ Exit (spec §20): an approved candidate executes locally, survives reconnect and
 Exit: a candidate blocked only by missing model files becomes feasible after the user approves a pinned download manifest, and the downloaded files carry their source, commit and verified sha256 into the dependency lock. Gate: SEC T4 and T9 controls verified; no download without a grant on any route (AT-05 extended to the new effect); a hash mismatch, an unexpected redirect host or a size over the bound leaves nothing in a model folder. Research: [research/acquisition-sources.md](research/acquisition-sources.md).
 
 - [x] 4.1 *(decision)* Sources, limits and custom nodes (GAPS Q25, Q26, answered 2026-11-16 03:19): Hugging Face only, pinned to a commit and hash-checked, redirects only to its hosts, `.safetensors` only, 40 GB per approval and 50 GB kept free, a token only for gated repositories from `HF_TOKEN`; no custom-node installs in phase 3
-- [ ] 4.2 Contracts and storage (spec §8.3, §8.5, §14.4): `SourceRegistryEntry` (adapter, root or URL, allowed operations, trust status, refresh policy, last refresh), `DependencyManifest` (per file: source, repository as resolved, commit, path, size, sha256, licence, gated, destination folder and name), an `acquire_models` effect in the effect union, and acquisition records; migration 4. An unreachable source is `unavailable`, never empty
-  - [ ] 4.2.1 Schemas with tests for valid, missing, newer and unknown-property records
-  - [ ] 4.2.2 Migration, repositories, and the acquisition states (planned, downloading, verifying, landed, failed, cancelled) as a transition table
-- [ ] 4.3 Manifest resolution: a recipe's model slot names its source (repository and path), never a URL the agent supplies (spec §9.2); Architect resolves the revision to a commit and reads size and sha256 from the Hugging Face API, through the configured source registry and only where the network profile allows it. A missing slot source leaves the dependency `unknown` with the reason
-- [ ] 4.4 *(decision)* Redirect checking (spec §14.4): Architect checks each hop against the source's allowed hosts before handing upstream a URL, or `download-cache.ts` gets an optional redirect check as a seam recorded in ARCH; chosen and recorded before 4.5
-- [ ] 4.5 The acquisition effect through `admitEffect`: `architect_run prepare` adds the manifest to the action plan, the approval shows each file, its source, commit, size, destination and the free disk left, and the hash covers the manifest. The download runs through the facade on upstream's `startDownloadJob` into a staging folder under the model root, the sha256 is checked against the manifest, and only then is the file moved into place; an existing file is never overwritten; the ComfyUI-Manager route is refused
-  - [ ] 4.5.1 Facade functions over upstream's download jobs and file hasher, with contract tests
-  - [ ] 4.5.2 Staging, verification and placement, with negative tests: hash mismatch, size over bound, redirect to another host, existing destination, path escape, a remote target, the Manager route (SEC T4, T9)
-  - [ ] 4.5.3 Cancellation and restart: a download in progress resumes or is cancelled as its own operation; a staged file left by a crash is never placed without verification
-- [ ] 4.6 After acquisition the environment is snapshot again and the candidate revalidated before its render; the run's dependency lock records each acquired file with source, commit and sha256 (FR-11)
-- [ ] 4.7 The skill and command describe acquisition; a live acquisition of one small file (an upscale model) on the reference target through `stdio-smoke.mjs --acquire` (e2e-runner)
+- [x] 4.2 Contracts and storage (spec §8.3, §8.5, §14.4): `SourceRegistryEntry` (adapter, root or URL, allowed operations, trust status, refresh policy, last refresh), `DependencyManifest` (per file: source, repository as resolved, commit, path, size, sha256, licence, gated, destination folder and name), an `acquire_models` effect in the effect union, and acquisition records; migration 4. An unreachable source is `unavailable`, never empty. Built differently (ARCH 2026-11-16): the manifest is the recipe's pinned `modelSources` and the `acquire_models` effect, without `gated`; `SourceRegistryEntry` waits for the template sources (GAPS Q32, TODO 5.2)
+  - [x] 4.2.1 Schemas with tests for valid, missing, newer and unknown-property records
+  - [x] 4.2.2 Migration, repositories, and the acquisition states (planned, downloading, verifying, placed, failed, cancelled) as a transition table
+- [x] 4.3 Manifest resolution: a recipe's model slot names its source (repository and path), never a URL the agent supplies (spec §9.2); Architect resolves the revision to a commit and reads size and sha256 from the Hugging Face API, through the configured source registry and only where the network profile allows it. A missing slot source leaves the dependency `unknown` with the reason. Built without network at run time: `scripts/architect/pin-source.mjs` reads the commit, size and sha256 from Hugging Face's API when a maintainer pins a source, and planning and execution use the pin. A missing file without a pinned source keeps the candidate `blocked`, with the reason, since the check itself is an observed `fail`
+- [x] 4.4 *(decision)* Redirect checking (spec §14.4): Architect checks each hop against the source's allowed hosts before handing upstream the commit-pinned URL; no upstream file changes ([ARCH](ARCH.md#decision-log), 2026-11-16)
+- [x] 4.5 The acquisition effect through `admitEffect`: `architect_run prepare` adds the manifest to the action plan, the approval shows each file, its source, commit, size, destination and the free disk left, and the hash covers the manifest. The download runs through the facade on upstream's `startDownloadJob` into a staging folder under the model root, the sha256 is checked against the manifest, and only then is the file moved into place; an existing file is never overwritten; the ComfyUI-Manager route is refused
+  - [x] 4.5.1 Facade functions over upstream's download jobs and file hasher, with contract tests (file hasher: Architect hashes with node:crypto and checks inodes, so upstream's is unused)
+  - [x] 4.5.2 Staging, verification and placement, with negative tests: hash mismatch, size over bound, redirect to another host, existing destination, path escape, a remote target, the Manager route (SEC T4, T9)
+  - [x] 4.5.3 Cancellation and restart: a download in progress resumes or is cancelled as its own operation; a staged file left by a crash is never placed without verification
+- [x] 4.6 After acquisition the environment is snapshot again and the candidate revalidated before its render; the run's dependency lock records each acquired file with source, commit and sha256 (FR-11)
+- [x] 4.7 The skill and command describe acquisition; a live acquisition of one small file (an upscale model) on the reference target through `stdio-smoke.mjs --acquire` (e2e-runner)
 
 ## 5. Certified recipe set and template sources (spec Phase 3, second part)
 

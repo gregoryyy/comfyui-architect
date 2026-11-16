@@ -9,6 +9,7 @@
 // Stored records carry `schemaVersion`; `parseStored` (below) is the one entry point that
 // reads them back, so a later version adds its upgrade step there.
 
+import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { ARCHITECT_SCHEMA_VERSION } from "../../fork-identity.js";
 import { canonicalJson, sha256Hex } from "./hash.js";
@@ -58,6 +59,82 @@ function prefixedId(prefix: string) {
 }
 /** A sha256 digest as `sha256Hex` writes it. */
 const Sha256 = z.string().regex(/^[0-9a-f]{64}$/, "expected 64 lowercase hex digits");
+/** A non-negative byte count. */
+const Bytes = z.number().int().nonnegative();
+/** An absolute filesystem path, such as a model root or a staged file. */
+const AbsolutePath = z.string().min(1).refine((p) => isAbsolute(p), { message: "expected an absolute path" });
+
+// ---------------------------------------------------------------------------------------
+// Model sources (spec §8.3, §9.2, §14.4; ARCH 2026-11-16, milestone 4; GAPS Q25)
+
+/** A path inside a repository: relative, no `.`, `..` or empty segment, no backslash. */
+const RepoPath = z
+  .string()
+  .min(1)
+  .refine((p) => !p.startsWith("/") && !p.includes("\\") && p.split("/").every((seg) => seg !== "" && seg !== "." && seg !== ".."), {
+    message: "expected a relative path without '.', '..' or empty segments and without backslashes",
+  });
+
+/** A file name in a model folder: one segment, so a placement can't leave the folder (SEC T9). */
+const BareFileName = z
+  .string()
+  .min(1)
+  .refine((f) => !f.includes("/") && !f.includes("\\") && f !== "." && f !== "..", { message: "expected a bare file name" });
+
+/** A ComfyUI model folder name such as `vae` or `upscale_models`: one segment. */
+const ModelFolderName = z
+  .string()
+  .regex(/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/, "expected a model folder name")
+  .refine((f) => f !== "..", { message: "expected a model folder name" });
+
+/**
+ * Where a model file comes from, pinned by a maintainer with scripts/architect/pin-source.mjs
+ * (ARCH 2026-11-16, sources). Hugging Face only (GAPS Q25): a 40-digit commit, never a
+ * branch, so the bytes behind the entry can't change; the sha256 and size Hugging Face
+ * reported for that commit, which the download is checked against before placement. A
+ * union, so a source the owner adds later is a new member.
+ */
+export const ModelSource = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("huggingface"),
+      /** `owner/name` as the repository resolved when pinned (a renamed repository's new name). */
+      repo: z
+        .string()
+        .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9._-]+$/, "expected owner/name")
+        .refine((r) => r.split("/").every((seg) => seg !== "." && seg !== ".."), { message: "expected owner/name" }),
+      revision: z.string().regex(/^[0-9a-f]{40}$/, "expected a 40-digit lowercase commit, not a branch or tag"),
+      path: RepoPath,
+      sha256: Sha256,
+      sizeBytes: z.number().int().positive(),
+      license: z.string().min(1).optional(),
+    })
+    .strict(),
+]);
+export type ModelSource = z.infer<typeof ModelSource>;
+
+/** A recipe's pinned source for one model file it can acquire: the folder and name it lands as. */
+export const RecipeModelSource = z
+  .object({
+    folder: ModelFolderName,
+    /** The name on disk; it may differ from the last segment of `source.path`. */
+    file: BareFileName,
+    source: ModelSource,
+  })
+  .strict();
+export type RecipeModelSource = z.infer<typeof RecipeModelSource>;
+
+/** No two entries for one folder and file, whatever else they carry. */
+function uniqueFolderFile(entries: readonly { folder: string; file: string }[]): string[] {
+  const seen = new Set<string>();
+  const dupes: string[] = [];
+  for (const e of entries) {
+    const key = `${e.folder}/${e.file}`;
+    if (seen.has(key)) dupes.push(key);
+    seen.add(key);
+  }
+  return dupes;
+}
 
 // ---------------------------------------------------------------------------------------
 // Environment (spec §7.1, §8.3)
@@ -287,6 +364,12 @@ export const RecipeSlot = z
     default: z.union([z.string(), z.number()]).optional(),
     /** A TaskSpec path the service fills the slot from, e.g. `media.output.width`. */
     fromTask: z.string().optional(),
+    /**
+     * Divide the `fromTask` value by this before writing it, for a graph that generates at a
+     * fraction of the task's size and scales back up (a 2x upscale recipe). The recipe's
+     * graph is what restores the size; a task value the divisor doesn't divide fails.
+     */
+    fromTaskDivisor: z.number().int().min(2).optional(),
     /** For `model_file`: the ComfyUI model folder the file must be installed in. */
     modelFolder: z.string().optional(),
     /** For `model_file`: the model family the recipe was annotated for (semantic layer). */
@@ -298,6 +381,10 @@ export const RecipeSlot = z
   .strict()
   .refine((s) => s.valueType !== "model_file" || s.modelFolder !== undefined, {
     message: "a model_file slot names its modelFolder",
+  })
+  .refine((s) => s.fromTaskDivisor === undefined || s.fromTask !== undefined, {
+    message: "fromTaskDivisor needs fromTask",
+    path: ["fromTaskDivisor"],
   });
 export type RecipeSlot = z.infer<typeof RecipeSlot>;
 
@@ -353,6 +440,12 @@ export const Recipe = z
       )
       .min(1),
     dependencies: z.object({ nodeClasses: z.array(z.string().min(1)) }).strict(),
+    /**
+     * Pinned sources of the model files this recipe can acquire (ARCH 2026-11-16, sources).
+     * Optional rather than defaulted: a default would change the parsed content, and so the
+     * content hash, of every recipe already stored under its revision.
+     */
+    modelSources: z.array(RecipeModelSource).optional(),
     certification: Certification,
     evidence: z.array(EvidenceRef),
     license: z.string().optional(),
@@ -375,6 +468,9 @@ export const Recipe = z
       if (!(o.node in r.graph)) {
         ctx.addIssue({ code: "custom", message: `output ${o.role} names missing node ${o.node}`, path: ["outputs"] });
       }
+    }
+    for (const key of uniqueFolderFile(r.modelSources ?? [])) {
+      ctx.addIssue({ code: "custom", message: `modelSources lists ${key} twice`, path: ["modelSources"] });
     }
   });
 export type Recipe = z.infer<typeof Recipe>;
@@ -420,6 +516,36 @@ export type ValidationReport = z.infer<typeof ValidationReport>;
 // ---------------------------------------------------------------------------------------
 // Planning (spec §7.1, §9, §15.3)
 
+/**
+ * What an `acquirable` candidate would download (ARCH 2026-11-16, candidates): each missing
+ * model file with the recipe's pinned source, and the total the approval is asked for.
+ */
+export const CandidateAcquisition = z
+  .object({
+    files: z
+      .array(z.object({ slot: z.string().min(1), folder: ModelFolderName, file: BareFileName, source: ModelSource }).strict())
+      .min(1),
+    totalBytes: Bytes,
+  })
+  .strict()
+  .superRefine((a, ctx) => {
+    for (const key of uniqueFolderFile(a.files)) {
+      ctx.addIssue({ code: "custom", message: `the acquisition lists ${key} twice`, path: ["files"] });
+    }
+    if (a.totalBytes !== a.files.reduce((sum, f) => sum + f.source.sizeBytes, 0)) {
+      ctx.addIssue({ code: "custom", message: "totalBytes is not the sum of the files' sizes", path: ["totalBytes"] });
+    }
+  });
+export type CandidateAcquisition = z.infer<typeof CandidateAcquisition>;
+
+/**
+ * Candidate statuses, best first. `acquirable`: the only failing hard checks are model files
+ * the recipe pins a source for and the acquisition policy accepts; the checks stay `fail`
+ * until the files are placed (ARCH 2026-11-16, candidates).
+ */
+export const CandidateStatus = z.enum(["feasible", "acquirable", "diagnostic", "blocked"]);
+export type CandidateStatus = z.infer<typeof CandidateStatus>;
+
 export const PlanCandidate = z
   .object({
     schemaVersion: SchemaVersion,
@@ -454,10 +580,17 @@ export const PlanCandidate = z
         explanation: z.string(),
       })
       .strict(),
-    status: z.enum(["feasible", "blocked", "diagnostic"]),
+    status: CandidateStatus,
+    /** Present exactly when `status` is `acquirable`. */
+    acquisition: CandidateAcquisition.optional(),
     createdAt: Timestamp,
   })
-  .strict();
+  .strict()
+  .superRefine((c, ctx) => {
+    if ((c.status === "acquirable") !== (c.acquisition !== undefined)) {
+      ctx.addIssue({ code: "custom", message: "acquisition is set exactly when the status is acquirable", path: ["acquisition"] });
+    }
+  });
 export type PlanCandidate = z.infer<typeof PlanCandidate>;
 
 /** Planning states (spec §15.3). `PLANNING` is transient while `propose` runs. */
@@ -545,9 +678,41 @@ export const Effect = z.discriminatedUnion("kind", [
       reload: z.literal(true),
     })
     .strict(),
+  z
+    .object({
+      /**
+       * Download these model files from their pinned sources into the target's model folders
+       * before the render (ARCH 2026-11-16, placement; GAPS Q25). Each file is staged next to
+       * its destination as `<file>.architect-<run id>`, a name no loader lists, checked against `source.sha256` and
+       * `sizeBytes`, and only then placed as `<destinationRoot>/<folder>/<file>`, never over
+       * an existing file. `maxBytes` is the bound the approval names (at most 40 GB);
+       * `minFreeBytes` the free disk that must remain after each file (50 GB). The hash of
+       * the action plan covers all of it, so the grant names each file and its commit.
+       */
+      kind: z.literal("acquire_models"),
+      files: z
+        .array(z.object({ folder: ModelFolderName, file: BareFileName, source: ModelSource, destinationRoot: AbsolutePath }).strict())
+        .min(1),
+      totalBytes: Bytes,
+      maxBytes: Bytes,
+      minFreeBytes: Bytes,
+    })
+    .strict()
+    .superRefine((e, ctx) => {
+      for (const key of uniqueFolderFile(e.files)) {
+        ctx.addIssue({ code: "custom", message: `the effect lists ${key} twice`, path: ["files"] });
+      }
+      if (e.totalBytes !== e.files.reduce((sum, f) => sum + f.source.sizeBytes, 0)) {
+        ctx.addIssue({ code: "custom", message: "totalBytes is not the sum of the files' sizes", path: ["totalBytes"] });
+      }
+      if (e.totalBytes > e.maxBytes) {
+        ctx.addIssue({ code: "custom", message: "totalBytes exceeds maxBytes", path: ["totalBytes"] });
+      }
+    }),
 ]);
 export type Effect = z.infer<typeof Effect>;
 export type ReleaseResidencyEffect = Extract<Effect, { kind: "release_residency" }>;
+export type AcquireModelsEffect = Extract<Effect, { kind: "acquire_models" }>;
 
 const ActionPlanObject = z
   .object({
@@ -883,6 +1048,80 @@ export const EvaluationRecord = z
   });
 export type EvaluationRecord = z.infer<typeof EvaluationRecord>;
 
+/** Acquisition states (ARCH 2026-11-16, placement; TODO 4.2.2). */
+export const AcquisitionState = z.enum(["planned", "downloading", "verifying", "placed", "failed", "cancelled"]);
+export type AcquisitionState = z.infer<typeof AcquisitionState>;
+
+/** States an acquisition never leaves. */
+export const FINAL_ACQUISITION_STATES: readonly AcquisitionState[] = ["placed", "failed", "cancelled"];
+
+/**
+ * The acquisition state machine as data, like `RUN_TRANSITIONS`. Two edges go back, both
+ * for a restart (TODO 4.5.3): downloading → planned when the download job was lost with the
+ * process, so it starts again; verifying → downloading when the staged file is gone. A
+ * staged file is never placed without passing verifying, and verifying can't be cancelled
+ * midway: it ends placed, failed, or back at downloading.
+ */
+export const ACQUISITION_TRANSITIONS: Readonly<Record<AcquisitionState, readonly AcquisitionState[]>> = {
+  planned: ["downloading", "failed", "cancelled"],
+  downloading: ["verifying", "planned", "failed", "cancelled"],
+  verifying: ["placed", "downloading", "failed"],
+  placed: [],
+  failed: [],
+  cancelled: [],
+};
+
+/** Whether the acquisition state machine allows `from` → `to`. */
+export function canAcquisitionTransition(from: AcquisitionState, to: AcquisitionState): boolean {
+  return ACQUISITION_TRANSITIONS[from].includes(to);
+}
+
+/**
+ * One model file a run acquires (TODO 4.2, 4.5): one record per file of the action plan's
+ * `acquire_models` effect, created with the run. `observedSha256` and `observedBytes` are
+ * what Architect measured on the staged file, kept apart from the pinned `source` values
+ * they're compared with.
+ */
+export const AcquisitionRecord = z
+  .object({
+    schemaVersion: SchemaVersion,
+    id: prefixedId("acq"),
+    runId: prefixedId("run"),
+    actionPlanId: prefixedId("actions"),
+    folder: ModelFolderName,
+    file: BareFileName,
+    source: ModelSource,
+    destinationRoot: AbsolutePath,
+    state: AcquisitionState,
+    /** Upstream's download job id, once the job started. */
+    jobId: z.string().min(1).optional(),
+    stagedPath: AbsolutePath.optional(),
+    placedPath: AbsolutePath.optional(),
+    observedSha256: Sha256.optional(),
+    observedBytes: Bytes.optional(),
+    error: z.object({ code: ArchitectErrorCode, message: z.string().min(1) }).strict().optional(),
+    createdAt: Timestamp,
+    updatedAt: Timestamp,
+  })
+  .strict()
+  .superRefine((a, ctx) => {
+    if (a.state === "failed" && a.error === undefined) {
+      ctx.addIssue({ code: "custom", message: "a failed acquisition carries its error", path: ["error"] });
+    }
+    // Placed means verified: the measured hash and size are the pinned ones, and the file
+    // has a path to show for it.
+    if (a.state === "placed") {
+      if (a.placedPath === undefined) ctx.addIssue({ code: "custom", message: "a placed acquisition names its placedPath", path: ["placedPath"] });
+      if (a.observedSha256 !== a.source.sha256) {
+        ctx.addIssue({ code: "custom", message: "a placed acquisition's observed sha256 is the pinned one", path: ["observedSha256"] });
+      }
+      if (a.observedBytes !== a.source.sizeBytes) {
+        ctx.addIssue({ code: "custom", message: "a placed acquisition's observed size is the pinned one", path: ["observedBytes"] });
+      }
+    }
+  });
+export type AcquisitionRecord = z.infer<typeof AcquisitionRecord>;
+
 /**
  * A hold on one memory pool (spec §11.3, ARCH milestone 3, resources). Coordination state
  * with no history to migrate: it lives in relational columns only and carries no
@@ -939,6 +1178,7 @@ const STORED = {
   run: RunRecord,
   runEvent: RunEvent,
   evaluation: EvaluationRecord,
+  acquisition: AcquisitionRecord,
 } as const;
 export type StoredKind = keyof typeof STORED;
 type StoredRecord<K extends StoredKind> = z.infer<(typeof STORED)[K]>;
@@ -956,6 +1196,7 @@ const UPGRADES: { [K in StoredKind]: Record<number, (raw: Record<string, unknown
   run: {},
   runEvent: {},
   evaluation: {},
+  acquisition: {},
 };
 
 export class StoredRecordError extends Error {

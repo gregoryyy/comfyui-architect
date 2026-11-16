@@ -14,7 +14,8 @@ import { loadRecipeDir, retrieveRecipes, SHIPPED_RECIPES_DIR } from "./catalog.j
 import { compileRecipe } from "./compile.js";
 import { planningReadiness } from "./environment.js";
 import { canonicalJson, sha256Hex } from "./hash.js";
-import { MAX_PRESENTED_CANDIDATES, missingTaskFields, planCandidates, type ProposedBinding } from "./planner.js";
+import { deriveAcquisition, formatBytes } from "./acquisition-policy.js";
+import { MAX_PRESENTED_CANDIDATES, candidateStatus, missingTaskFields, planCandidates, type ProposedBinding } from "./planner.js";
 import {
   type ApiGraph,
   type EnvironmentSnapshot,
@@ -285,6 +286,46 @@ export class ArchitectPlanning {
     };
   }
 
+  /**
+   * A stored status is data, and a schema-valid edit could change it: select, export and
+   * execution recompute the verdict from the candidate's checks before they act on it. For
+   * an acquirable candidate that means deriving the acquisition again from the checks, the
+   * recipe and the snapshot it was checked on, and requiring the stored one to match.
+   */
+  private requireSelectable(candidate: PlanCandidate, task: TaskSpec, options: { allowAcquirable: boolean }): void {
+    const overall = overallVerdict(candidate.validation.checks);
+    if (candidate.status === "feasible" && overall !== "pass") {
+      throw new PlanningError(
+        "GRAPH_CONFLICT",
+        `candidate ${candidate.id} is recorded as feasible, but its checks come to ${overall}`,
+        "Call validate for this candidate, then select again.",
+      );
+    }
+    if (candidate.status === "feasible") return;
+    if (candidate.status === "acquirable" && options.allowAcquirable) {
+      const recipe = this.deps.store.getRecipe(candidate.recipeId, candidate.recipeRevision);
+      const derived = recipe
+        ? deriveAcquisition({ recipe, task, candidate, snapshot: this.deps.store.getSnapshot(candidate.environmentId) })
+        : undefined;
+      if (!derived?.acquirable || canonicalJson(derived.acquisition) !== canonicalJson(candidate.acquisition)) {
+        throw new PlanningError(
+          "GRAPH_CONFLICT",
+          `candidate ${candidate.id} is recorded as acquirable, but its checks, recipe and snapshot don't give that acquisition` +
+            (derived && !derived.acquirable && derived.refusals.length > 0 ? `: ${derived.refusals.map((r) => r.message).join("; ")}` : ""),
+          "Call validate for this candidate, then select again.",
+        );
+      }
+      return;
+    }
+    throw new PlanningError(
+      candidate.status === "diagnostic" ? "UNVERIFIED_COMPATIBILITY" : "NO_FEASIBLE_CANDIDATE",
+      `candidate ${candidate.id} is ${candidate.status}: ${blockingChecks(candidate.validation).join("; ") || "see its validation report"}`,
+      candidate.status === "acquirable"
+        ? "This step needs a feasible candidate; the acquirable one needs its files first."
+        : "Resolve the blocking checks and call validate, or choose a feasible candidate.",
+    );
+  }
+
   /** A candidate's graph, compiled again and checked against its stored fingerprint. */
   private compiledGraph(candidate: PlanCandidate, task: TaskSpec) {
     const recipe = this.deps.store.getRecipe(candidate.recipeId, candidate.recipeRevision);
@@ -331,11 +372,21 @@ export class ArchitectPlanning {
       snapshot,
       ...(this.deps.isPaidNode ? { isPaidNode: this.deps.isPaidNode } : {}),
     });
-    const status: PlanCandidate["status"] = outcome.report.overall === "pass" ? "feasible" : outcome.report.overall === "unknown" ? "diagnostic" : "blocked";
-    const updated = store.putCandidate({ ...candidate, environmentId: snapshot.id, validation: outcome.report, dependencyDelta: outcome.dependencyDelta, status });
-    // A selection holds only while its candidate is feasible: when a recheck finds it no
-    // longer is, the selection is withdrawn, so export can't write a graph that fails.
-    const deselect = plan.state === "SELECTED" && plan.selectedCandidateId === candidate.id && status !== "feasible";
+    const verdict = candidateStatus({ recipe, task, report: outcome.report, bindings: candidate.bindings, snapshot });
+    const status = verdict.status;
+    // The acquisition is recomputed with the status, never carried over from the last check.
+    const { acquisition: _previousAcquisition, ...rest } = candidate;
+    const updated = store.putCandidate({
+      ...rest,
+      environmentId: snapshot.id,
+      validation: outcome.report,
+      dependencyDelta: outcome.dependencyDelta,
+      status,
+      ...(verdict.acquisition ? { acquisition: verdict.acquisition } : {}),
+    });
+    // A selection holds only while its candidate is feasible or acquirable: when a recheck
+    // finds it neither, the selection is withdrawn, so export can't write a graph that fails.
+    const deselect = plan.state === "SELECTED" && plan.selectedCandidateId === candidate.id && !SELECTABLE.includes(status);
     const statuses = plan.candidateIds.map((id) => (id === candidate.id ? status : store.getCandidate(id)?.status));
     const { selectedCandidateId: _withdrawn, ...unselected } = plan;
     const next: Plan =
@@ -355,9 +406,9 @@ export class ArchitectPlanning {
   /** Record the user's choice. Selecting authorizes nothing (spec §16.1). */
   select(request: { planId: string; candidateId: string }) {
     const { store, now } = this.deps;
-    const { plan } = this.requirePlan(request.planId);
+    const { plan, task } = this.requirePlan(request.planId);
     const candidate = this.requireCandidate(plan, request.candidateId);
-    requireFeasible(candidate);
+    this.requireSelectable(candidate, task, { allowAcquirable: true });
     if (plan.state === "SUPERSEDED") throw new PlanningError("GRAPH_CONFLICT", `plan ${plan.id} is SUPERSEDED`, "Call prepare for a new plan.");
     return store.putPlan({ ...plan, state: "SELECTED", selectedCandidateId: candidate.id, updatedAt: now().toISOString() });
   }
@@ -365,15 +416,16 @@ export class ArchitectPlanning {
   /**
    * The selected candidate of a plan and its graph, compiled again and checked against the
    * validated fingerprint, for execution (TODO 3.3). The same checks export makes, so a run
-   * never starts from a candidate that export would refuse.
+   * never starts from a candidate that export would refuse. Feasible only, unless the caller
+   * sets `allowAcquirable`: the run that acquires the files first (TODO 4.5) does.
    */
-  selectedForRun(planId: string) {
+  selectedForRun(planId: string, options: { allowAcquirable?: boolean } = {}) {
     const { plan, task } = this.requirePlan(planId);
     if (plan.state !== "SELECTED" || !plan.selectedCandidateId) {
       throw new PlanningError("MISSING_INPUT", `plan ${plan.id} has no selected candidate`, "Ask the user to choose a candidate, then call select.");
     }
     const candidate = this.requireCandidate(plan, plan.selectedCandidateId);
-    requireFeasible(candidate);
+    this.requireSelectable(candidate, task, { allowAcquirable: options.allowAcquirable ?? false });
     const { recipe, graph, fingerprint } = this.compiledGraph(candidate, task);
     return { plan, task, candidate, recipe, graph, fingerprint };
   }
@@ -399,6 +451,16 @@ export class ArchitectPlanning {
   private lockFor(candidate: PlanCandidate, recipe: Recipe, graph: ApiGraph, fingerprint: string) {
     const env = this.deps.store.getSnapshot(candidate.environmentId);
     return {
+      // An acquirable candidate's files aren't on the target yet: the lock lists them with
+      // the pinned source each would come from (ARCH 2026-11-16, sources).
+      ...(candidate.acquisition
+        ? {
+            acquire: {
+              files: candidate.acquisition.files.map((f) => ({ slot: f.slot, folder: f.folder, file: f.file, source: f.source })),
+              totalBytes: candidate.acquisition.totalBytes,
+            },
+          }
+        : {}),
       schemaVersion: 1,
       graphFingerprint: fingerprint,
       recipe: { id: recipe.id, revision: recipe.revision, certification: recipe.certification, contentHash: sha256Hex(canonicalJson(recipe)) },
@@ -420,7 +482,7 @@ export class ArchitectPlanning {
       throw new PlanningError("MISSING_INPUT", `plan ${plan.id} has no selected candidate`, "Call select first.");
     }
     const candidate = this.requireCandidate(plan, plan.selectedCandidateId);
-    requireFeasible(candidate);
+    this.requireSelectable(candidate, task, { allowAcquirable: true });
     const { recipe, graph, fingerprint } = this.compiledGraph(candidate, task);
     const root = resolve(this.deps.dataDir, "artifacts");
     const dir = resolve(root, task.id, plan.id);
@@ -450,27 +512,8 @@ export class ArchitectPlanning {
   }
 }
 
-/**
- * A stored status is data, and a schema-valid edit could change it: select and export
- * recompute the verdict from the candidate's checks before they act on it.
- */
-function requireFeasible(candidate: PlanCandidate): void {
-  const overall = overallVerdict(candidate.validation.checks);
-  if (candidate.status === "feasible" && overall !== "pass") {
-    throw new PlanningError(
-      "GRAPH_CONFLICT",
-      `candidate ${candidate.id} is recorded as feasible, but its checks come to ${overall}`,
-      "Call validate for this candidate, then select again.",
-    );
-  }
-  if (candidate.status !== "feasible") {
-    throw new PlanningError(
-      candidate.status === "diagnostic" ? "UNVERIFIED_COMPATIBILITY" : "NO_FEASIBLE_CANDIDATE",
-      `candidate ${candidate.id} is ${candidate.status}: ${blockingChecks(candidate.validation).join("; ") || "see its validation report"}`,
-      "Resolve the blocking checks and call validate, or choose a feasible candidate.",
-    );
-  }
-}
+/** Statuses a plan's selection may hold. */
+const SELECTABLE: readonly PlanCandidate["status"][] = ["feasible", "acquirable"];
 
 function blockingChecks(report: ValidationReport): string[] {
   return report.checks.filter((c) => c.hard && (c.verdict === "fail" || c.verdict === "unknown")).map((c) => `${c.verdict}: ${c.message}`);
@@ -488,6 +531,21 @@ export function candidateSummary(c: PlanCandidate) {
     blocking: blockingChecks(c.validation),
     softUnknowns: c.validation.checks.filter((x) => !x.hard && x.verdict === "unknown").map((x) => x.message),
     dependencyDelta: c.dependencyDelta,
+    ...(c.acquisition
+      ? {
+          acquisition: {
+            files: c.acquisition.files.map((f) => ({
+              slot: f.slot,
+              folder: f.folder,
+              file: f.file,
+              size: formatBytes(f.source.sizeBytes),
+              source: `${f.source.repo}@${f.source.revision.slice(0, 8)}:${f.source.path}`,
+            })),
+            total: formatBytes(c.acquisition.totalBytes),
+            totalBytes: c.acquisition.totalBytes,
+          },
+        }
+      : {}),
     resourceEstimate: c.resourceEstimate,
     ranking: c.ranking.explanation,
     graphFingerprint: c.graphFingerprint,

@@ -8,6 +8,7 @@ import { ARCHITECT_FLAG_ENV } from "../../services/architect/config.js";
 import { ResultEnvelope } from "../../services/architect/schemas.js";
 import { registerArchitectRunTool } from "../../tools/architect-run.js";
 import { ToolCatalog } from "../../tools/catalog.js";
+import { acquirable } from "./fixtures/acquisition-harness.js";
 import { setup } from "./fixtures/approval-harness.js";
 
 // AT-05: no unapproved effect succeeds on any route. The direct tool, the compact
@@ -170,6 +171,74 @@ describe("architect_run across routes (AT-05)", () => {
     expect(s.store.listRuns()).toEqual([]);
     issueGrant(s, { requestId: (prepared.data.approvalRequest as { id: string }).id, channel: "terminal", issuer: "terminal", confirmHash: prepared.data.shortHash as string });
     expect((await call({ action: "start", actionPlanId })).status).toBe("ok");
+    expect(s.store.listRuns()).toHaveLength(1);
+  });
+});
+
+// AT-05 for the acquire_models effect (TODO 4.5): a plan that downloads model files is gated
+// like a render on every route, and nothing downloads before its grant.
+describe("architect_run with a download effect across routes (AT-05)", () => {
+  type Acq = Awaited<ReturnType<typeof acquirable>>;
+
+  async function direct(s: Acq) {
+    const server = new McpServer({ name: "t", version: "0" });
+    registerArchitectRunTool(server, () => ({ execution: s.execution, store: s.store, now: s.now, newId: s.newId }));
+    const client = new Client({ name: "test-client", version: "1" }, { capabilities: {} });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(b), client.connect(a)]);
+    return async (args: Record<string, unknown>) => {
+      const res = await client.callTool({ name: "architect_run", arguments: args });
+      return ResultEnvelope.parse(JSON.parse((res.content as { type: string; text: string }[])[0].text));
+    };
+  }
+
+  const grant = (s: Acq, prepared: ResultEnvelope) =>
+    issueGrant(s.deps, {
+      requestId: (prepared.data.approvalRequest as { id: string }).id,
+      channel: "terminal",
+      issuer: "terminal",
+      confirmHash: prepared.data.shortHash as string,
+    });
+  const kinds = (prepared: ResultEnvelope) => (prepared.data.actionPlan as { effects: { kind: string }[] }).effects.map((e) => e.kind);
+
+  it("panel route: refused without a grant and with one unless the operator allows panel runs; then it starts", async () => {
+    process.env.ARCHITECT_ROUTE = "panel";
+    const s = await acquirable();
+    const call = await direct(s);
+    const prepared = await call({ action: "prepare", planId: s.planId });
+    expect(kinds(prepared)).toEqual(["acquire_models", "local_render"]);
+    const actionPlanId = (prepared.data.actionPlan as { id: string }).id;
+    expect((await call({ action: "start", actionPlanId })).error?.code).toBe("APPROVAL_REQUIRED");
+    grant(s, prepared);
+    expect((await call({ action: "start", actionPlanId })).error?.code).toBe("APPROVAL_REQUIRED");
+    expect(s.store.listRuns()).toEqual([]);
+    expect(s.driver.advance).not.toHaveBeenCalled();
+    expect(s.downloads.started).toEqual([]);
+    process.env.ARCHITECT_PANEL_RUNS = "terminal";
+    const started = await call({ action: "start", actionPlanId });
+    expect(started.status).toBe("ok");
+    expect(s.store.listRuns()).toHaveLength(1);
+    expect(s.store.listRuns()[0].state).toBe("PREPARING");
+  });
+
+  it("compact route: refused without a grant, nothing downloads; with the grant it starts once", async () => {
+    const s = await acquirable();
+    const catalog = new ToolCatalog();
+    registerArchitectRunTool(catalog.asRegistrar(), () => ({ execution: s.execution, store: s.store, now: s.now, newId: s.newId }));
+    const tool = catalog.get("architect_run");
+    const call = async (args: Record<string, unknown>) => {
+      const res = await tool!.handler(args);
+      return ResultEnvelope.parse(JSON.parse((res.content as { type: string; text: string }[])[0].text));
+    };
+    const prepared = await call({ action: "prepare", planId: s.planId });
+    expect(kinds(prepared)[0]).toBe("acquire_models");
+    const actionPlanId = (prepared.data.actionPlan as { id: string }).id;
+    expect((await call({ action: "start", actionPlanId })).error?.code).toBe("APPROVAL_REQUIRED");
+    expect(s.store.listRuns()).toEqual([]);
+    expect(s.downloads.started).toEqual([]);
+    grant(s, prepared);
+    expect((await call({ action: "start", actionPlanId })).status).toBe("ok");
+    expect((await call({ action: "start", actionPlanId })).data.resumed).toBe(true);
     expect(s.store.listRuns()).toHaveLength(1);
   });
 });

@@ -11,7 +11,7 @@
 // GAPS Q11. Until then this module states the intended names and the handshake reports
 // the fork alongside the unchanged upstream ones.
 
-/** The pinned upstream baseline. Keep in step with ext/input/BASE.md (a test checks it). */
+/** The pinned upstream baseline. Keep in step with dev/input/BASE.md (a test checks it). */
 export const UPSTREAM_BASELINE = Object.freeze({
   repository: "artokun/comfyui-mcp",
   commit: "707474d24d0d251ba04a1bebdf86620cef2eaa8b",

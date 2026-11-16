@@ -16,6 +16,7 @@ import {
   getSystemStats,
   type HistoryEntry,
   interrupt,
+  resetObjectInfoCache,
 } from "../../comfyui/client.js";
 import type { ComfyUINodeDef, ObjectInfo, SystemStats } from "../../comfyui/types.js";
 import { isApiNode, isExternalServiceNode } from "../api-nodes.js";
@@ -23,14 +24,28 @@ import { resolveOllamaHost, warmOllama } from "../ollama-vram.js";
 import { type CancelQueuedResult, cancelQueuedJob } from "../queue-manager.js";
 import { WorkflowExecutionError } from "../../utils/errors.js";
 import { resolveToolSurfacePolicy, toolAllowed } from "../../tools/tool-surface-filter.js";
-import { getComfyUIBaseUrl, isOwnHostAddress } from "../../config.js";
+import { config, getComfyUIBaseUrl, isOwnHostAddress } from "../../config.js";
 import { sharpUnavailableMessage, tryLoadSharp } from "../sharp-loader.js";
+import { basename, dirname, join } from "node:path";
 import { z } from "zod";
 import {
   type LocalModel,
   type ModelListingCoverage,
   listLocalModelsWithCoverage,
+  localDownloadCacheIdentity,
+  resolveDownloadTarget,
+  shouldDispatchDownloadToManager,
 } from "../model-resolver.js";
+import {
+  type DownloadJob,
+  cancelDownloadJob,
+  describeUnresolvedDownload,
+  downloadJobIdFor,
+  getDownloadJob,
+  startDownloadJob,
+} from "../download-jobs.js";
+import { readDownloadProgress } from "../download-progress.js";
+import { downloadFetch } from "../download-proxy.js";
 import type { InstalledModels } from "./schemas.js";
 
 export interface UpstreamFacade {
@@ -86,6 +101,66 @@ export interface UpstreamFacade {
    * error), so the caller checks /api/ps before it reports the model as loaded or not.
    */
   loadOllama(host: string, model: string, keepAlive: string): Promise<boolean>;
+  /**
+   * Where upstream's downloader would write `<subfolder>/<file>` (its `resolveDownloadTarget`,
+   * the resolver the write itself uses): `path` the absolute file path, `root` the directory
+   * that holds the subfolder's directory, which for a one-segment folder is the model root.
+   * Throws when upstream refuses the destination or can't resolve a local models directory.
+   */
+  resolveModelDestination(subfolder: string, file: string): Promise<{ root: string; path: string }>;
+  /** Whether upstream would hand a download to ComfyUI-Manager instead of writing it locally. */
+  downloadRoutesToManager(): Promise<boolean>;
+  /**
+   * Start a local download job (upstream's `startDownloadJob`) of `url` into
+   * `<subfolder>/<filename>`, never through ComfyUI-Manager and with no auth override, so
+   * upstream applies its own token rules. Returns the job's public id; a request already in
+   * flight returns that job's id. `writesTo` is whether the job writes exactly to
+   * `expectedPath`: upstream keys a local job by the target path its own resolver gave it and
+   * the auth discriminator, empty without an auth override (`downloadJobIdFor` in
+   * download-jobs.ts), so the id shows where the bytes go without resolving the path again.
+   */
+  startDownload(args: { url: string; subfolder: string; filename: string; expectedPath: string; modelRoot?: string }): Promise<{ jobId: string; writesTo: boolean }>;
+  /** A download job's state; see `DownloadStatus`. Never throws for a job it can't find. */
+  downloadStatus(jobId: string): Promise<DownloadStatus>;
+  /** Abort a download job this process owns (upstream's `cancelDownloadJob`). */
+  cancelDownload(jobId: string): Promise<{ cancelled: boolean; message: string }>;
+  /**
+   * Drop upstream's cached /object_info, so the next read sees what ComfyUI offers now: a
+   * model file placed a moment ago shows up in its loader's choices only after this.
+   */
+  forgetNodeSchemas(): void;
+  /**
+   * Where upstream's downloader keeps `url` in its download cache, derived by the function
+   * the writer itself uses (`localDownloadCacheIdentity`, no auth override): the cache
+   * directory, the completed entry, its hidden `.partial` while the transfer runs, and the
+   * entry's Content-Type sidecar. The writer downloads into the cache first and then links
+   * or copies the entry into the destination; the entry stays unless upstream's LRU limit
+   * (COMFYUI_LRU_CACHE_SIZE_GB) evicts it.
+   */
+  downloadCacheEntry(url: string): { dir: string; cachePath: string; partialPath: string; contentTypeSidecar: string };
+  /**
+   * A fetch with upstream's download network route: the same proxy decision
+   * (`download-proxy.ts`) its downloader makes for this URL, so a check before a download
+   * sees the hosts the download will see.
+   */
+  downloadFetch(url: string, init: RequestInit): Promise<Response>;
+  /** The Hugging Face token upstream would send (HF_TOKEN, HUGGINGFACE_TOKEN or its env file). */
+  huggingfaceToken(): string | undefined;
+}
+
+/**
+ * A download job as upstream's registry reports it. `missing`: no record of the job, in
+ * this process or persisted (a job of a previous process may be gone). `unknown`: a record
+ * exists but upstream won't pick one (two live downloads share the id), which says nothing
+ * about whether it finished (#796). `bytes` and `totalBytes` are the progress upstream's
+ * tray rows show, present only where upstream writes them (a panel channel directory).
+ */
+export interface DownloadStatus {
+  status: "downloading" | "done" | "error" | "cancelled" | "missing" | "unknown";
+  path?: string;
+  bytes?: number;
+  totalBytes?: number;
+  error?: string;
 }
 
 /**
@@ -149,6 +224,72 @@ export function createUpstreamFacade(): UpstreamFacade {
     isOwnHostAddress: (host) => isOwnHostAddress(host),
     ollamaHost: () => resolveOllamaHost(),
     loadOllama: (host, model, keepAlive) => warmOllama(host, model, keepAlive),
+    resolveModelDestination: async (subfolder, file) => {
+      // The URL only names the file when `filename` is omitted; it is always given here.
+      const target = await resolveDownloadTarget("https://huggingface.co/", subfolder, file);
+      return { root: dirname(target.targetDir), path: target.targetPath };
+    },
+    downloadRoutesToManager: () => shouldDispatchDownloadToManager(),
+    startDownload: async ({ url, subfolder, filename, expectedPath, modelRoot }) => {
+      // dispatchToManagerOverride=false: the route is decided here, never left to upstream,
+      // so a Manager dispatch (a server-side write nobody can hash first) can't happen.
+      const entry = await startDownloadJob(url, subfolder, filename, undefined, undefined, false, modelRoot);
+      const writesTo = entry.job.viaManager !== true && entry.job.id === downloadJobIdFor(`${expectedPath}\n`);
+      return { jobId: entry.job.id, writesTo };
+    },
+    downloadStatus: async (jobId) => downloadStatusOf(jobId, getDownloadJob(jobId)),
+    cancelDownload: async (jobId) => {
+      const r = cancelDownloadJob(jobId);
+      if (r.aborted || r.reclaimed) return { cancelled: true, message: `download ${jobId} aborted` };
+      if (r.found && r.status !== undefined && r.status !== "downloading") return { cancelled: true, message: `download ${jobId} had already stopped (${r.status})` };
+      if (!r.found) return { cancelled: false, message: `no download ${jobId} is known to upstream` };
+      return {
+        cancelled: false,
+        message: r.ambiguous
+          ? `download ${jobId} names more than one transfer; none was aborted`
+          : `download ${jobId} belongs to another process${r.reclaimDenied ? ` (${r.reclaimDenied})` : ""}; it wasn't aborted`,
+      };
+    },
+    forgetNodeSchemas: () => resetObjectInfoCache(),
+    downloadCacheEntry: (url) => {
+      const id = localDownloadCacheIdentity(url);
+      return {
+        dir: dirname(id.cachePath),
+        cachePath: id.cachePath,
+        partialPath: id.partialPath,
+        // download-cache.ts `cacheCtSidecar`, which upstream doesn't export.
+        contentTypeSidecar: join(dirname(id.cachePath), `.${basename(id.cachePath)}.ct`),
+      };
+    },
+    downloadFetch: (url, init) => downloadFetch(url, init),
+    huggingfaceToken: () => config.huggingfaceToken?.trim() || undefined,
+  };
+}
+
+/**
+ * Map upstream's job record to `DownloadStatus`. A Manager dispatch, which Architect never
+ * starts, reads as an error, since its file can't be hashed before placement; a record whose
+ * writer process is proven gone reads as an error too, because nothing will finish it.
+ */
+export function downloadStatusOf(jobId: string, job: DownloadJob | undefined): DownloadStatus {
+  if (!job) {
+    const why = describeUnresolvedDownload(jobId);
+    return why === undefined ? { status: "missing" } : { status: "unknown", error: why };
+  }
+  const progress = readDownloadProgress(job.progressId ?? job.trayId);
+  const counts = {
+    ...(progress && Number.isFinite(progress.downloaded) ? { bytes: progress.downloaded } : {}),
+    ...(progress && Number.isFinite(progress.total) && progress.total > 0 ? { totalBytes: progress.total } : {}),
+  };
+  if (job.viaManager) return { status: "error", error: `download ${jobId} was dispatched to ComfyUI-Manager`, ...counts };
+  if (job.status === "downloading" && job.writerProvenGone) {
+    return { status: "error", error: `the process writing download ${jobId} is gone`, ...counts };
+  }
+  return {
+    status: job.status,
+    ...(job.path ? { path: job.path } : {}),
+    ...(job.error ? { error: job.error } : {}),
+    ...counts,
   };
 }
 
