@@ -4,7 +4,7 @@ ComfyUI Architect plans a ComfyUI workflow before an agent builds it. You descri
 
 It's a fork of [`artokun/comfyui-mcp`](https://github.com/artokun/comfyui-mcp), the MCP server and sidebar agent for ComfyUI. Everything upstream does keeps working; Architect adds a planning layer next to it, switched on with one environment variable. Upstream's README is kept as [README_BASE.md](README_BASE.md), and it describes all the inherited tools.
 
-> **Status: early.** Planning, export and approved local renders work for images. Architect doesn't download models or install nodes yet; that comes with the next phases ([roadmap](#roadmap)). The package isn't published: run it from a clone.
+> **Status: early.** Planning, export, approved local renders and approved model downloads work for images. Architect doesn't install custom nodes; more recipes, repair and the acceptance suite come with the next milestones ([roadmap](#roadmap)). The package isn't published: run it from a clone.
 
 ## What it does today
 
@@ -14,7 +14,7 @@ With `COMFYUI_ARCHITECT=1`, the server adds three tools and two prompts to upstr
 |---|---|---|
 | `architect_inspect` | `environment`, `capabilities` | Reads the connected ComfyUI: versions, devices, loaded node classes, installed model files, and which probes failed. Lists the recipe catalog and how well the installed files fit each recipe. |
 | `architect_plan` | `prepare`, `propose`, `get`, `validate`, `select`, `export` | Stores the task, builds and validates candidates, records your choice and writes the chosen graph with its evidence to disk. |
-| `architect_run` | `prepare`, `start`, `status`, `cancel`, `evaluate`, `finalize` | Renders the chosen candidate on your ComfyUI once you approve it, follows the job, checks the output and records your verdict. |
+| `architect_run` | `prepare`, `start`, `status`, `cancel`, `evaluate`, `finalize` | Renders the chosen candidate on your ComfyUI once you approve it, follows the job, checks the output and records your verdict. When the candidate needs model files a recipe pins, the same approval covers downloading them from Hugging Face; each file is checked against its pinned sha256 before it goes into your model folder. |
 
 A planning run looks like this:
 
@@ -52,6 +52,7 @@ Recipes live in [`architect/recipes/`](architect/recipes/). Each records its gra
 | Z-Image Turbo | image to image | curated |
 | FLUX.1-schnell, separate components | text to image | curated |
 | FLUX.1-schnell, all-in-one checkpoint | text to image | proposed |
+| Z-Image Turbo at half size, upscaled 2× with RealESRGAN (downloads the 67 MB upscaler) | text to image | proposed |
 
 ## Try it
 
@@ -109,8 +110,8 @@ Don't install `comfyui-mcp` from npm or let upstream's panel launcher start a se
 |---|---|---|
 | 0 | Reproducible fork, feature flag, seam audit | done, except the first CI run |
 | 1 | One end-to-end planning slice: tasks, catalog, recipes, validation, export | done |
-| 2 | Managed execution: action plans, approvals you give, a durable run controller, output checks, your review | in review |
-| 3 | More recipes, approved downloads and installs, bounded repair | planned |
+| 2 | Managed execution: action plans, approvals you give, a durable run controller, output checks, your review | done |
+| 3 | Approved downloads (in review), the certified recipe set, bounded repair and the acceptance suite | in progress |
 | 4 | Architect controls in the ComfyUI sidebar | planned |
 | 5 | Learning from measured runs | planned |
 | 6 | Video, audio, 3D and combined pipelines | planned |

@@ -2,6 +2,47 @@
 
 The progress log, newest entry on top. Each entry: `## YYYY-MM-DD HH:MM — Title` (time from `date`), the TODO items and PR or commit, an `Agent:` line, then **Implementation notes**, **Deviations** and **Insights**. The plan is in [TODO](TODO.md).
 
+## 2026-11-16 08:19 — Approved model downloads (milestone 4)
+
+TODO items: 4.1 to 4.7. GAPS Q25, Q26 (answered 03:19), Q30, Q31, Q32 (answered 07:50). PR on branch `feat/milestone-4`, which starts from `docs/phase-3-plan` (PR #12, unmerged).
+
+Agent: Opus 5.5, subagents: Explore (upstream's acquisition code), implementer (part A: contracts and planning; part B: downloads, admission, controller; the review fixes; two fixes from the live runs), assurance (milestone review), e2e-runner (three live runs).
+
+### Implementation notes
+
+- **Pinned sources.** A recipe pins each model file it can download in `modelSources`: Hugging Face repository, 40-character commit, path, sha256, size and licence. `scripts/architect/pin-source.mjs` reads those from Hugging Face's API for a maintainer. Planning and execution need no network, and the agent never names a source or a URL.
+- **A fourth candidate status, `acquirable`.** It applies when the only failing hard checks are model files with a pinned source that the policy of Q25 accepts: Hugging Face, `.safetensors`, the task's `modelDownloads` not `forbidden`, and at most `min(maxDownloadBytes, 40 GB)`. The status is derived again from the checks at select and admission, never read from storage. Ranking is feasible, acquirable, diagnostic, blocked.
+- **The approval.** `architect_run prepare` puts an `acquire_models` effect before `local_render`. The action plan's hash covers it, and its files must equal the candidate's acquisition. The approval names each file, its repository and commit, size, destination and the free disk left. It also names the recipe's tier, and for a `proposed` recipe says that an agent pinned its sources (Q30). A plan with downloads and no task wall time gets 1,800 s plus one second per 10 MB.
+- **The download.** `start` returns with the run in PREPARING, and the controller downloads one file at a time through upstream's download jobs:
+  - every redirect hop is checked against Hugging Face's hosts over `https`, through upstream's proxy decision;
+  - the file is staged next to its destination as `<file>.architect-<run id>`, a name ComfyUI doesn't list;
+  - its sha256, size and inode are checked, then it's linked into place and never overwrites;
+  - upstream's cache copy is removed;
+  - the 50 GB reserve is checked on every disk the download writes, counting other runs' open downloads.
+- **After placement.** The controller drops upstream's schema cache, and the candidate must validate as `feasible` on a fresh snapshot before the render. The controller also requires the consumed grant to bind the stored plan.
+- **Cancel and restart.** Cancel stops only the run's own jobs. A restart verifies staged and placed files again before they count.
+- **The record.** The lock and `run.json` record each acquired file with its source, commit and sha256, without machine paths.
+- **The candidate's disclosure.** It states a render-scale chain (Q31), and the new recipe `recipe-zimage-turbo.t2i-upscale2x` (`proposed`) uses `fromTaskDivisor` for it.
+- **Checks.**
+  - lint, build, asset counts, `check:vocabulary`, `check:unknown-collapse`, `vocab:export --check` and `docs:gen`: pass;
+  - Architect tests: 706, all pass;
+  - upstream's suite without `bridge-port-reclaim.test.ts`: 15,332 passed and 14 failed. The 13 baseline failures, plus one in `ui-bridge`, which also failed on an unchanged checkout of the branch.
+- **Live, on the reference target.**
+  - `stdio-smoke.mjs on --acquire`: the candidate was acquirable, start without approval was refused, and the run was approved in the terminal channel. RealESRGAN (66,857,836 bytes) was downloaded, its sha256 matched the pin, and it was placed in `~/ComfyUI-Shared/models/upscale_models/`, with nothing left in staging or in upstream's cache. The 2048×2048 render completed with its checks passed.
+  - `on --run` passes as in milestone 3.
+
+### Deviations
+
+- TODO 4.2 and 4.3 named a `SourceRegistryEntry`, a manifest with `gated`, and resolution over the network. Built instead: recipe pins, an `acquire_models` effect and offline planning. The registry comes with the template sources (Q32, TODO 5.2).
+- The first staging design, a `.architect-staging` folder under the model root, failed closed in the first live run. Upstream resolves a model folder through the server's extra-model-paths entry for that folder, and the staging folder resolved under another install's root. Staging is now a file name in the destination folder.
+- The second live run timed out in `start`. Each model-path resolution waits about 15 s on this machine, because upstream runs `lsof`, which hangs here. `start` now returns before downloads, and each file is resolved once. The smoke allows 20 minutes per run, because the same 1,024×1,024 render took 85 s once and 345 s another time.
+- Upstream sends a configured Hugging Face token with every download from `huggingface.co`; the preflight sends it only after a 401.
+
+### Insights
+
+- Upstream's downloader writes into its own cache first, on a disk the model root's check doesn't see. The review found it; no test covered it.
+- The live runs found two faults the unit tests couldn't: where a staging folder resolves under extra model paths, and the time `lsof` adds to each resolution. The fakes resolved instantly and to one root.
+
 ## 2026-11-16 03:52 — The docs folder is dev/
 
 Owner's request (2026-11-16). Commit on branch `feat/milestone-4`.

@@ -218,7 +218,9 @@ async function runTask(client, label, planId, acquiring, progress) {
   check(again.data?.run?.id === runId && again.data?.resumed === true, `${label} a second start returns the same run`);
   let status;
   let lastProgress = "";
-  const deadline = Date.now() + (acquiring ? 20 : 5) * 60 * 1000;
+  // A render on the reference target has taken from 85 s to almost 6 min for the same graph,
+  // depending on what ComfyUI held in memory; the limit leaves room for that.
+  const deadline = Date.now() + 20 * 60 * 1000;
   do {
     await new Promise((r) => setTimeout(r, 2000));
     status = await callRun(client, { action: "status", runId });
