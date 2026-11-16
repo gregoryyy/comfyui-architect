@@ -307,7 +307,7 @@ export class ArchitectPlanning {
   }
 
   /** Build, validate and rank candidates for a prepared plan (spec §9.2). */
-  async propose(request: { planId: string; proposals?: ProposedBinding[] }) {
+  async propose(request: { planId: string; proposals?: ProposedBinding[]; recipeIds?: string[] }) {
     const { store, now, newId } = this.deps;
     const { plan, task } = this.requirePlan(request.planId);
     if (plan.state === "NEEDS_INPUT") {
@@ -317,7 +317,22 @@ export class ArchitectPlanning {
       throw new PlanningError("GRAPH_CONFLICT", `plan ${plan.id} is ${plan.state}`, "Call prepare for a new plan.");
     }
     const { snapshot, readiness } = await this.environment(store.getSnapshot(plan.environmentId));
-    const recipes = this.recipes(task.media.kind);
+    const fitting = this.recipes(task.media.kind);
+    // The user may ask for particular recipes ("use FLUX.1-schnell"): only those are built, so
+    // one that ranks below three others can still be compared and chosen. A name that isn't
+    // among the fitting recipes is refused, not ignored, so the request can't silently widen.
+    let recipes = fitting;
+    if (request.recipeIds && request.recipeIds.length > 0) {
+      const unknown = request.recipeIds.filter((id) => !fitting.some((r) => r.id === id));
+      if (unknown.length > 0) {
+        throw new PlanningError(
+          "NO_FEASIBLE_CANDIDATE",
+          `not a recipe that fits this task: ${unknown.join(", ")}`,
+          "Use recipe IDs from prepare's `recipes`.",
+        );
+      }
+      recipes = fitting.filter((r) => request.recipeIds?.includes(r.id));
+    }
     const families = await this.observeFamilies(
       boundModelFiles({ task, snapshot, recipes, ...(request.proposals ? { proposals: request.proposals } : {}) }),
     );

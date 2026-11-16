@@ -283,6 +283,11 @@ export function registerArchitectTools(
       planId: z.string().optional().describe("propose, get, validate, select, export: the plan."),
       candidateId: z.string().optional().describe("validate, select: a candidate of the plan."),
       proposals: z.array(Proposal).max(24).optional().describe("propose: bindings you choose for recipes' slots."),
+      recipeIds: z
+        .array(z.string())
+        .max(8)
+        .optional()
+        .describe("propose: build candidates only from these recipes (IDs from prepare's `recipes`), e.g. when the user asks for one."),
       graphOf: z.string().optional().describe("get: a candidate ID whose compiled API graph to include."),
     },
     async (args) => {
@@ -300,7 +305,11 @@ export function registerArchitectTools(
             return reply(okEnvelope(`Task ${r.task.id} r${r.task.revision}, plan ${r.plan.id} (${r.plan.state}); ${r.recipes.length} fitting recipe(s).`, r, warnings));
           }
           case "propose": {
-            const r = await p.propose({ planId: need(args.planId, "planId", "propose"), ...(args.proposals ? { proposals: args.proposals } : {}) });
+            const r = await p.propose({
+              planId: need(args.planId, "planId", "propose"),
+              ...(args.proposals ? { proposals: args.proposals } : {}),
+              ...(args.recipeIds ? { recipeIds: args.recipeIds } : {}),
+            });
             const feasible = r.candidates.filter((c) => c.status === "feasible").length;
             const acquirable = r.candidates.filter((c) => c.status === "acquirable");
             const warnings = [

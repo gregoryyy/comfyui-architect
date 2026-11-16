@@ -489,7 +489,8 @@ async function recipeRun(client, label, recipe, task, downloads) {
   if (!planId) return `${id}: FAIL, prepare: ${prepared.summary}`;
   const bindings = bindingsFor(recipe);
   const proposals = Object.keys(bindings).length > 0 ? [{ recipeId: id, bindings }] : undefined;
-  const proposed = await callPlan(client, { action: "propose", planId, ...(proposals ? { proposals } : {}) });
+  // Only this recipe is built, so a recipe that ranks below others is still the one run.
+  const proposed = await callPlan(client, { action: "propose", planId, recipeIds: [id], ...(proposals ? { proposals } : {}) });
   const candidate = (proposed.data?.candidates ?? []).find((c) => c.recipe === `${id} r${recipe.revision}`);
   if (!candidate) {
     const blockers = Object.values(proposed.data?.plan?.blockers ?? {}).flat().filter((b) => String(b).startsWith(`${id}:`));

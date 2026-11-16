@@ -94,6 +94,17 @@ describe("ArchitectPlanning, prepare to export", () => {
     expect(lock.models).toEqual([expect.objectContaining({ slot: "checkpoint", folder: "checkpoints", file: best.bindings.checkpoint })]);
   });
 
+  it("builds only the recipes a request names, and refuses one that doesn't fit the task", async () => {
+    const { planning } = setup();
+    const prepared = await planning.prepare({ task: TASK });
+    const ids = prepared.recipes.map((r) => r.id);
+    const one = ids[ids.length - 1];
+    const proposed = await planning.propose({ planId: prepared.plan.id, recipeIds: [one] });
+    expect(proposed.candidates.length).toBeGreaterThan(0);
+    expect(new Set(proposed.candidates.map((c) => c.recipe.split(" ")[0]))).toEqual(new Set([one]));
+    await expect(planning.propose({ planId: prepared.plan.id, recipeIds: ["recipe-not-there"] })).rejects.toThrow(/not a recipe that fits this task: recipe-not-there/);
+  });
+
   it("asks for missing inputs and refuses to propose until they're given", async () => {
     const { planning } = setup();
     const prepared = await planning.prepare({ task: { ...TASK, media: { ...TASK.media, operation: "upscale" } } });
