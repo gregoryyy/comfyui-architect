@@ -24,14 +24,15 @@ import { resolveOllamaHost, warmOllama } from "../ollama-vram.js";
 import { type CancelQueuedResult, cancelQueuedJob } from "../queue-manager.js";
 import { WorkflowExecutionError } from "../../utils/errors.js";
 import { resolveToolSurfacePolicy, toolAllowed } from "../../tools/tool-surface-filter.js";
-import { getComfyUIBaseUrl, isOwnHostAddress } from "../../config.js";
+import { config, getComfyUIBaseUrl, isOwnHostAddress } from "../../config.js";
 import { sharpUnavailableMessage, tryLoadSharp } from "../sharp-loader.js";
-import { dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { z } from "zod";
 import {
   type LocalModel,
   type ModelListingCoverage,
   listLocalModelsWithCoverage,
+  localDownloadCacheIdentity,
   resolveDownloadTarget,
   shouldDispatchDownloadToManager,
 } from "../model-resolver.js";
@@ -43,6 +44,7 @@ import {
   startDownloadJob,
 } from "../download-jobs.js";
 import { readDownloadProgress } from "../download-progress.js";
+import { downloadFetch } from "../download-proxy.js";
 import type { InstalledModels } from "./schemas.js";
 
 export interface UpstreamFacade {
@@ -123,6 +125,23 @@ export interface UpstreamFacade {
    * model file placed a moment ago shows up in its loader's choices only after this.
    */
   forgetNodeSchemas(): void;
+  /**
+   * Where upstream's downloader keeps `url` in its download cache, derived by the function
+   * the writer itself uses (`localDownloadCacheIdentity`, no auth override): the cache
+   * directory, the completed entry, its hidden `.partial` while the transfer runs, and the
+   * entry's Content-Type sidecar. The writer downloads into the cache first and then links
+   * or copies the entry into the destination; the entry stays unless upstream's LRU limit
+   * (COMFYUI_LRU_CACHE_SIZE_GB) evicts it.
+   */
+  downloadCacheEntry(url: string): { dir: string; cachePath: string; partialPath: string; contentTypeSidecar: string };
+  /**
+   * A fetch with upstream's download network route: the same proxy decision
+   * (`download-proxy.ts`) its downloader makes for this URL, so a check before a download
+   * sees the hosts the download will see.
+   */
+  downloadFetch(url: string, init: RequestInit): Promise<Response>;
+  /** The Hugging Face token upstream would send (HF_TOKEN, HUGGINGFACE_TOKEN or its env file). */
+  huggingfaceToken(): string | undefined;
 }
 
 /**
@@ -227,6 +246,18 @@ export function createUpstreamFacade(): UpstreamFacade {
       };
     },
     forgetNodeSchemas: () => resetObjectInfoCache(),
+    downloadCacheEntry: (url) => {
+      const id = localDownloadCacheIdentity(url);
+      return {
+        dir: dirname(id.cachePath),
+        cachePath: id.cachePath,
+        partialPath: id.partialPath,
+        // download-cache.ts `cacheCtSidecar`, which upstream doesn't export.
+        contentTypeSidecar: join(dirname(id.cachePath), `.${basename(id.cachePath)}.ct`),
+      };
+    },
+    downloadFetch: (url, init) => downloadFetch(url, init),
+    huggingfaceToken: () => config.huggingfaceToken?.trim() || undefined,
   };
 }
 

@@ -7,7 +7,8 @@
 // dialog only the user can answer, or the terminal command. A verdict the agent relays is
 // stored as the agent's report and never counts as the user's (spec §16.1).
 
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { join, sep } from "node:path";
 import { z } from "zod";
 import { type ModelAcquirer, acquiredLockEntry, acquisitionView } from "./acquisition.js";
 import {
@@ -60,6 +61,28 @@ export interface ExecutionDeps extends AdmissionDeps {
 }
 
 const LockObject = z.record(z.string(), z.unknown());
+
+/**
+ * A copy of `value` with machine-specific paths made portable (spec §15.5): a model root
+ * becomes the path below it (`checkpoints/x.safetensors`), the root itself `<model root>`,
+ * and the home directory `~`. Applied to the exported run record, not to the store.
+ */
+export function portablePaths(value: unknown, roots: readonly string[]): unknown {
+  const ordered = [...new Set(roots)].sort((a, b) => b.length - a.length);
+  const home = homedir();
+  const fix = (text: string): string => {
+    let out = text;
+    for (const root of ordered) out = out.split(`${root}${sep}`).join("").split(root).join("<model root>");
+    return home.length > 1 ? out.split(home).join("~") : out;
+  };
+  const walk = (v: unknown): unknown => {
+    if (typeof v === "string") return fix(v);
+    if (Array.isArray(v)) return v.map(walk);
+    if (v !== null && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+    return v;
+  };
+  return walk(value);
+}
 
 /** The idempotency key of a run: one per target, task revision, plan and action plan (spec §15.4). */
 export function idempotencyKey(actionPlan: ActionPlan): string {
@@ -364,6 +387,7 @@ export class ArchitectExecution {
     const lockText = lock === undefined ? undefined : `${JSON.stringify(lock, null, 2)}\n`;
     const files: Record<string, string> = {
       "run.json": `${JSON.stringify(
+        portablePaths(
         {
           run,
           lineage: {
@@ -379,6 +403,7 @@ export class ArchitectExecution {
               ? {
                   acquisitions: acquisitions.map((a) => ({
                     ...acquiredLockEntry(a),
+                    ...(a.placedPath ? { placed: `${a.folder}/${a.file}` } : {}),
                     state: a.state,
                     pinnedSha256: a.source.sha256,
                     pinnedSizeBytes: a.source.sizeBytes,
@@ -391,6 +416,8 @@ export class ArchitectExecution {
           verdicts: verdictsOf(run, records, this.submitted(run.id)),
           events: store.listRunEvents(run.id),
         },
+          acquisitions.map((a) => a.destinationRoot),
+        ),
         null,
         2,
       )}\n`,

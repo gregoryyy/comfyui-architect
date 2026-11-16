@@ -51,6 +51,7 @@ import {
   StoredRecordError,
   TaskSpec,
   type WorkflowKind,
+  actionPlanHash,
   canAcquisitionTransition,
   canTransition,
   parseStored,
@@ -449,6 +450,9 @@ function prepareStatements(db: Database.Database) {
     acquisition: db.prepare("SELECT id, run_id, payload FROM acquisitions WHERE id = ?"),
     // rowid order is creation order, which is the order of the action plan's manifest.
     acquisitionsForRun: db.prepare("SELECT id, run_id, payload FROM acquisitions WHERE run_id = ? ORDER BY rowid"),
+    openAcquisitions: db.prepare(
+      "SELECT id, run_id, payload FROM acquisitions WHERE state IN ('planned', 'downloading', 'verifying') ORDER BY rowid",
+    ),
     insertAcquisition: db.prepare(
       `INSERT INTO acquisitions (id, run_id, state, folder, file, sha256, created_at, updated_at, payload)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1366,6 +1370,12 @@ export class ArchitectStore {
       if (!actionPlan) throw new StoreConflictError(`action plan ${run.actionPlanId} is not stored`);
       const effect = actionPlan.effects.find((e): e is AcquireModelsEffect => e.kind === "acquire_models");
       if (!effect) throw new StoreConflictError(`action plan ${actionPlan.id} acquires no model files`);
+      // The files come from the plan the user approved: the grant the run consumed must bind
+      // this plan's hash (spec §14.2), or the plan isn't the approved one.
+      const grant = run.grantId === undefined ? undefined : this.getGrant(run.grantId);
+      if (!grant || grant.actionPlanId !== actionPlan.id || grant.actionPlanHash !== actionPlanHash(actionPlan)) {
+        throw new StoreConflictError(`run ${run.id}'s grant doesn't bind action plan ${actionPlan.id} as it is stored`);
+      }
       const key = (f: { folder: string; file: string; source: unknown; destinationRoot: string }) =>
         canonicalJson({ folder: f.folder, file: f.file, source: f.source, destinationRoot: f.destinationRoot });
       const existing = this.listAcquisitions(run.id);
@@ -1412,6 +1422,11 @@ export class ArchitectStore {
   getAcquisition(id: string): AcquisitionRecord | undefined {
     const row = this.stmts.acquisition.get(id);
     return row === undefined ? undefined : readAcquisition(row);
+  }
+
+  /** Every run's acquisitions that aren't final: what other downloads still need disk for. */
+  listOpenAcquisitions(): AcquisitionRecord[] {
+    return this.stmts.openAcquisitions.all().map(readAcquisition);
   }
 
   /** A run's acquisitions in manifest order; empty when it has none. */

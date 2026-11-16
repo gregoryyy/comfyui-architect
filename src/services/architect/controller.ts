@@ -46,6 +46,7 @@ import {
   type RunRecord,
   type RunState,
   type TaskSpec,
+  actionPlanHash,
 } from "./schemas.js";
 import { type ArchitectStore, type RunPatch, StoreConflictError } from "./store.js";
 import { ImageDecoderUnavailableError, type SubmitOutcome, type UpstreamFacade } from "./upstream.js";
@@ -409,6 +410,15 @@ export class RunController {
     const fail = (code: RunError["code"], message: string) => this.move(run, "FAILED", message, { patch: { error: { code, message } } });
     const { acquirer, revalidate } = this.deps;
     if (!acquirer) return fail("INTERNAL_ERROR", "this server can't acquire model files; nothing was downloaded");
+    // The downloads are the approved ones only if the grant the run consumed binds this
+    // action plan's hash as stored now (spec §14.2); the store checks it again when it
+    // creates the acquisitions.
+    const actionPlan = this.deps.store.getActionPlan(run.actionPlanId);
+    const grant = run.grantId === undefined ? undefined : this.deps.store.getGrant(run.grantId);
+    if (!actionPlan || !grant || grant.actionPlanId !== actionPlan.id || grant.actionPlanHash !== actionPlanHash(actionPlan)) {
+      if (this.deps.store.listAcquisitions(run.id).length > 0) await acquirer.stop(run, { failed: { code: "APPROVAL_INVALIDATED", message: "the run's grant doesn't bind its action plan" } });
+      return fail("APPROVAL_INVALIDATED", `run ${run.id}'s grant doesn't bind its action plan as stored; nothing more is downloaded`);
+    }
     const progress = await acquirer.step(run, effect);
     const current = this.require(run.id);
     // Cancelled or moved by another actor during the step: theirs to finish.

@@ -30,6 +30,8 @@ const dl = vi.hoisted(() => ({
   progress: null as Record<string, unknown> | null,
   progressIds: [] as string[],
   cancel: {} as Record<string, unknown>,
+  identityCalls: [] as unknown[][],
+  fetchCalls: [] as unknown[][],
 }));
 
 vi.mock("../../services/model-resolver.js", async (importOriginal) => {
@@ -42,6 +44,21 @@ vi.mock("../../services/model-resolver.js", async (importOriginal) => {
       return { targetDir: `/models/${sub}`, filename: file, targetPath: `/models/${sub}/${file}` };
     },
     shouldDispatchDownloadToManager: async () => dl.manager,
+    localDownloadCacheIdentity: (url: string, auth?: unknown) => {
+      dl.identityCalls.push([url, auth]);
+      return { cachePath: "/home/u/.comfyui-mcp/cache/abc.safetensors", partialPath: "/home/u/.comfyui-mcp/cache/.abc.safetensors.partial" };
+    },
+  };
+});
+
+vi.mock("../../services/download-proxy.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../services/download-proxy.js")>();
+  return {
+    ...actual,
+    downloadFetch: async (url: string, init?: RequestInit) => {
+      dl.fetchCalls.push([url, init]);
+      return new Response(null, { status: 200 });
+    },
   };
 });
 
@@ -257,5 +274,41 @@ describe("the download functions (TODO 4.5.1)", () => {
     enqueue.resets = 0;
     createUpstreamFacade().forgetNodeSchemas();
     expect(enqueue.resets).toBe(1);
+  });
+});
+
+describe("the download cache, network route and token (TODO 4.5.1)", () => {
+  it("names the cache entry upstream's writer derives for the URL, with no auth override, and its sidecar", () => {
+    dl.identityCalls = [];
+    expect(createUpstreamFacade().downloadCacheEntry("https://huggingface.co/a/b/resolve/c/x.safetensors")).toEqual({
+      dir: "/home/u/.comfyui-mcp/cache",
+      cachePath: "/home/u/.comfyui-mcp/cache/abc.safetensors",
+      partialPath: "/home/u/.comfyui-mcp/cache/.abc.safetensors.partial",
+      contentTypeSidecar: "/home/u/.comfyui-mcp/cache/.abc.safetensors.ct",
+    });
+    expect(dl.identityCalls).toEqual([["https://huggingface.co/a/b/resolve/c/x.safetensors", undefined]]);
+  });
+
+  it("sends a preflight through upstream's download fetch, the one with its proxy decision", async () => {
+    dl.fetchCalls = [];
+    const init = { method: "HEAD", redirect: "manual" as const };
+    expect((await createUpstreamFacade().downloadFetch("https://huggingface.co/x", init)).status).toBe(200);
+    expect(dl.fetchCalls).toEqual([["https://huggingface.co/x", init]]);
+  });
+
+  it("reads upstream's Hugging Face token, and none when it's unset or blank", () => {
+    const saved = { hf: process.env.HF_TOKEN, hug: process.env.HUGGINGFACE_TOKEN };
+    try {
+      delete process.env.HUGGINGFACE_TOKEN;
+      process.env.HF_TOKEN = " hf_abc ";
+      expect(createUpstreamFacade().huggingfaceToken()).toBe("hf_abc");
+      process.env.HF_TOKEN = "  ";
+      expect(createUpstreamFacade().huggingfaceToken()).toBeUndefined();
+    } finally {
+      if (saved.hf === undefined) delete process.env.HF_TOKEN;
+      else process.env.HF_TOKEN = saved.hf;
+      if (saved.hug === undefined) delete process.env.HUGGINGFACE_TOKEN;
+      else process.env.HUGGINGFACE_TOKEN = saved.hug;
+    }
   });
 });

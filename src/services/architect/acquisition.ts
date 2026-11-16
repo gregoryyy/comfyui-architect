@@ -8,8 +8,11 @@
 // - Architect follows the redirect chain itself with HEAD requests, allowing only https and
 //   Hugging Face's hosts, then hands upstream's downloader the pinned URL. Upstream follows
 //   the chain again unchecked; the sha256 below rejects any other content;
-// - upstream writes the file into `<model root>/.architect-staging/<run id>/`, a folder
-//   ComfyUI doesn't list;
+// - upstream downloads into its own download cache, then links or copies the entry into
+//   `<model root>/.architect-staging/<run id>/`, a folder ComfyUI doesn't list. Free disk
+//   is checked on the model root's disk and the cache's, counting other runs' unfinished
+//   downloads as reserved; after placement Architect removes upstream's cache copy of that
+//   one file, which upstream would otherwise keep;
 // - Architect hashes the staged file and compares sha256 and size with the pin; only a
 //   match is placed, by `link` then `unlink`, so an existing file is never overwritten.
 //
@@ -20,7 +23,7 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants, statfsSync } from "node:fs";
 import * as fsp from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { formatBytes } from "./acquisition-policy.js";
 import {
@@ -33,7 +36,7 @@ import {
   type RunRecord,
 } from "./schemas.js";
 import { type AcquisitionPatch, type ArchitectStore, StoreConflictError } from "./store.js";
-import type { UpstreamFacade } from "./upstream.js";
+import type { DownloadStatus, UpstreamFacade } from "./upstream.js";
 
 /** The folder under a model root that holds a run's staged files. */
 export const STAGING_DIR = ".architect-staging";
@@ -48,7 +51,14 @@ const PREFLIGHT_TIMEOUT_MS = 30_000;
 /** The facade methods acquisition uses. */
 export type AcquisitionFacade = Pick<
   UpstreamFacade,
-  "resolveModelDestination" | "downloadRoutesToManager" | "startDownload" | "downloadStatus" | "cancelDownload" | "forgetNodeSchemas"
+  | "resolveModelDestination"
+  | "downloadRoutesToManager"
+  | "startDownload"
+  | "downloadStatus"
+  | "cancelDownload"
+  | "forgetNodeSchemas"
+  | "downloadCacheEntry"
+  | "huggingfaceToken"
 >;
 
 /** A HEAD request without following redirects: the subset of `fetch` the preflight uses. */
@@ -58,30 +68,51 @@ export type HeadFetch = (
 ) => Promise<{ status: number; headers: { get(name: string): string | null } }>;
 
 /** File operations acquisition performs; node:fs by default, injectable for tests. */
+/** A file's identity on disk: placement compares it before and after the link. */
+export interface FileIdentity {
+  dev: number;
+  ino: number;
+}
+
+/** What hashing a file read from the open handle: its digest, size and identity. */
+export interface HashedFile extends FileIdentity {
+  sha256: string;
+  bytes: number;
+}
+
 export interface AcquisitionFs {
-  lstat(path: string): Promise<{ isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean; size: number }>;
+  lstat(path: string): Promise<{ isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean; size: number; dev: number; ino: number }>;
   realpath(path: string): Promise<string>;
   mkdir(path: string, mode: number): Promise<void>;
   link(existing: string, newPath: string): Promise<void>;
   unlink(path: string): Promise<void>;
   rmdir(path: string): Promise<void>;
-  /** sha256 and size of a regular file, read without following a symbolic link. */
-  hashFile(path: string): Promise<{ sha256: string; bytes: number }>;
-  /** Bytes available to this user on the filesystem holding `path` (statfs bavail * bsize). */
+  /**
+   * sha256 and size of a regular file, read without following a symbolic link, with the
+   * device and inode of the open handle (fstat), so the bytes hashed are tied to one file.
+   */
+  hashFile(path: string): Promise<HashedFile>;
+  /**
+   * Bytes available to this user on the filesystem holding `path` (statfs bavail * bsize),
+   * read at its nearest existing ancestor, since a cache directory may not exist yet.
+   */
   freeDiskBytes(path: string): Promise<number>;
+  /** The device id of the filesystem holding `path`, at its nearest existing ancestor. */
+  deviceOf(path: string): Promise<number>;
 }
 
 /** Everything acquisition reaches outside the process. */
 export interface AcquisitionIo {
   facade: AcquisitionFacade;
+  /** HEAD requests for the preflight; live, upstream's download fetch with its proxy route. */
   fetch: HeadFetch;
   fs: AcquisitionFs;
-  /** The environment: `HF_ENDPOINT` and `HF_TOKEN` are read from it. */
+  /** The environment: `HF_ENDPOINT` is read from it. */
   env: Readonly<Record<string, string | undefined>>;
 }
 
 /** sha256 and size of a file opened with O_NOFOLLOW, so a symbolic link is never read through. */
-async function hashFileNoFollow(path: string): Promise<{ sha256: string; bytes: number }> {
+async function hashFileNoFollow(path: string): Promise<HashedFile> {
   const handle = await fsp.open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
   try {
     const stat = await handle.stat();
@@ -95,9 +126,24 @@ async function hashFileNoFollow(path: string): Promise<{ sha256: string; bytes: 
       hash.update(buffer.subarray(0, bytesRead));
       bytes += bytesRead;
     }
-    return { sha256: hash.digest("hex"), bytes };
+    return { sha256: hash.digest("hex"), bytes, dev: stat.dev, ino: stat.ino };
   } finally {
     await handle.close();
+  }
+}
+
+/** The nearest ancestor of `path` that exists (the path itself when it does). */
+async function existingAncestor(path: string): Promise<string> {
+  let p = resolve(path);
+  for (;;) {
+    try {
+      await fsp.stat(p);
+      return p;
+    } catch (err) {
+      const parent = dirname(p);
+      if (errnoOf(err) !== "ENOENT" || parent === p) throw err;
+      p = parent;
+    }
   }
 }
 
@@ -113,14 +159,18 @@ export const NODE_ACQUISITION_FS: AcquisitionFs = {
   rmdir: (p) => fsp.rmdir(p),
   hashFile: hashFileNoFollow,
   freeDiskBytes: async (p) => {
-    const s = await fsp.statfs(p);
+    const s = await fsp.statfs(await existingAncestor(p));
     return Number(s.bavail) * Number(s.bsize);
   },
+  deviceOf: async (p) => (await fsp.stat(await existingAncestor(p))).dev,
 };
 
-/** The live I/O: upstream through the facade, the global fetch, node:fs and process.env. */
-export function defaultAcquisitionIo(facade: AcquisitionFacade): AcquisitionIo {
-  return { facade, fetch: (url, init) => fetch(url, init), fs: NODE_ACQUISITION_FS, env: process.env };
+/**
+ * The live I/O: upstream through the facade, its download fetch for the preflight (so the
+ * HEADs take the proxy route the download takes), node:fs and process.env.
+ */
+export function defaultAcquisitionIo(facade: AcquisitionFacade & Pick<UpstreamFacade, "downloadFetch">): AcquisitionIo {
+  return { facade, fetch: (url, init) => facade.downloadFetch(url, init), fs: NODE_ACQUISITION_FS, env: process.env };
 }
 
 /**
@@ -178,23 +228,45 @@ export function hfEndpointRefusal(env: AcquisitionIo["env"]): string | undefined
 
 /** The preflight's answer: the chain is allowed, refused by policy, or couldn't be read. */
 export type PreflightResult =
-  | { ok: true; finalUrl: string; hops: number }
+  /** `headRefused`: the last host refused HEAD (403/405) on a URL Hugging Face redirected to with the pinned size and hash. */
+  | { ok: true; finalUrl: string; hops: number; headRefused?: number }
   | { ok: false; refused: true; message: string }
   | { ok: false; refused: false; message: string };
+
+/** What the preflight is given besides the URL. */
+export interface PreflightOptions {
+  env?: AcquisitionIo["env"];
+  /** Upstream's Hugging Face token; sent only to huggingface.co after a 401. */
+  token?: string;
+  /** The pin, compared with the X-Linked-Size and X-Linked-Etag Hugging Face sends with its redirect. */
+  pinned?: Pick<ModelSource, "sha256" | "sizeBytes">;
+}
+
+/** An X-Linked-Etag value without quotes or a weak prefix. */
+function linkedEtag(raw: string | null): string | undefined {
+  const v = raw?.trim().replace(/^W\//, "").replace(/^"|"$/g, "").toLowerCase();
+  return v ? v : undefined;
+}
 
 /**
  * Follow the redirect chain of `url` with HEAD requests (redirect: "manual"): at most five
  * hops, every URL `https:` on a Hugging Face host, a relative Location resolved against the
- * URL it came from, and a final 2xx answer. `HF_TOKEN` is sent only to huggingface.co, and
- * only after it answered 401 without one: a token only for gated repositories (GAPS Q25). A
- * request that fails is `refused: false`, a failed observation, never a refusal of the host.
+ * URL it came from, and a final 2xx answer. The token is sent only to huggingface.co, and
+ * only after it answered 401 without one: a token only for gated repositories (GAPS Q25).
+ *
+ * Hugging Face's redirect to its CDN carries X-Linked-Size and X-Linked-Etag (the file's
+ * sha256 for LFS files). With a pin, a mismatch refuses before anything is downloaded; a
+ * match lets the last hop answer 403 or 405 instead of 2xx, since a pre-signed CDN URL may
+ * be signed for GET only. The sha256 check before placement still decides about the bytes.
+ * A request that fails is `refused: false`, a failed observation, never a refusal.
  */
-export async function preflightRedirects(url: string, fetchFn: HeadFetch, env: AcquisitionIo["env"] = {}): Promise<PreflightResult> {
-  const endpoint = hfEndpointRefusal(env);
+export async function preflightRedirects(url: string, fetchFn: HeadFetch, opts: PreflightOptions = {}): Promise<PreflightResult> {
+  const endpoint = hfEndpointRefusal(opts.env ?? {});
   if (endpoint) return { ok: false, refused: true, message: endpoint };
-  const token = env.HF_TOKEN?.trim();
+  const token = opts.token?.trim();
   let current = url;
   let withToken = false;
+  let linkedMatch = false;
   for (let hop = 0; ; ) {
     let parsed: URL;
     try {
@@ -221,6 +293,17 @@ export async function preflightRedirects(url: string, fetchFn: HeadFetch, env: A
       continue;
     }
     if (res.status >= 300 && res.status < 400) {
+      if (opts.pinned && parsed.hostname.toLowerCase() === "huggingface.co") {
+        const size = res.headers.get("x-linked-size");
+        const etag = linkedEtag(res.headers.get("x-linked-etag"));
+        if (size !== null && Number(size) !== opts.pinned.sizeBytes) {
+          return { ok: false, refused: true, message: `Hugging Face reports ${size} bytes for this commit and path, the pin says ${opts.pinned.sizeBytes}` };
+        }
+        if (etag !== undefined && /^[0-9a-f]{64}$/.test(etag) && etag !== opts.pinned.sha256) {
+          return { ok: false, refused: true, message: `Hugging Face reports sha256 ${short(etag)}… for this commit and path, the pin says ${short(opts.pinned.sha256)}…` };
+        }
+        linkedMatch = size !== null && etag === opts.pinned.sha256;
+      }
       const location = res.headers.get("location");
       if (!location) return { ok: false, refused: true, message: `${parsed.hostname} answered ${res.status} without a Location` };
       hop += 1;
@@ -235,6 +318,9 @@ export async function preflightRedirects(url: string, fetchFn: HeadFetch, env: A
       continue;
     }
     if (res.status >= 200 && res.status < 300) return { ok: true, finalUrl: parsed.toString(), hops: hop };
+    if ((res.status === 403 || res.status === 405) && hop > 0 && linkedMatch) {
+      return { ok: true, finalUrl: parsed.toString(), hops: hop, headRefused: res.status };
+    }
     return {
       ok: false,
       refused: true,
@@ -303,7 +389,7 @@ export async function prepareStaging(fs: AcquisitionFs, root: string, runId: str
 
 /** What a check of a staged file found. */
 export type VerifyResult =
-  | { kind: "match"; sha256: string; bytes: number }
+  | { kind: "match"; sha256: string; bytes: number; dev: number; ino: number }
   /** The bytes aren't the pinned ones; the staged file has been deleted. */
   | { kind: "mismatch"; sha256?: string; bytes: number; message: string }
   | { kind: "missing" }
@@ -341,7 +427,7 @@ export async function verifyStaged(fs: AcquisitionFs, stagedPath: string, source
       message: `size mismatch: expected ${source.sizeBytes} bytes (${formatBytes(source.sizeBytes)}), observed ${st.size}`,
     });
   }
-  let hashed: { sha256: string; bytes: number };
+  let hashed: HashedFile;
   try {
     hashed = await fs.hashFile(stagedPath);
   } catch (err) {
@@ -355,7 +441,7 @@ export async function verifyStaged(fs: AcquisitionFs, stagedPath: string, source
       message: `sha256 mismatch: expected ${short(source.sha256)}…, observed ${short(hashed.sha256)}… (${hashed.bytes} of ${source.sizeBytes} bytes)`,
     });
   }
-  return { kind: "match", ...hashed };
+  return { kind: "match", sha256: hashed.sha256, bytes: hashed.bytes, dev: hashed.dev, ino: hashed.ino };
 }
 
 /** What placement did. */
@@ -367,15 +453,19 @@ export type PlaceResult =
  * Place a verified staged file as `<root>/<folder>/<file>` with `link` and `unlink`, so the
  * destination is created only if it doesn't exist. Refused: a staging folder or file that is
  * a symbolic link, and a destination whose parent's real path isn't inside the root's (SEC
- * T9). When the destination exists, it is hashed: the pinned bytes count as placed (someone
- * installed the file meanwhile); anything else fails and is left untouched. The staged file
- * is removed either way.
+ * T9). `verified` is the device and inode of the handle that was hashed: the staged file
+ * must still be that inode just before the link, and the new destination must be it just
+ * after; otherwise only the link just made is removed and placement fails, so a file
+ * swapped in after hashing never stays in a model folder. When the destination exists, it
+ * is hashed: the pinned bytes count as placed (someone installed the file meanwhile);
+ * anything else fails and is left untouched. The staged file is removed either way.
  */
 export async function placeStaged(
   fs: AcquisitionFs,
-  args: { root: string; folder: string; file: string; stagedPath: string; source: ModelSource },
+  args: { root: string; folder: string; file: string; stagedPath: string; source: ModelSource; verified: FileIdentity },
 ): Promise<PlaceResult> {
-  const { root, folder, file, stagedPath, source } = args;
+  const { root, folder, file, stagedPath, source, verified } = args;
+  const same = (a: FileIdentity) => a.dev === verified.dev && a.ino === verified.ino;
   const dest = join(root, folder, file);
   const removeStaged = async () => {
     try {
@@ -408,13 +498,40 @@ export async function placeStaged(
     return { ok: false, message: `couldn't resolve the model folder ${parent}: ${messageOf(err)}` };
   }
   try {
+    const before = await fs.lstat(stagedPath);
+    if (before.isSymbolicLink() || !same(before)) {
+      await removeStaged();
+      return { ok: false, message: `the staged ${stagedPath} was replaced after it was verified; nothing was placed` };
+    }
+  } catch (err) {
+    return { ok: false, message: `couldn't read the staged file ${stagedPath}: ${messageOf(err)}` };
+  }
+  try {
     await fs.link(stagedPath, dest);
+    let placedOk = false;
+    try {
+      const after = await fs.lstat(dest);
+      placedOk = !after.isSymbolicLink() && same(after);
+    } catch {
+      // Unreadable right after the link: it can't be shown to be the verified file.
+    }
+    if (!placedOk) {
+      // The link just made is Architect's own: the destination didn't exist before it.
+      try {
+        await fs.unlink(dest);
+      } catch (e) {
+        await removeStaged();
+        return { ok: false, message: `${dest} isn't the verified file after the link, and removing the link failed: ${messageOf(e)}` };
+      }
+      await removeStaged();
+      return { ok: false, message: `the staged file changed between verification and placement; the new link at ${dest} was removed` };
+    }
   } catch (err) {
     if (errnoOf(err) !== "EEXIST") {
       return { ok: false, message: `couldn't place ${dest}: ${messageOf(err)} (the staging folder must be on the model folder's filesystem)` };
     }
     // Someone else's file, or the pinned one installed meanwhile: hash it, never replace it.
-    let existing: { sha256: string; bytes: number };
+    let existing: HashedFile;
     try {
       const st = await fs.lstat(dest);
       if (st.isSymbolicLink() || !st.isFile()) {
@@ -463,6 +580,76 @@ export async function removeStaging(fs: AcquisitionFs, root: string, runId: stri
     }
   }
   return problems;
+}
+
+// ---------------------------------------------------------------------------------------
+// Free disk (GAPS Q25: at least 50 GB stays free)
+
+/** Bytes of a file a download still has to write: its size less the cache `.partial` so far. */
+async function remainingBytes(io: AcquisitionIo, rec: AcquisitionRecord): Promise<number> {
+  if (rec.state !== "downloading") return rec.source.sizeBytes;
+  try {
+    const st = await io.fs.lstat(io.facade.downloadCacheEntry(pinnedUrl(rec.source)).partialPath);
+    return Math.max(0, rec.source.sizeBytes - st.size);
+  } catch {
+    // No partial readable: the whole file is still to come, the conservative reading.
+    return rec.source.sizeBytes;
+  }
+}
+
+/**
+ * Whether downloading `files` leaves at least `minFreeBytes` free on every disk it writes:
+ * the model root's, and upstream's download cache's when that is another device (upstream
+ * writes the file into its cache first, then links it into the staging folder on the same
+ * device or copies it on another, so a file counts once per device it lands on). The
+ * unfinished downloads of other runs count as reserved on their devices. A disk that can't
+ * be read is refused, not passed (spec §7.3). Undefined when every disk has room.
+ */
+export async function diskShortfall(
+  io: AcquisitionIo,
+  store: Pick<ArchitectStore, "listOpenAcquisitions">,
+  files: readonly { destinationRoot: string; source: ModelSource }[],
+  minFreeBytes: number,
+  opts: { exceptRunId?: string } = {},
+): Promise<string | undefined> {
+  const devices = new Map<number, { path: string; need: number; reserved: number }>();
+  const add = async (path: string, field: "need" | "reserved", bytes: number) => {
+    const dev = await io.fs.deviceOf(path);
+    const d = devices.get(dev) ?? { path, need: 0, reserved: 0 };
+    d[field] += bytes;
+    devices.set(dev, d);
+    return dev;
+  };
+  const count = async (root: string, source: ModelSource, field: "need" | "reserved", bytes: number) => {
+    const rootDev = await add(root, field, bytes);
+    const cacheDir = io.facade.downloadCacheEntry(pinnedUrl(source)).dir;
+    if ((await io.fs.deviceOf(cacheDir)) !== rootDev) await add(cacheDir, field, bytes);
+  };
+  try {
+    for (const f of files) await count(f.destinationRoot, f.source, "need", f.source.sizeBytes);
+    for (const other of store.listOpenAcquisitions()) {
+      if (other.runId === opts.exceptRunId) continue;
+      await count(other.destinationRoot, other.source, "reserved", await remainingBytes(io, other));
+    }
+  } catch (err) {
+    return `the disks the download writes couldn't be identified: ${messageOf(err)}`;
+  }
+  for (const d of devices.values()) {
+    let free: number;
+    try {
+      free = await io.fs.freeDiskBytes(d.path);
+    } catch (err) {
+      return `the free disk under ${d.path} couldn't be read (${messageOf(err)})`;
+    }
+    if (free - d.need - d.reserved < minFreeBytes) {
+      return (
+        `${formatBytes(free)} free on the disk of ${d.path}; ${formatBytes(d.need)} to download` +
+        (d.reserved > 0 ? ` and ${formatBytes(d.reserved)} still to come for other runs' downloads` : "") +
+        ` would leave less than ${formatBytes(minFreeBytes)}`
+      );
+    }
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -576,7 +763,7 @@ export class ModelAcquirer {
       let bytesSoFar: number | undefined;
       if (r.state === "downloading" && r.jobId) {
         try {
-          bytesSoFar = (await this.deps.io.facade.downloadStatus(r.jobId)).bytes;
+          bytesSoFar = await this.bytesSoFar(r, await this.deps.io.facade.downloadStatus(r.jobId));
         } catch {
           // Progress is shown only when upstream reports it; its absence claims nothing.
         }
@@ -621,20 +808,11 @@ export class ModelAcquirer {
     const endpoint = hfEndpointRefusal(io.env);
     if (endpoint) return void fail(endpoint);
 
-    // GAPS Q25: at least 50 GB stays free after each file. A free-disk reading that fails
-    // is a hard unknown and blocks the download (spec §7.3).
-    let free: number;
-    try {
-      free = await io.fs.freeDiskBytes(rec.destinationRoot);
-    } catch (err) {
-      return void fail(`the free disk under ${rec.destinationRoot} couldn't be read (${messageOf(err)}); nothing was downloaded`);
-    }
-    if (free - rec.source.sizeBytes < effect.minFreeBytes) {
-      return void fail(
-        `${formatBytes(free)} free under ${rec.destinationRoot}; after ${formatBytes(rec.source.sizeBytes)} less than ` +
-          `${formatBytes(effect.minFreeBytes)} would remain`,
-      );
-    }
+    // GAPS Q25: at least 50 GB stays free after each file, on the model root's disk and the
+    // download cache's, with other runs' downloads reserved. A reading that fails is a hard
+    // unknown and blocks the download (spec §7.3).
+    const shortfall = await diskShortfall(io, this.deps.store, [rec], effect.minFreeBytes, { exceptRunId: run.id });
+    if (shortfall) return void fail(`${shortfall}; nothing was downloaded`);
 
     const staging = await prepareStaging(io.fs, rec.destinationRoot, run.id);
     if (!staging.ok) return void fail(staging.message);
@@ -663,7 +841,7 @@ export class ModelAcquirer {
 
     const attempt = attempts + 1;
     const url = pinnedUrl(rec.source);
-    const pre = await preflightRedirects(url, io.fetch, io.env);
+    const pre = await preflightRedirects(url, io.fetch, { env: io.env, token: io.facade.huggingfaceToken(), pinned: rec.source });
     if (!pre.ok) {
       if (pre.refused) return void fail(`redirect check: ${pre.message}`);
       this.note(run, rec, `download attempt ${attempt}: ${pre.message}`, { attempt });
@@ -676,7 +854,12 @@ export class ModelAcquirer {
       this.note(run, rec, `download attempt ${attempt}: upstream didn't start the download: ${messageOf(err)}`, { attempt });
       return;
     }
-    this.note(run, rec, `download attempt ${attempt}: job ${jobId}, redirects checked (${pre.hops} hop(s), ending at ${new URL(pre.finalUrl).hostname})`, {
+    this.note(
+      run,
+      rec,
+      `download attempt ${attempt}: job ${jobId}, redirects checked (${pre.hops} hop(s), ending at ${new URL(pre.finalUrl).hostname}` +
+        `${pre.headRefused ? `, which refused HEAD with ${pre.headRefused} after Hugging Face named the pinned size and sha256` : ""})`,
+      {
       attempt,
       jobId,
     });
@@ -702,12 +885,14 @@ export class ModelAcquirer {
         return;
       case "downloading": {
         // The pin says how big the file is: a transfer that announces or reaches more is
-        // stopped rather than left to fill the disk.
+        // stopped rather than left to fill the disk. Without upstream's progress channel
+        // (stdio) the bytes so far are the size of upstream's cache `.partial`.
+        const bytes = await this.bytesSoFar(rec, status);
         const over =
           status.totalBytes !== undefined && status.totalBytes !== rec.source.sizeBytes
             ? `the server announced ${status.totalBytes} bytes, the pin says ${rec.source.sizeBytes}`
-            : status.bytes !== undefined && status.bytes > rec.source.sizeBytes
-              ? `${status.bytes} bytes received, more than the pinned ${rec.source.sizeBytes}`
+            : bytes !== undefined && bytes > rec.source.sizeBytes
+              ? `${bytes} bytes received, more than the pinned ${rec.source.sizeBytes}`
               : undefined;
         if (over && rec.jobId) {
           let cancelled: { cancelled: boolean; message: string };
@@ -731,8 +916,20 @@ export class ModelAcquirer {
         if (verifying) await this.verifyAndPlace(run, verifying, true);
         return;
       }
+      case "cancelled": {
+        // Someone stopped the job outside the run (upstream's download tray, its download
+        // tool): that is their decision, so the download isn't started again.
+        await this.deleteStaged(rec);
+        this.move(
+          run,
+          rec,
+          "cancelled",
+          { error: { code: "DEPENDENCY_UNAVAILABLE", message: "the download was cancelled outside the run" } },
+          `job ${rec.jobId ?? "(none)"} was cancelled outside the run; it isn't restarted`,
+        );
+        return;
+      }
       case "error":
-      case "cancelled":
       case "missing": {
         const why = `job ${rec.jobId ?? "(none)"} is ${status.status}${status.error ? `: ${status.error}` : ""}`;
         // A staged file may be whole: the job's record can be lost with the process after the
@@ -781,7 +978,14 @@ export class ModelAcquirer {
         return;
       }
       case "match": {
-        const placed = await placeStaged(io.fs, { root: rec.destinationRoot, folder: rec.folder, file: rec.file, stagedPath: rec.stagedPath, source: rec.source });
+        const placed = await placeStaged(io.fs, {
+          root: rec.destinationRoot,
+          folder: rec.folder,
+          file: rec.file,
+          stagedPath: rec.stagedPath,
+          source: rec.source,
+          verified: { dev: v.dev, ino: v.ino },
+        });
         if (!placed.ok) {
           this.move(run, rec, "failed", { observedSha256: v.sha256, observedBytes: v.bytes, error: { code: "DEPENDENCY_UNAVAILABLE", message: placed.message } }, placed.message);
           return;
@@ -793,10 +997,78 @@ export class ModelAcquirer {
           { placedPath: placed.path, observedSha256: v.sha256, observedBytes: v.bytes, error: null },
           placed.preexisting ? `${placed.path} already held the pinned file` : `placed as ${placed.path}`,
         );
-        if (done) this.verified.add(done.id);
+        if (done) {
+          this.verified.add(done.id);
+          await this.evictCacheCopy(run, done, placed.path);
+        }
         return;
       }
     }
+  }
+
+  /** Bytes so far: upstream's progress when it reports it, else the size of its cache `.partial`. */
+  private async bytesSoFar(rec: AcquisitionRecord, status: DownloadStatus): Promise<number | undefined> {
+    if (status.bytes !== undefined) return status.bytes;
+    try {
+      return (await this.deps.io.fs.lstat(this.deps.io.facade.downloadCacheEntry(pinnedUrl(rec.source)).partialPath)).size;
+    } catch {
+      // No partial to read (not started, or already renamed into the cache): not a size.
+      return undefined;
+    }
+  }
+
+  /**
+   * Remove upstream's download-cache copy of a file just placed: upstream keeps every cache
+   * entry unless COMFYUI_LRU_CACHE_SIZE_GB sets a limit, so the file would take its disk twice
+   * when the cache is on another device, and stay there after the user deletes the model. Only that entry, found by upstream's own derivation of
+   * the cache path for the pinned URL, and only when it is the placed file's inode (the
+   * cache's hard link) or holds exactly the pinned bytes; then its Content-Type sidecar.
+   * Anything else is left, with a note.
+   */
+  private async evictCacheCopy(run: RunRecord, rec: AcquisitionRecord, placedPath: string): Promise<void> {
+    const { fs, facade } = this.deps.io;
+    const entry = facade.downloadCacheEntry(pinnedUrl(rec.source));
+    const label = `<download cache>/${basename(entry.cachePath)}`;
+    let st: Awaited<ReturnType<AcquisitionFs["lstat"]>>;
+    try {
+      st = await fs.lstat(entry.cachePath);
+    } catch (err) {
+      if (errnoOf(err) !== "ENOENT") this.note(run, rec, `upstream's cache copy ${label} couldn't be read, so it was left: ${messageOf(err)}`);
+      return;
+    }
+    if (st.isSymbolicLink() || !st.isFile()) {
+      this.note(run, rec, `upstream's cache entry ${label} isn't a regular file; it was left`);
+      return;
+    }
+    let ours = false;
+    try {
+      const placed = await fs.lstat(placedPath);
+      ours = placed.dev === st.dev && placed.ino === st.ino;
+      if (!ours && st.size === rec.source.sizeBytes) {
+        const h = await fs.hashFile(entry.cachePath);
+        ours = h.sha256 === rec.source.sha256 && h.bytes === rec.source.sizeBytes;
+      }
+    } catch (err) {
+      this.note(run, rec, `upstream's cache copy ${label} couldn't be compared with the placed file, so it was left: ${messageOf(err)}`);
+      return;
+    }
+    if (!ours) {
+      this.note(run, rec, `upstream's cache entry ${label} isn't the placed file's bytes; it was left`);
+      return;
+    }
+    const removed: string[] = [];
+    for (const p of [entry.cachePath, entry.contentTypeSidecar]) {
+      try {
+        await fs.unlink(p);
+        removed.push(`<download cache>/${basename(p)}`);
+      } catch (err) {
+        if (errnoOf(err) !== "ENOENT") {
+          this.note(run, rec, `couldn't remove ${`<download cache>/${basename(p)}`}: ${messageOf(err)}`);
+          if (p === entry.cachePath) return;
+        }
+      }
+    }
+    this.note(run, rec, `removed upstream's cache copy: ${removed.join(", ")}`, { cacheRemoved: removed });
   }
 
   /**
@@ -806,7 +1078,7 @@ export class ModelAcquirer {
   private async recheckPlaced(run: RunRecord, records: readonly AcquisitionRecord[]): Promise<{ code: ArchitectErrorCode; message: string } | undefined> {
     for (const r of records) {
       if (this.verified.has(r.id) || r.placedPath === undefined) continue;
-      let found: { sha256: string; bytes: number };
+      let found: HashedFile;
       try {
         const st = await this.deps.io.fs.lstat(r.placedPath);
         if (st.isSymbolicLink() || !st.isFile()) return { code: "DEPENDENCY_UNAVAILABLE", message: `${r.placedPath} is no longer a regular file` };
@@ -924,7 +1196,6 @@ export function acquiredLockEntry(r: AcquisitionRecord) {
     path: r.source.path,
     sha256: r.observedSha256,
     sizeBytes: r.observedBytes,
-    placedPath: r.placedPath,
     ...(r.source.license ? { license: r.source.license } : {}),
   };
 }

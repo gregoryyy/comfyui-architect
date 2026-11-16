@@ -11,7 +11,7 @@
 // - One grant starts one run: the store consumes it in the transaction that creates the run.
 
 import { join } from "node:path";
-import { type AcquisitionIo, freeDiskBytesSync, hfEndpointRefusal } from "./acquisition.js";
+import { type AcquisitionIo, diskShortfall, freeDiskBytesSync, hfEndpointRefusal } from "./acquisition.js";
 import { MIN_FREE_DISK_BYTES, acquisitionPolicy, formatBytes } from "./acquisition-policy.js";
 import { ARCHITECT_PANEL_RUNS_ENV, onPanelRoute, panelRunsAllowed } from "./config.js";
 import { canonicalJson } from "./hash.js";
@@ -38,6 +38,16 @@ import { isLoopbackHostname } from "./validate.js";
 export const DEFAULT_ACTION_PLAN_TTL_MS = 30 * 60 * 1000;
 /** The wall-time budget when the task sets none (spec §18.1 `maxWallTimeSeconds`). */
 export const DEFAULT_MAX_WALL_TIME_SECONDS = 1800;
+/**
+ * The download rate the wall-time allowance for a plan's downloads assumes when the task
+ * sets no wall time: 10 MB/s (decimal). A bound the grant names, not an estimate.
+ */
+export const DOWNLOAD_ALLOWANCE_BYTES_PER_SECOND = 10_000_000;
+
+/** Seconds added to the default wall time for downloading `bytes`, rounded up. */
+export function downloadAllowanceSeconds(bytes: number): number {
+  return Math.ceil(bytes / DOWNLOAD_ALLOWANCE_BYTES_PER_SECOND);
+}
 
 /** A refusal on the effect path, with a stable code (spec §16.4) and a safe next step. */
 export class ApprovalError extends Error {
@@ -127,7 +137,13 @@ function binding(
       { kind: "local_render" as const, graphFingerprint: ctx.fingerprint, outputNodes: ctx.recipe.outputs.map((o) => o.node) },
       ...(residency ? [residency] : []),
     ] satisfies Effect[],
-    budgets: { maxRuns: 1, maxWallTimeSeconds: ctx.task.budgets.maxWallTimeSeconds ?? DEFAULT_MAX_WALL_TIME_SECONDS },
+    // The wall time counts from the run's start and so covers its downloads: a task without
+    // its own gets the default plus an allowance at 10 MB/s. A task's own value stays as given.
+    budgets: {
+      maxRuns: 1,
+      maxWallTimeSeconds:
+        ctx.task.budgets.maxWallTimeSeconds ?? DEFAULT_MAX_WALL_TIME_SECONDS + (acquire ? downloadAllowanceSeconds(acquire.totalBytes) : 0),
+    },
   };
 }
 
@@ -288,20 +304,10 @@ async function acquireEffectFor(
     files.push({ folder: f.folder, file: f.file, source: f.source, destinationRoot: dest.root });
   }
   if (options.checkDisk) {
-    for (const root of new Set(files.map((f) => f.destinationRoot))) {
-      let free: number;
-      try {
-        free = await io.fs.freeDiskBytes(root);
-      } catch (err) {
-        throw acquisitionRefusal(`the free disk under ${root} couldn't be read: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      if (free - policy.totalBytes < MIN_FREE_DISK_BYTES) {
-        throw acquisitionRefusal(
-          `${formatBytes(free)} free under ${root}; after ${formatBytes(policy.totalBytes)} less than ${formatBytes(MIN_FREE_DISK_BYTES)} would remain (GAPS Q25)`,
-          "Report this to the user: they can free disk space, then prepare again.",
-        );
-      }
-    }
+    // The model root's disk and upstream's download cache's, with the unfinished downloads
+    // of other runs reserved (GAPS Q25).
+    const shortfall = await diskShortfall(io, deps.store, files, MIN_FREE_DISK_BYTES);
+    if (shortfall) throw acquisitionRefusal(`${shortfall} (GAPS Q25)`, "Report this to the user: they can free disk space, then prepare again.");
   }
   const effect = Effect.parse({ kind: "acquire_models", files, totalBytes: policy.totalBytes, maxBytes: policy.maxBytes, minFreeBytes: MIN_FREE_DISK_BYTES });
   if (effect.kind !== "acquire_models") throw acquisitionRefusal("the download effect didn't parse as one");
@@ -398,6 +404,13 @@ function describeEffect(e: Effect, freeDisk: FreeDiskReader): string {
   }
 }
 
+/** How a plan's wall time was set when it includes a download allowance. */
+function wallTimeNote(task: TaskSpec | undefined, actionPlan: ActionPlan): string {
+  const acquire = actionPlan.effects.find((e): e is AcquireModelsEffect => e.kind === "acquire_models");
+  if (!acquire || !task || task.budgets.maxWallTimeSeconds !== undefined) return "";
+  return ` from the start, downloads included (${DEFAULT_MAX_WALL_TIME_SECONDS} s plus ${downloadAllowanceSeconds(acquire.totalBytes)} s for ${formatBytes(acquire.totalBytes)} at 10 MB/s)`;
+}
+
 /** What an approval channel shows the user before they decide. */
 export function describeActionPlan(store: ArchitectStore, actionPlan: ActionPlan, freeDisk: FreeDiskReader = freeDiskBytesSync): string {
   const task = store.getTask(actionPlan.taskId, actionPlan.taskRevision);
@@ -405,11 +418,17 @@ export function describeActionPlan(store: ArchitectStore, actionPlan: ActionPlan
   const lines = [
     `Action plan ${actionPlan.id} (hash ${shortHash(actionPlan.hash)})`,
     `Task: ${task ? JSON.stringify(task.intent) : actionPlan.taskId} (${task ? `${task.media.kind}, ${task.media.operation}` : "?"})`,
-    `Candidate: ${candidate ? `${candidate.recipeId} r${candidate.recipeRevision}` : actionPlan.candidateId}`,
+    `Candidate: ${candidate ? `${candidate.recipeId} r${candidate.recipeRevision} (${candidate.ranking.tier} recipe)` : actionPlan.candidateId}`,
+    // GAPS Q30: a proposed recipe may download, and the person approving sees that no one has
+    // reviewed the recipe, or the sources it pinned.
+    ...(candidate?.ranking.tier === "proposed" && actionPlan.effects.some((e) => e.kind === "acquire_models")
+      ? ["Note: this recipe is proposed: an agent wrote it and pinned its download sources, and no maintainer has reviewed it yet"]
+      : []),
     ...(candidate ? [`Models: ${Object.entries(candidate.bindings).filter(([, v]) => typeof v === "string" && /\.(safetensors|ckpt|pt|pth|bin|gguf)$/i.test(String(v))).map(([k, v]) => `${k}=${String(v)}`).join(", ") || "none"}`] : []),
-    ...actionPlan.effects.map((e) => describeEffect(e, freeDisk)),
+    // One line per entry: `printable` turns a newline inside a line into a visible mark.
+    ...actionPlan.effects.flatMap((e) => describeEffect(e, freeDisk).split("\n")),
     `Target: ${actionPlan.target.baseUrl}`,
-    `Limits: ${actionPlan.budgets.maxRuns} run, at most ${actionPlan.budgets.maxWallTimeSeconds} s`,
+    `Limits: ${actionPlan.budgets.maxRuns} run, at most ${actionPlan.budgets.maxWallTimeSeconds} s` + wallTimeNote(task, actionPlan),
     `Memory and time: unknown; nothing has been measured for this recipe here, so this run is the bounded probe that measures it`,
     `Expires: ${actionPlan.expiresAt}`,
   ];

@@ -228,6 +228,7 @@ export function planCandidates(input: PlanningInput): PlanningOutput {
       // blockers; a refused acquisition adds why next to the checks it leaves failing.
       if (verdict.status !== "acquirable") addBlockers(blockers, recipe, report.report.checks);
       for (const r of verdict.refusals) blockers[r.group].push(`${recipe.id}: ${r.message}`);
+      const scaleNote = renderScaleNote(recipe, task, bound);
       const acquisitionNote = verdict.acquisition
         ? `; acquirable: ${verdict.acquisition.files.length} file(s), ${formatBytes(verdict.acquisition.totalBytes)} to download`
         : verdict.refusals.length > 0
@@ -254,7 +255,7 @@ export function planCandidates(input: PlanningInput): PlanningOutput {
           explanation:
             `${recipe.certification} recipe ${recipe.id} r${recipe.revision}; ` +
             `${report.dependencyDelta.missingModels.length} missing model(s), ` +
-            `${report.dependencyDelta.missingNodeClasses.length} missing node class(es)${acquisitionNote}`,
+            `${report.dependencyDelta.missingNodeClasses.length} missing node class(es)${scaleNote}${acquisitionNote}`,
         },
         status: verdict.status,
         ...(verdict.acquisition ? { acquisition: verdict.acquisition } : {}),
@@ -283,4 +284,28 @@ export function planCandidates(input: PlanningInput): PlanningOutput {
   }
   const presented = ordered.slice(0, MAX_PRESENTED_CANDIDATES);
   return { presented, expanded: built.length, blockers: dedupe(blockers), truncated };
+}
+
+/**
+ * What a recipe that generates below the task's size does about it, for the candidate's
+ * rationale, so the user sees it before selecting (`fromTaskDivisor`; GAPS Q15, Q16): e.g.
+ * "; generates at 1024×1024 and upscales 2× to 2048×2048 with RealESRGAN_x4plus.safetensors".
+ * Empty for a recipe that renders at the task's size. The delivered size is still checked
+ * after the run (output_dimensions).
+ */
+export function renderScaleNote(recipe: Recipe, task: TaskSpec, bindings: Record<string, string | number>): string {
+  const divided = recipe.slots.filter((s) => s.fromTaskDivisor !== undefined && s.fromTask !== undefined);
+  if (divided.length === 0) return "";
+  const out = task.media.output;
+  const divisorOf = (path: string) => divided.find((s) => s.fromTask === path)?.fromTaskDivisor;
+  const dw = divisorOf("media.output.width");
+  const dh = divisorOf("media.output.height");
+  const upscaler = recipe.slots.find((s) => s.valueType === "model_file" && s.modelFolder === "upscale_models");
+  const model = upscaler ? bindings[upscaler.id] : undefined;
+  const via = typeof model === "string" ? ` with ${model}` : "";
+  if (dw !== undefined && dh !== undefined) {
+    const factor = dw === dh ? `${dw}×` : `${dw}× by ${dh}×`;
+    return `; generates at ${out.width / dw}×${out.height / dh} and upscales ${factor} to ${out.width}×${out.height}${via}`;
+  }
+  return `; generates ${divided.map((s) => `${s.fromTask} at 1/${s.fromTaskDivisor}`).join(", ")} and scales back${via}`;
 }

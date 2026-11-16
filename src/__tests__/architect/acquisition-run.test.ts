@@ -3,21 +3,17 @@
 // and restart; the acquire_models effect at prepare and start; and the run's lineage. A fake
 // downloader writes into temporary model folders; a fake Hugging Face answers the HEADs.
 
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ObjectInfo, SystemStats } from "../../comfyui/types.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import BetterSqlite3 from "better-sqlite3";
 import {
-  type AcquisitionFacade,
-  type AcquisitionFs,
   type AcquisitionIo,
   type HeadFetch,
+  diskShortfall,
   MAX_DOWNLOAD_ATTEMPTS,
   ModelAcquirer,
   NODE_ACQUISITION_FS,
@@ -28,171 +24,32 @@ import {
   prepareStaging,
   verifyStaged,
 } from "../../services/architect/acquisition.js";
-import { MIN_FREE_DISK_BYTES } from "../../services/architect/acquisition-policy.js";
-import { ApprovalError, describeActionPlan, issueGrant, requireFeasible } from "../../services/architect/admission.js";
+import { MIN_FREE_DISK_BYTES, formatBytes } from "../../services/architect/acquisition-policy.js";
+import { ApprovalError, DEFAULT_MAX_WALL_TIME_SECONDS, describeActionPlan, issueGrant, requireFeasible } from "../../services/architect/admission.js";
 import { RunController, type RunControllerDeps } from "../../services/architect/controller.js";
-import { ArchitectExecution, type RunDriver } from "../../services/architect/execution.js";
-import { ArchitectPlanning, type RecipeSource } from "../../services/architect/planning.js";
+import { ArchitectExecution } from "../../services/architect/execution.js";
 import { ResourceCoordinator } from "../../services/architect/resources.js";
-import {
-  type AcquireModelsEffect,
-  ActionPlan,
-  type InstalledModels,
-  ModelSource,
-  ResultEnvelope,
-  type RunRecord,
-  actionPlanHash,
-} from "../../services/architect/schemas.js";
-import { ArchitectService } from "../../services/architect/service.js";
-import { ArchitectStore } from "../../services/architect/store.js";
-import type { DownloadStatus, UpstreamFacade } from "../../services/architect/upstream.js";
+import { AcquisitionRecord, ActionPlan, ResultEnvelope, type RunRecord, actionPlanHash } from "../../services/architect/schemas.js";
+import { ARCHITECT_DB_FILE, ArchitectStore } from "../../services/architect/store.js";
 import { registerArchitectTools } from "../../tools/architect.js";
 import { TASK } from "./fixtures/approval-harness.js";
-import { fixtureObjectInfo, fixtureSnapshot } from "./fixtures/load.js";
+import {
+  BYTES,
+  COMMIT,
+  FakeDownloads,
+  type FakeJob,
+  FakeHf,
+  MISSING,
+  SHA,
+  SOURCE,
+  acquirable,
+  effectFor,
+  io,
+  modelRoot,
+  stores,
+  tempDir,
+} from "./fixtures/acquisition-harness.js";
 import { FakeOllama, RUN_CREATED, seedRun } from "./fixtures/run-harness.js";
-
-const BYTES = Buffer.from("pretend these are the weights of an upscale model\n".repeat(64));
-const SHA = createHash("sha256").update(BYTES).digest("hex");
-const COMMIT = "5fd49b7b278836f48af63ecd314d0f98ab336105";
-const MISSING = "missing.safetensors";
-const PLENTY = MIN_FREE_DISK_BYTES * 4;
-
-const SOURCE = ModelSource.parse({
-  kind: "huggingface",
-  repo: "Comfy-Org/Real-ESRGAN",
-  revision: COMMIT,
-  path: "split files/checkpoints/missing.safetensors",
-  sha256: SHA,
-  sizeBytes: BYTES.length,
-  license: "bsd-3-clause",
-});
-
-const dirs: string[] = [];
-const stores: ArchitectStore[] = [];
-afterEach(() => {
-  for (const s of stores.splice(0)) s.close();
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
-});
-
-function tempDir(prefix: string): string {
-  const d = mkdtempSync(join(tmpdir(), prefix));
-  dirs.push(d);
-  return d;
-}
-
-/** A model root with a `checkpoints` folder, as ComfyUI's models directory. */
-function modelRoot(): string {
-  const root = tempDir("architect-models-");
-  mkdirSync(join(root, "checkpoints"));
-  return root;
-}
-
-// ---------------------------------------------------------------------------------------
-// Fakes
-
-interface FakeJob {
-  status: DownloadStatus["status"];
-  target: string;
-  url: string;
-  bytes?: number;
-  totalBytes?: number;
-  error?: string;
-}
-
-/** Upstream's downloader as the facade shows it, writing into a temporary model root. */
-class FakeDownloads implements AcquisitionFacade {
-  jobs = new Map<string, FakeJob>();
-  started: { url: string; subfolder: string; filename: string }[] = [];
-  cancelled: string[] = [];
-  forgot = 0;
-  manager = false;
-  startFails = false;
-  /** Where the resolver would put a subfolder; by default under `root`. */
-  resolveTo?: (subfolder: string, file: string) => { root: string; path: string };
-  private n = 0;
-
-  constructor(public root: string) {}
-
-  resolveModelDestination = async (subfolder: string, file: string) => this.resolveTo?.(subfolder, file) ?? { root: this.root, path: join(this.root, subfolder, file) };
-  downloadRoutesToManager = async () => this.manager;
-  startDownload = async (args: { url: string; subfolder: string; filename: string }) => {
-    if (this.startFails) throw new Error("upstream refused the request");
-    this.started.push(args);
-    const jobId = `job-${++this.n}`;
-    this.jobs.set(jobId, { status: "downloading", target: join(this.root, args.subfolder, args.filename), url: args.url });
-    return { jobId };
-  };
-  downloadStatus = async (jobId: string): Promise<DownloadStatus> => {
-    const j = this.jobs.get(jobId);
-    if (!j) return { status: "missing" };
-    return {
-      status: j.status,
-      ...(j.status === "done" ? { path: j.target } : {}),
-      ...(j.bytes !== undefined ? { bytes: j.bytes } : {}),
-      ...(j.totalBytes !== undefined ? { totalBytes: j.totalBytes } : {}),
-      ...(j.error ? { error: j.error } : {}),
-    };
-  };
-  cancelDownload = async (jobId: string) => {
-    this.cancelled.push(jobId);
-    const j = this.jobs.get(jobId);
-    if (j?.status === "downloading") j.status = "cancelled";
-    return { cancelled: j !== undefined, message: j ? `download ${jobId} aborted` : `no download ${jobId}` };
-  };
-  forgetNodeSchemas = () => {
-    this.forgot += 1;
-  };
-
-  /** The transfer lands: the bytes are written where upstream resolved the file. */
-  finish(jobId: string, bytes: Buffer = BYTES): void {
-    const j = this.jobs.get(jobId);
-    if (!j) throw new Error(`no job ${jobId}`);
-    mkdirSync(dirname(j.target), { recursive: true });
-    writeFileSync(j.target, bytes);
-    j.status = "done";
-  }
-
-  /** A job unrelated to any run, as another tool would have started it. */
-  unrelated(): string {
-    const id = `job-other-${++this.n}`;
-    this.jobs.set(id, { status: "downloading", target: join(this.root, "checkpoints", "theirs.safetensors"), url: "https://example.com/x" });
-    return id;
-  }
-}
-
-/** Hugging Face's HEAD answers: a 302 to the CDN, then 200, unless a route is set. */
-class FakeHf {
-  calls: { url: string; headers: Record<string, string> }[] = [];
-  routes = new Map<string, { status: number; location?: string }>();
-  fails = false;
-
-  readonly fetch: HeadFetch = async (url, init) => {
-    this.calls.push({ url, headers: init.headers });
-    if (this.fails) throw new TypeError("fetch failed");
-    const r = this.routes.get(url) ?? (url.startsWith("https://huggingface.co/") ? { status: 302, location: "https://us.aws.cdn.hf.co/xet-bridge-us/abc?sig=1" } : { status: 200 });
-    return { status: r.status, headers: { get: (name: string) => (name.toLowerCase() === "location" ? (r.location ?? null) : null) } };
-  };
-}
-
-function io(downloads: FakeDownloads, hf = new FakeHf(), over: { free?: number | (() => Promise<number>); env?: Record<string, string>; fs?: Partial<AcquisitionFs> } = {}): AcquisitionIo {
-  const free = over.free ?? PLENTY;
-  return {
-    facade: downloads,
-    fetch: hf.fetch,
-    fs: { ...NODE_ACQUISITION_FS, freeDiskBytes: typeof free === "number" ? async () => free : free, ...over.fs },
-    env: over.env ?? {},
-  };
-}
-
-function effectFor(root: string, source = SOURCE): AcquireModelsEffect {
-  return {
-    kind: "acquire_models",
-    files: [{ folder: "checkpoints", file: MISSING, source, destinationRoot: root }],
-    totalBytes: source.sizeBytes,
-    maxBytes: 40 * 1024 ** 3,
-    minFreeBytes: MIN_FREE_DISK_BYTES,
-  };
-}
 
 // ---------------------------------------------------------------------------------------
 // The redirect preflight (TODO 4.4)
@@ -260,14 +117,39 @@ describe("preflightRedirects", () => {
     expect(await preflightRedirects(url, hf.fetch)).toMatchObject({ ok: false, refused: false });
   });
 
+  it("refuses before any download when Hugging Face's X-Linked-Size or X-Linked-Etag contradict the pin", async () => {
+    const hf = new FakeHf();
+    hf.routes.set(url, { status: 302, location: "https://us.aws.cdn.hf.co/x", headers: { "x-linked-size": "12", "x-linked-etag": `"${SHA}"` } });
+    const bySize = await preflightRedirects(url, hf.fetch, { pinned: SOURCE });
+    expect(!bySize.ok && bySize.refused && bySize.message).toMatch(/reports 12 bytes/);
+    hf.routes.set(url, { status: 302, location: "https://us.aws.cdn.hf.co/x", headers: { "x-linked-size": String(SOURCE.sizeBytes), "x-linked-etag": `"${"0".repeat(64)}"` } });
+    const byHash = await preflightRedirects(url, hf.fetch, { pinned: SOURCE });
+    expect(!byHash.ok && byHash.refused && byHash.message).toMatch(/reports sha256 00000000/);
+  });
+
+  it("accepts a CDN that refuses HEAD (403, 405) only after Hugging Face named the pinned size and sha256", async () => {
+    const hf = new FakeHf();
+    for (const status of [403, 405]) {
+      hf.routes.set("https://us.aws.cdn.hf.co/xet-bridge-us/abc?sig=1", { status });
+      expect(await preflightRedirects(url, hf.fetch, { pinned: SOURCE })).toMatchObject({ ok: true, hops: 1, headRefused: status });
+      // Without the pin to compare, or without the linked headers, the refusal stands.
+      expect(await preflightRedirects(url, hf.fetch)).toMatchObject({ ok: false, refused: true });
+    }
+    hf.routes.set(url, { status: 302, location: "https://us.aws.cdn.hf.co/xet-bridge-us/abc?sig=1" });
+    expect(await preflightRedirects(url, hf.fetch, { pinned: SOURCE })).toMatchObject({ ok: false, refused: true });
+    // A 403 from huggingface.co itself, with no redirect before it, is refused.
+    hf.routes.set(url, { status: 403 });
+    expect(await preflightRedirects(url, hf.fetch, { pinned: SOURCE })).toMatchObject({ ok: false, refused: true });
+  });
+
   it("refuses when HF_ENDPOINT points elsewhere, before any request; Hugging Face itself is fine", async () => {
     const hf = new FakeHf();
-    const r = await preflightRedirects(url, hf.fetch, { HF_ENDPOINT: "https://hf-mirror.com" });
+    const r = await preflightRedirects(url, hf.fetch, { env: { HF_ENDPOINT: "https://hf-mirror.com" } });
     expect(r).toMatchObject({ ok: false, refused: true });
     expect(!r.ok && r.message).toContain("hf-mirror.com");
     expect(hf.calls).toHaveLength(0);
-    expect(await preflightRedirects(url, hf.fetch, { HF_ENDPOINT: "https://huggingface.co/" })).toMatchObject({ ok: true });
-    expect(await preflightRedirects(url, hf.fetch, { HF_ENDPOINT: "  " })).toMatchObject({ ok: true });
+    expect(await preflightRedirects(url, hf.fetch, { env: { HF_ENDPOINT: "https://huggingface.co/" } })).toMatchObject({ ok: true });
+    expect(await preflightRedirects(url, hf.fetch, { env: { HF_ENDPOINT: "  " } })).toMatchObject({ ok: true });
   });
 
   it("sends HF_TOKEN only after huggingface.co answered 401, and never to the CDN", async () => {
@@ -281,7 +163,7 @@ describe("preflightRedirects", () => {
       }
       return { status: 200, headers: { get: () => null } };
     };
-    expect(await preflightRedirects(url, gated, { HF_TOKEN: "hf_secret" })).toMatchObject({ ok: true });
+    expect(await preflightRedirects(url, gated, { token: "hf_secret" })).toMatchObject({ ok: true });
     expect(hf.calls.map((c) => c.headers.Authorization)).toEqual([undefined, "Bearer hf_secret", undefined]);
   });
 });
@@ -291,6 +173,12 @@ describe("preflightRedirects", () => {
 
 describe("staging, verification and placement", () => {
   const fs = NODE_ACQUISITION_FS;
+
+  /** The device and inode verification would have read from the hashed handle. */
+  async function identity(p: string) {
+    const st = await fs.lstat(p);
+    return { dev: st.dev, ino: st.ino };
+  }
 
   async function staged(root: string, bytes = BYTES): Promise<string> {
     const s = await prepareStaging(fs, root, "run-1");
@@ -303,8 +191,8 @@ describe("staging, verification and placement", () => {
   it("places a staged file whose sha256 and size are the pinned ones, and the staged file is gone", async () => {
     const root = modelRoot();
     const p = await staged(root);
-    expect(await verifyStaged(fs, p, SOURCE)).toEqual({ kind: "match", sha256: SHA, bytes: BYTES.length });
-    expect(await placeStaged(fs, { root, folder: "checkpoints", file: MISSING, stagedPath: p, source: SOURCE })).toEqual({
+    expect(await verifyStaged(fs, p, SOURCE)).toMatchObject({ kind: "match", sha256: SHA, bytes: BYTES.length });
+    expect(await placeStaged(fs, { root, folder: "checkpoints", file: MISSING, stagedPath: p, source: SOURCE, verified: await identity(p) })).toEqual({
       ok: true,
       path: join(root, "checkpoints", MISSING),
       preexisting: false,
@@ -354,7 +242,7 @@ describe("staging, verification and placement", () => {
     const root = modelRoot();
     writeFileSync(join(root, "checkpoints", MISSING), BYTES);
     const p = await staged(root);
-    expect(await placeStaged(fs, { root, folder: "checkpoints", file: MISSING, stagedPath: p, source: SOURCE })).toMatchObject({ ok: true, preexisting: true });
+    expect(await placeStaged(fs, { root, folder: "checkpoints", file: MISSING, stagedPath: p, source: SOURCE, verified: await identity(p) })).toMatchObject({ ok: true, preexisting: true });
     expect(existsSync(p)).toBe(false);
   });
 
@@ -363,7 +251,7 @@ describe("staging, verification and placement", () => {
     const theirs = Buffer.from("the user's own file");
     writeFileSync(join(root, "checkpoints", MISSING), theirs);
     const p = await staged(root);
-    const r = await placeStaged(fs, { root, folder: "checkpoints", file: MISSING, stagedPath: p, source: SOURCE });
+    const r = await placeStaged(fs, { root, folder: "checkpoints", file: MISSING, stagedPath: p, source: SOURCE, verified: await identity(p) });
     expect(r.ok).toBe(false);
     expect(!r.ok && r.message).toMatch(/already exists with other content/);
     expect(readFileSync(join(root, "checkpoints", MISSING))).toEqual(theirs);
@@ -374,7 +262,7 @@ describe("staging, verification and placement", () => {
     const outside = tempDir("architect-outside-");
     symlinkSync(outside, join(root, "checkpoints"));
     const p = await staged(root);
-    const r = await placeStaged(fs, { root, folder: "checkpoints", file: MISSING, stagedPath: p, source: SOURCE });
+    const r = await placeStaged(fs, { root, folder: "checkpoints", file: MISSING, stagedPath: p, source: SOURCE, verified: await identity(p) });
     expect(r.ok).toBe(false);
     expect(!r.ok && r.message).toMatch(/outside/);
     expect(readdirSync(outside)).toEqual([]);
@@ -394,6 +282,38 @@ describe("staging, verification and placement", () => {
     expect(readdirSync(outside)).toEqual([]);
   });
 
+  it("refuses a staged file replaced after it was hashed, and places nothing", async () => {
+    const root = modelRoot();
+    const p = await staged(root);
+    const v = await verifyStaged(fs, p, SOURCE);
+    if (v.kind !== "match") throw new Error("expected a match");
+    const other = join(dirname(p), "other");
+    writeFileSync(other, Buffer.from("swapped in after hashing"));
+    renameSync(other, p);
+    const r = await placeStaged(fs, { root, folder: "checkpoints", file: MISSING, stagedPath: p, source: SOURCE, verified: { dev: v.dev, ino: v.ino } });
+    expect(!r.ok && r.message).toMatch(/replaced after it was verified/);
+    expect(readdirSync(join(root, "checkpoints"))).toEqual([]);
+  });
+
+  it("removes only its own new link when the staged file is swapped between the check and the link", async () => {
+    const root = modelRoot();
+    const p = await staged(root);
+    const v = await verifyStaged(fs, p, SOURCE);
+    if (v.kind !== "match") throw new Error("expected a match");
+    const racing = {
+      ...fs,
+      link: async (a: string, b: string) => {
+        const other = join(dirname(a), "other");
+        writeFileSync(other, Buffer.from("swapped in during the link"));
+        renameSync(other, a);
+        await fs.link(a, b);
+      },
+    };
+    const r = await placeStaged(racing, { root, folder: "checkpoints", file: MISSING, stagedPath: p, source: SOURCE, verified: { dev: v.dev, ino: v.ino } });
+    expect(!r.ok && r.message).toMatch(/changed between verification and placement/);
+    expect(readdirSync(join(root, "checkpoints"))).toEqual([]);
+  });
+
   it("refuses to place from a staging folder swapped for a link after verification", async () => {
     const root = modelRoot();
     const p = await staged(root);
@@ -401,7 +321,7 @@ describe("staging, verification and placement", () => {
     writeFileSync(join(outside, MISSING), BYTES);
     rmSync(dirname(p), { recursive: true });
     symlinkSync(outside, dirname(p));
-    const r = await placeStaged(fs, { root, folder: "checkpoints", file: MISSING, stagedPath: p, source: SOURCE });
+    const r = await placeStaged(fs, { root, folder: "checkpoints", file: MISSING, stagedPath: p, source: SOURCE, verified: await identity(p) });
     expect(r.ok).toBe(false);
     expect(readdirSync(join(root, "checkpoints"))).toEqual([]);
   });
@@ -567,7 +487,7 @@ describe("a run that acquires model files", () => {
     const h = harness({ free: MIN_FREE_DISK_BYTES + BYTES.length - 1 });
     const r = await h.controller.advance(h.run.id);
     expect(r.state).toBe("FAILED");
-    expect(r.error?.message).toMatch(/less than 50\.0 GiB would remain/);
+    expect(r.error?.message).toMatch(/would leave less than 50\.0 GiB/);
     expect(h.downloads.started).toEqual([]);
     expect(h.hf.calls).toEqual([]);
   });
@@ -758,6 +678,136 @@ describe("a run that acquires model files", () => {
     expect(acq(h.store, h.run)[0].state).toBe("failed");
   });
 
+  it("removes upstream's cache copy of the placed file, its hard link, and its sidecar; nothing else in the cache", async () => {
+    const h = harness();
+    await h.controller.advance(h.run.id);
+    const entry = h.downloads.downloadCacheEntry(pinnedUrl(SOURCE));
+    const unrelated = join(h.downloads.cacheDir, "someone-elses.safetensors");
+    writeFileSync(unrelated, Buffer.from("another download"));
+    h.downloads.finish("job-1");
+    expect((await h.controller.reconcile(h.run.id)).state).toBe("QUEUED");
+    expect(existsSync(entry.cachePath)).toBe(false);
+    expect(existsSync(entry.contentTypeSidecar)).toBe(false);
+    expect(existsSync(unrelated)).toBe(true);
+    expect(readFileSync(join(h.root, "checkpoints", MISSING))).toEqual(BYTES);
+    const note = h.store.listRunEvents(h.run.id).find((e) => Array.isArray(e.data?.cacheRemoved));
+    expect(note?.data?.cacheRemoved).toEqual([`<download cache>/${entry.cachePath.split("/").pop()}`, `<download cache>/${entry.contentTypeSidecar.split("/").pop()}`]);
+  });
+
+  it("removes a copied cache entry only when it holds the pinned bytes", async () => {
+    const root = modelRoot();
+    const downloads = new FakeDownloads(root);
+    downloads.copyFromCache = true;
+    const h = harness({ root, downloads });
+    await h.controller.advance(h.run.id);
+    downloads.finish("job-1");
+    expect((await h.controller.reconcile(h.run.id)).state).toBe("QUEUED");
+    expect(existsSync(downloads.downloadCacheEntry(pinnedUrl(SOURCE)).cachePath)).toBe(false);
+
+    // Another case: the cache entry was replaced by other bytes before placement; it stays.
+    for (const st of stores.splice(0)) st.close();
+    dataDir = tempDir("architect-acq-run-");
+    const root2 = modelRoot();
+    const d2 = new FakeDownloads(root2);
+    d2.copyFromCache = true;
+    const h2 = harness({ root: root2, downloads: d2 });
+    await h2.controller.advance(h2.run.id);
+    d2.finish("job-1");
+    const entry = d2.downloadCacheEntry(pinnedUrl(SOURCE));
+    rmSync(entry.cachePath);
+    writeFileSync(entry.cachePath, Buffer.from("not the pinned bytes"));
+    expect((await h2.controller.reconcile(h2.run.id)).state).toBe("QUEUED");
+    expect(readFileSync(entry.cachePath).toString()).toBe("not the pinned bytes");
+  });
+
+  it("stops the run's job when upstream's cache .partial grows past the pinned size (no progress channel)", async () => {
+    const h = harness();
+    await h.controller.advance(h.run.id);
+    h.downloads.partial("job-1", BYTES.length - 1);
+    expect((await h.controller.reconcile(h.run.id)).state).toBe("PREPARING");
+    const view = await h.acquirer.view(h.run.id);
+    expect(view[0].bytesSoFar).toBe(BYTES.length - 1);
+    h.downloads.partial("job-1", BYTES.length + 1);
+    const r = await h.controller.reconcile(h.run.id);
+    expect(r.state).toBe("FAILED");
+    expect(r.error?.message).toMatch(/more than the pinned/);
+    expect(h.downloads.cancelled).toEqual(["job-1"]);
+  });
+
+  it("doesn't restart a job cancelled outside the run; the run fails with the reason", async () => {
+    const h = harness();
+    await h.controller.advance(h.run.id);
+    (h.downloads.jobs.get("job-1") as FakeJob).status = "cancelled";
+    const r = await h.controller.reconcile(h.run.id);
+    expect(r.state).toBe("FAILED");
+    expect(r.error).toMatchObject({ code: "DEPENDENCY_UNAVAILABLE" });
+    expect(r.error?.message).toMatch(/the download was cancelled outside the run/);
+    expect(acq(h.store, h.run)[0].state).toBe("cancelled");
+    expect(h.downloads.started).toHaveLength(1);
+  });
+
+  it("fails with APPROVAL_INVALIDATED when the consumed grant doesn't bind the stored action plan; nothing downloads", async () => {
+    const store = openStore();
+    const run = seedRun(store, { acquire: effectFor(modelRoot()) });
+    const db = new BetterSqlite3(join(dataDir, ARCHITECT_DB_FILE));
+    db.prepare("UPDATE approval_grants SET payload = json_set(payload, '$.actionPlanHash', ?) WHERE id = ?").run("f".repeat(64), run.grantId);
+    db.close();
+    const h = harness({ store, seed: false });
+    const r = await h.controller.advance(run.id);
+    expect(r.state).toBe("FAILED");
+    expect(r.error?.code).toBe("APPROVAL_INVALIDATED");
+    expect(h.downloads.started).toEqual([]);
+    expect(() => store.createAcquisitions({ runId: run.id, now: clock, newId: () => "x" })).toThrow(/doesn't bind action plan/);
+  });
+
+  it("counts other runs' unfinished downloads as reserved, and the cache's disk when it is another device", async () => {
+    const root = modelRoot();
+    const downloads = new FakeDownloads(root);
+    const files = [{ destinationRoot: root, source: SOURCE }];
+    const other = AcquisitionRecord.parse({
+      schemaVersion: 1,
+      id: "acq-other",
+      runId: "run-other",
+      actionPlanId: "actions-other",
+      folder: "checkpoints",
+      file: "other.safetensors",
+      source: SOURCE,
+      destinationRoot: root,
+      state: "planned",
+      createdAt: RUN_CREATED.toISOString(),
+      updatedAt: RUN_CREATED.toISOString(),
+    });
+    const none = { listOpenAcquisitions: () => [] };
+    const busy = { listOpenAcquisitions: () => [other] };
+    const free = MIN_FREE_DISK_BYTES + BYTES.length + 10;
+    const same = io(downloads, new FakeHf(), { free });
+    expect(await diskShortfall(same, none, files, MIN_FREE_DISK_BYTES)).toBeUndefined();
+    expect(await diskShortfall(same, busy, files, MIN_FREE_DISK_BYTES)).toMatch(/still to come for other runs' downloads/);
+    expect(await diskShortfall(same, busy, files, MIN_FREE_DISK_BYTES, { exceptRunId: "run-other" })).toBeUndefined();
+    // The cache on another device with too little room: refused, naming the cache's disk.
+    const split = io(downloads, new FakeHf(), { cacheOnOtherDevice: true, free: async (p) => (p.startsWith(downloads.cacheDir) ? MIN_FREE_DISK_BYTES : 10 * MIN_FREE_DISK_BYTES) });
+    expect(await diskShortfall(split, none, files, MIN_FREE_DISK_BYTES)).toContain(downloads.cacheDir);
+  });
+
+  it("sends upstream's Hugging Face token in the preflight only after a 401 from huggingface.co", async () => {
+    const root = modelRoot();
+    const downloads = new FakeDownloads(root);
+    downloads.token = "hf_from_upstream_config";
+    const hf = new FakeHf();
+    let first = true;
+    const gated: HeadFetch = async (u, init) => {
+      if (u.startsWith("https://huggingface.co/") && first) {
+        first = false;
+        hf.calls.push({ url: u, headers: init.headers });
+        return { status: 401, headers: { get: () => null } };
+      }
+      return hf.fetch(u, init);
+    };
+    const h = harness({ root, downloads, io: { ...io(downloads, hf), fetch: gated } });
+    expect((await h.controller.advance(h.run.id)).state).toBe("PREPARING");
+    expect(hf.calls.map((c) => c.headers.Authorization)).toEqual([undefined, "Bearer hf_from_upstream_config", undefined]);
+  });
+
   it("is driven by the polling loop while it downloads", async () => {
     const h = harness();
     await h.controller.pollOnce();
@@ -771,90 +821,6 @@ describe("a run that acquires model files", () => {
 // ---------------------------------------------------------------------------------------
 // The acquire_models effect at prepare and start, end to end (TODO 4.5, 4.6; AT-05)
 
-const FIXTURES_DIR = dirname(fileURLToPath(new URL("./fixtures/load.ts", import.meta.url)));
-const STATS: SystemStats = {
-  system: { os: "darwin", python_version: "3.12", embedded_python: false, comfyui_version: "0.44.0", ram_total: 1, ram_free: 1 },
-  devices: [],
-};
-
-/** A selected plan on the t2i fixture whose checkpoint is missing and pinned. */
-async function acquirable(opts: { withIo?: boolean; free?: number; env?: Record<string, string>; selectFeasible?: boolean } = {}) {
-  const recipeDir = tempDir("architect-acq-recipes-");
-  const recipe = JSON.parse(readFileSync(join(FIXTURES_DIR, "t2i-basic.recipe.json"), "utf-8"));
-  recipe.id = "recipe-fixture.t2i-acquire";
-  recipe.slots = recipe.slots.map((s: { id: string }) => (s.id === "checkpoint" ? { ...s, default: MISSING } : s));
-  recipe.modelSources = [{ folder: "checkpoints", file: MISSING, source: SOURCE }];
-  writeFileSync(join(recipeDir, "acquire.recipe.json"), JSON.stringify(recipe));
-  const source: RecipeSource = { id: "source-acquire", kind: "fixture", dir: recipeDir, trust: "test" };
-
-  const dataDir = tempDir("architect-acq-exec-");
-  const store = ArchitectStore.open(dataDir);
-  stores.push(store);
-  let n = 0;
-  const newId = () => `id${++n}`;
-  let clock = Date.parse("2026-11-15T12:00:00.000Z");
-  const now = () => new Date(clock);
-  let baseUrl = "http://127.0.0.1:8188";
-  let models: InstalledModels = fixtureSnapshot().installedModels ?? { folders: {}, unanswered: [], absent: [] };
-  let info: ObjectInfo = fixtureObjectInfo();
-  const upstream = {
-    comfyuiBaseUrl: () => baseUrl,
-    systemStats: async () => STATS,
-    objectInfo: async () => info,
-    installedModels: async () => models,
-    isPaidNode: () => false,
-  } as Pick<UpstreamFacade, "comfyuiBaseUrl" | "systemStats" | "objectInfo" | "installedModels" | "isPaidNode">;
-  const service = new ArchitectService({ upstream: upstream as UpstreamFacade, now, newId });
-  const planning = new ArchitectPlanning({ store, service, upstream, dataDir, sources: [source], now, newId });
-  const prepared = await planning.prepare({ task: TASK });
-  const proposed = await planning.propose({ planId: prepared.plan.id });
-  const candidate = proposed.candidates[0];
-  planning.select({ planId: prepared.plan.id, candidateId: candidate.id });
-
-  const root = modelRoot();
-  const downloads = new FakeDownloads(root);
-  const hf = new FakeHf();
-  const acquisitionIo = io(downloads, hf, { free: opts.free, env: opts.env });
-  const driver: RunDriver = {
-    advance: vi.fn(async (runId: string) => store.getRun(runId) as RunRecord),
-    reconcile: vi.fn(async (runId: string) => store.getRun(runId) as RunRecord),
-    cancel: vi.fn(async (runId: string) => store.getRun(runId) as RunRecord),
-  };
-  const deps = { store, planning, baseUrl: () => baseUrl, now, newId, ...(opts.withIo === false ? {} : { acquisitionIo }) };
-  const execution = new ArchitectExecution({ ...deps, driver, dataDir, dependencyLock: (id, task) => planning.dependencyLock(id, task) });
-  /** ComfyUI now lists the file and offers it in the loader. */
-  const install = () => {
-    models = { ...models, folders: { ...models.folders, checkpoints: [...(models.folders.checkpoints ?? []), MISSING] } };
-    info = fixtureObjectInfo();
-    info.CheckpointLoaderSimple.input = { required: { ckpt_name: [[MISSING]] } };
-  };
-  return {
-    store,
-    planning,
-    execution,
-    driver,
-    deps,
-    dataDir,
-    planId: prepared.plan.id,
-    candidate,
-    proposed,
-    root,
-    downloads,
-    hf,
-    acquisitionIo,
-    now,
-    newId,
-    install,
-    tick: (ms: number) => {
-      clock += ms;
-    },
-    setBaseUrl: (u: string) => {
-      baseUrl = u;
-    },
-    service,
-  };
-}
-
 async function approvalError(p: Promise<unknown>): Promise<ApprovalError> {
   const err = await p.then(
     () => undefined,
@@ -865,6 +831,26 @@ async function approvalError(p: Promise<unknown>): Promise<ApprovalError> {
 }
 
 describe("prepare and start with downloads", () => {
+  it("adds a download allowance at 10 MB/s to the default wall time, and keeps a task's own wall time", async () => {
+    const big = await acquirable();
+    const r = await big.execution.prepare({ planId: big.planId });
+    expect(r.actionPlan.budgets.maxWallTimeSeconds).toBe(DEFAULT_MAX_WALL_TIME_SECONDS + Math.ceil(BYTES.length / 10_000_000));
+    const text = describeActionPlan(big.store, r.actionPlan, () => ({ known: true, bytes: 100 * 1024 ** 3 }));
+    expect(text).toMatch(/at most 1801 s from the start, downloads included \(1800 s plus 1 s for .* at 10 MB\/s\)/);
+    const own = await acquirable({ task: { budgets: { maxWallTimeSeconds: 900 } } });
+    const p = await own.execution.prepare({ planId: own.planId });
+    expect(p.actionPlan.budgets.maxWallTimeSeconds).toBe(900);
+    expect(describeActionPlan(own.store, p.actionPlan, () => ({ known: true, bytes: 1 }))).not.toContain("downloads included");
+  });
+
+  it("refuses at prepare when the download cache's disk, another device, lacks the reserve", async () => {
+    const s = await acquirable({ cacheOnOtherDevice: true });
+    s.acquisitionIo.fs.freeDiskBytes = async (p) => (p.startsWith(s.downloads.cacheDir) ? MIN_FREE_DISK_BYTES : 10 * MIN_FREE_DISK_BYTES);
+    const err = await approvalError(s.execution.prepare({ planId: s.planId }));
+    expect(err.code).toBe("DEPENDENCY_UNAVAILABLE");
+    expect(err.message).toContain(s.downloads.cacheDir);
+  });
+
   it("puts the downloads before the render, equal to the candidate's acquisition, and describes them", async () => {
     const s = await acquirable();
     expect(s.candidate.status).toBe("acquirable");
@@ -883,6 +869,19 @@ describe("prepare and start with downloads", () => {
     expect(text).toContain(`checkpoints/${MISSING}: Comfy-Org/Real-ESRGAN@${COMMIT.slice(0, 12)} ${SOURCE.path}`);
     expect(text).toContain(`Destination: ${s.root} (100.0 GiB of disk will remain free`);
     expect(describeActionPlan(s.store, r.actionPlan, () => ({ known: false, reason: "EIO" }))).toContain("free disk unknown (EIO)");
+    expect(text).toContain("(fixture recipe)");
+    // Each file is a line of its own, not folded into the effect's line.
+    expect(text.split("\n")).toContain(`  checkpoints/${MISSING}: Comfy-Org/Real-ESRGAN@${COMMIT.slice(0, 12)} ${SOURCE.path}, ${formatBytes(BYTES.length)}, licence bsd-3-clause`);
+    expect(text).not.toContain("no maintainer has reviewed it");
+  });
+
+  it("names a proposed recipe's tier in the download approval (GAPS Q30)", async () => {
+    const s = await acquirable({ certification: "proposed" });
+    expect(s.candidate.status).toBe("acquirable");
+    const r = await s.execution.prepare({ planId: s.planId });
+    const text = describeActionPlan(s.store, r.actionPlan, () => ({ known: true, bytes: 100 * 1024 ** 3 }));
+    expect(text).toContain("(proposed recipe)");
+    expect(text).toContain("an agent wrote it and pinned its download sources, and no maintainer has reviewed it yet");
   });
 
   it("a feasible candidate's plan has no download effect", async () => {
@@ -902,7 +901,7 @@ describe("prepare and start with downloads", () => {
     expect((await approvalError(s.execution.prepare({ planId: s.planId }))).code).toBe("STALE_ENVIRONMENT");
 
     s = await acquirable({ free: MIN_FREE_DISK_BYTES + BYTES.length - 1 });
-    expect((await approvalError(s.execution.prepare({ planId: s.planId }))).message).toMatch(/would remain/);
+    expect((await approvalError(s.execution.prepare({ planId: s.planId }))).message).toMatch(/would leave less than/);
 
     s = await acquirable();
     s.acquisitionIo.fs.freeDiskBytes = async () => Promise.reject(new Error("statfs EIO"));
@@ -1053,12 +1052,15 @@ describe("prepare and start with downloads", () => {
         path: SOURCE.path,
         sha256: SHA,
         sizeBytes: BYTES.length,
-        placedPath: join(s.root, "checkpoints", MISSING),
         license: "bsd-3-clause",
       },
     ]);
-    const record = JSON.parse(readFileSync(join(written.dir, "run.json"), "utf-8"));
-    expect(record.lineage.acquisitions).toEqual([expect.objectContaining({ state: "placed", sha256: SHA, pinnedSha256: SHA })]);
+    const recordText = readFileSync(join(written.dir, "run.json"), "utf-8");
+    const record = JSON.parse(recordText);
+    expect(record.lineage.acquisitions).toEqual([expect.objectContaining({ state: "placed", placed: `checkpoints/${MISSING}`, sha256: SHA, pinnedSha256: SHA })]);
+    // spec §15.5: no machine-specific path in the exported record or the lock.
+    expect(recordText).not.toContain(s.root);
+    expect(readFileSync(join(written.dir, "dependencies.lock.json"), "utf-8")).not.toContain(s.root);
   });
 
   it("fails the run when ComfyUI doesn't offer the placed file on the fresh snapshot", async () => {

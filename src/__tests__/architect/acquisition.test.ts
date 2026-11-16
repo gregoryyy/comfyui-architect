@@ -2,7 +2,7 @@
 // candidates, the acquire_models effect and acquisition records; the acquisition policy;
 // fromTaskDivisor in the compiler; and the store's acquisitions with migration 4.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MAX_ACQUISITION_BYTES, acquisitionPolicy, deriveAcquisition } from "../../services/architect/acquisition-policy.js";
 import { compileRecipe } from "../../services/architect/compile.js";
 import { MIGRATIONS, SCHEMA_MIGRATIONS_SQL } from "../../services/architect/migrations.js";
-import { STATUS_ORDER, planCandidates, type PlanningInput } from "../../services/architect/planner.js";
+import { STATUS_ORDER, planCandidates, renderScaleNote, type PlanningInput } from "../../services/architect/planner.js";
 import {
   ACQUISITION_TRANSITIONS,
   AcquisitionRecord,
@@ -241,6 +241,28 @@ describe("ACQUISITION_TRANSITIONS", () => {
 
 // ---------------------------------------------------------------------------------------
 // fromTaskDivisor in the compiler (contract layer, GAPS Q15/Q16)
+
+describe("renderScaleNote (the candidate's rationale shows what fromTaskDivisor does)", () => {
+  const shipped = Recipe.parse(
+    JSON.parse(readFileSync(new URL("../../../architect/recipes/recipe-zimage-turbo.t2i-upscale2x.recipe.json", import.meta.url), "utf-8")),
+  );
+  const task2048 = fixtureTask({ media: { kind: "image", operation: "text_to_image", output: { width: 2048, height: 2048 } } });
+
+  it("names the generated size and the upscale chain before the user selects", () => {
+    const bindings = { upscale_model: "RealESRGAN_x4plus.safetensors" };
+    expect(renderScaleNote(shipped, task2048, bindings)).toBe("; generates at 1024×1024 and upscales 2× to 2048×2048 with RealESRGAN_x4plus.safetensors");
+  });
+
+  it("says nothing for a recipe that renders at the task's size", () => {
+    expect(renderScaleNote(fixtureRecipe("t2i-basic"), fixtureTask(), {})).toBe("");
+  });
+
+  it("is part of the planned candidate's ranking explanation", () => {
+    const out = planCandidates(input({ task: task2048, recipes: [shipped], objectInfo: fixtureObjectInfo() }));
+    const c = out.presented.find((x) => x.recipeId === shipped.id);
+    expect(c?.ranking.explanation).toContain("generates at 1024×1024 and upscales 2× to 2048×2048 with RealESRGAN_x4plus.safetensors");
+  });
+});
 
 describe("fromTaskDivisor", () => {
   function halved(): Recipe {
