@@ -2,14 +2,16 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { requireInputsUnchanged } from "../../services/architect/admission.js";
 import { RunController, type RunControllerDeps } from "../../services/architect/controller.js";
+import { sha256Hex } from "../../services/architect/hash.js";
 import { type FetchLike, ResourceCoordinator, memoryPool } from "../../services/architect/resources.js";
 import type { ApiGraph, RunRecord, TaskSpec } from "../../services/architect/schemas.js";
 import { ArchitectStore } from "../../services/architect/store.js";
 import { ImageDecoderUnavailableError, type SubmitOutcome, createUpstreamFacade } from "../../services/architect/upstream.js";
 import sharp from "sharp";
 import { BASE_URL } from "./fixtures/execution-records.js";
-import { FakeOllama, GRAPH, RUN_CREATED, releaseOf, seedRun } from "./fixtures/run-harness.js";
+import { FakeOllama, GRAPH, RUN_CREATED, type SeedOptions, releaseOf, seedRun } from "./fixtures/run-harness.js";
 
 type HistoryEntry = NonNullable<Awaited<ReturnType<RunControllerDeps["upstream"]["history"]>>>;
 
@@ -182,11 +184,14 @@ function harness(
     uuids?: string[];
     graphDelayMs?: number;
     revalidate?: RunControllerDeps["revalidate"];
+    inputs?: SeedOptions["inputs"];
   } = {},
 ): Harness {
   const store = opts.store ?? openStore();
   const run =
-    opts.seed === false ? undefined : seedRun(store, { task: opts.task, maxWallTimeSeconds: opts.maxWallTimeSeconds, release: opts.release });
+    opts.seed === false
+      ? undefined
+      : seedRun(store, { task: opts.task, maxWallTimeSeconds: opts.maxWallTimeSeconds, release: opts.release, ...(opts.inputs ? { inputs: opts.inputs } : {}) });
   const comfy = opts.comfy ?? new FakeComfy();
   const now = () => new Date(clock);
   const uuids = [...(opts.uuids ?? [OUR_ID])];
@@ -706,6 +711,56 @@ describe("revalidation after waiting for resources", () => {
     expect((await straight.controller.advance(straight.run.id)).state).toBe("QUEUED");
     expect(direct).not.toHaveBeenCalled();
     rmSync(dir2, { recursive: true, force: true });
+  });
+});
+
+describe("input files read again before a delayed submission (TODO 5.7.2)", () => {
+  const CAT = Buffer.from("cat image bytes");
+  const inputs = [{ assetId: "comfyui-input:pets/cat.png", sha256: sha256Hex(CAT), sizeBytes: CAT.length }];
+
+  function waitedHarness(files: Map<string, Buffer>) {
+    const reads: string[] = [];
+    let h: Harness | undefined;
+    const revalidate = vi.fn(async (r: RunRecord) => {
+      if (!h) throw new Error("no harness");
+      await requireInputsUnchanged(
+        {
+          store: h.store,
+          readInputFile: async (name) => {
+            reads.push(name);
+            const bytes = files.get(name);
+            if (!bytes) throw new Error(`ComfyUI /view returned 404 for "${name}" (input)`);
+            return { bytes };
+          },
+        },
+        r,
+      );
+    });
+    h = harness({ revalidate, inputs });
+    h.store.acquireLease({ pool: POOL, ownerId: "instance-b", now: clock, ttlMs: 60_000 });
+    return { h, reads, revalidate };
+  }
+
+  it("submits a run that waited when its input is the approved one", async () => {
+    const files = new Map([["pets/cat.png", CAT]]);
+    const { h, reads } = waitedHarness(files);
+    expect((await h.controller.advance(h.run.id)).state).toBe("WAITING_FOR_RESOURCE");
+    h.store.releaseLease({ pool: POOL, ownerId: "instance-b" });
+    expect((await h.controller.reconcile(h.run.id)).state).toBe("QUEUED");
+    expect(reads).toEqual(["pets/cat.png"]);
+  });
+
+  it.each(["changed", "vanished"] as const)("fails a run that waited with APPROVAL_INVALIDATED when its input %s meanwhile, with no POST", async (change) => {
+    const files = new Map([["pets/cat.png", CAT]]);
+    const { h } = waitedHarness(files);
+    expect((await h.controller.advance(h.run.id)).state).toBe("WAITING_FOR_RESOURCE");
+    if (change === "changed") files.set("pets/cat.png", Buffer.from("another cat"));
+    else files.delete("pets/cat.png");
+    h.store.releaseLease({ pool: POOL, ownerId: "instance-b" });
+    const r = await h.controller.reconcile(h.run.id);
+    expect(r).toMatchObject({ state: "FAILED", error: { code: "APPROVAL_INVALIDATED" } });
+    expect(r.error?.message).toContain("comfyui-input:pets/cat.png");
+    expect(h.comfy.submitted).toEqual([]);
   });
 });
 

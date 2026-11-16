@@ -491,12 +491,33 @@ export const Certification = z.enum([
   "certified",
 ]);
 
+/**
+ * An output size taken from an input image (ARCH 2026-11-16, output size): the input's
+ * width and height times `factor` (1 for an edit that keeps the size, 4 for a 4x upscale).
+ * `multipleOf` says the graph rounds each side down to that multiple (a VAE encode crops
+ * to its downscale factor), so an input whose product isn't one fails rather than coming
+ * out a few pixels short.
+ */
+export const OutputScaleOfInput = z
+  .object({
+    input: z.string().regex(INPUT_IMAGE_PATH),
+    factor: z.number().positive().max(16),
+    multipleOf: z.number().int().min(2).max(64).optional(),
+  })
+  .strict();
+export type OutputScaleOfInput = z.infer<typeof OutputScaleOfInput>;
+
 export const EvidenceRef = z
   .object({
     kind: z.enum(["maintainer_review", "run", "documentation", "upstream_pack"]),
     source: z.string().min(1),
     observedAt: Timestamp,
     note: z.string().optional(),
+    /**
+     * The recipe revision this evidence is about. A maintainer review covers the revision it
+     * looked at, so a recipe changed afterwards is `proposed` again until it's reviewed anew.
+     */
+    revision: z.number().int().positive().optional(),
   })
   .strict();
 
@@ -526,6 +547,17 @@ export const Recipe = z
             node: z.string().min(1),
             format: z.string().min(1).optional(),
             count: z.number().int().positive().optional(),
+            /**
+             * The output's size is an input image's size times `factor` (ARCH 2026-11-16,
+             * output size), so the task's width and height are compared with the input's
+             * dimensions read from the target; the recipe then takes no size from the task.
+             */
+            scaleOfInput: OutputScaleOfInput.optional(),
+            /**
+             * The graph scales this input image to the task's width and height; a different
+             * aspect ratio stretches it, which a soft check reports before selection.
+             */
+            scalesInputToTask: z.string().regex(INPUT_IMAGE_PATH).optional(),
           })
           .strict(),
       )
@@ -563,8 +595,34 @@ export const Recipe = z
     for (const key of uniqueFolderFile(r.modelSources ?? [])) {
       ctx.addIssue({ code: "custom", message: `modelSources lists ${key} twice`, path: ["modelSources"] });
     }
+    outputSizeIssues(r, (message) => ctx.addIssue({ code: "custom", message, path: ["outputs"] }));
   });
 export type Recipe = z.infer<typeof Recipe>;
+
+/**
+ * Whether an output's size declaration fits the recipe: the input it names is one an
+ * `input_image` slot takes, and a size from an input excludes a size from the task, since
+ * the two would have to agree and nothing would make them.
+ */
+function outputSizeIssues(
+  r: { outputs: readonly { role: string; scaleOfInput?: { input: string }; scalesInputToTask?: string }[]; slots: readonly RecipeSlot[] },
+  issue: (message: string) => void,
+): void {
+  const takes = (path: string) => r.slots.some((s) => s.valueType === "input_image" && s.fromTask === path);
+  const sizedFromTask = r.slots.some((s) => s.fromTask === "media.output.width" || s.fromTask === "media.output.height");
+  for (const o of r.outputs) {
+    if (o.scaleOfInput) {
+      if (!takes(o.scaleOfInput.input)) issue(`output ${o.role}: scaleOfInput names ${o.scaleOfInput.input}, which no input_image slot takes`);
+      if (sizedFromTask) issue(`output ${o.role}: scaleOfInput sizes the output from an input, but a slot also takes the size from the task`);
+      if (o.scalesInputToTask !== undefined) issue(`output ${o.role}: scaleOfInput and scalesInputToTask exclude each other`);
+    }
+    if (o.scalesInputToTask !== undefined) {
+      if (!takes(o.scalesInputToTask)) issue(`output ${o.role}: scalesInputToTask names ${o.scalesInputToTask}, which no input_image slot takes`);
+      const both = ["media.output.width", "media.output.height"].every((p) => r.slots.some((s) => s.fromTask === p));
+      if (!both) issue(`output ${o.role}: scalesInputToTask needs slots that take width and height from the task`);
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------------------
 // Validation (spec §10.3)

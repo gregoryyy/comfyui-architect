@@ -77,8 +77,9 @@ src/services/architect/       the Architect domain: config (modes, forwarded var
                               architect_run workflow), controller (runs), resources (leases, Ollama residency),
                               acquisition-policy (which missing files a candidate may acquire), acquisition (the
                               redirect preflight, staging, sha256 check and placement of approved downloads),
-                              evaluation and media-probe (output checks), families (safetensors headers, family rules,
-                              the observation cache), sources (the built-in source registry), templates (listing and
+                              evaluation and media-probe (output checks), output-size (an output's size from an input
+                              image and its contract checks), families (safetensors headers, family rules, the
+                              observation cache), sources (the built-in source registry), templates (listing and
                               importing templates of the index and the packs, the conversion report), ui-graph (the UI
                               export and its round trip, AT-11), cli (the terminal approval channel), panel
 src/tools/architect.ts        the architect_* MCP tools (architect_inspect, architect_plan) and the MCP prompts;
@@ -86,11 +87,12 @@ src/tools/architect.ts        the architect_* MCP tools (architect_inspect, arch
 src/__tests__/architect/      Architect tests; fixtures/ holds fixture recipes and node schemas, fixtures/templates/ a
                               trimmed template index and template
 scripts/architect/            Architect scripts: stdio-smoke.mjs, what an MCP client sees with the flag off and on;
-                              --plan plans, --run renders on the target, --acquire downloads a pinned file first;
+                              --plan plans, --run renders on the target, --acquire downloads a pinned file first,
+                              --recipes plans and renders each named shipped recipe (--dry lists the downloads only);
                               pin-source.mjs, the maintainer tool that pins a recipe's model source; import-template.mjs,
                               the maintainer tool that imports a template as a draft recipe with its conversion report
 dev/research/                 research notes; index in its README
-architect/recipes/            shipped recipes, *.recipe.json
+architect/recipes/            shipped recipes, *.recipe.json; the README's table lists them
 architect/families/           shipped model-family rules, <id>.json: tensor names and shapes, with provenance
 architect/skills/, architect/commands/   the skill and the /architect command, served as MCP prompts while the
                               flag is on; they move to plugin/ when Architect is on by default

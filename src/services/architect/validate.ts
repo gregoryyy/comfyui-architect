@@ -8,6 +8,7 @@
 
 import type { ComfyUINodeDef, NodeInputSpec, ObjectInfo } from "../../comfyui/types.js";
 import { compileRecipe, graphFingerprint, type Bindings, type CompileResult } from "./compile.js";
+import { type InputSizes, outputSizeChecks } from "./output-size.js";
 import type {
   ApiGraph,
   CheckResult,
@@ -58,6 +59,11 @@ export interface ValidateInput {
   isPaidNode?: (def: ComfyUINodeDef) => boolean;
   /** Observed model families; absent, every family check stays unknown (GAPS Q14). */
   families?: FamilyEvidence;
+  /**
+   * The sizes of the task's input files a recipe sizes its output from (output-size.ts);
+   * absent, those size checks are hard unknowns.
+   */
+  inputSizes?: InputSizes;
 }
 
 /** The report and the dependencies found missing, for `PlanCandidate.dependencyDelta`. */
@@ -181,6 +187,7 @@ function contractLayer(input: ValidateInput, compiled: CompileResult): CheckResu
     const why = input.snapshot.installedModels?.unanswered.find((u) => u.folder === slot.modelFolder)?.reason ?? "the folder wasn't probed";
     return { ...check, verdict: "unknown" as const, message: `slot ${slot.id}: no file to bind, ${slot.modelFolder} couldn't be read (${why})` };
   });
+  checks.push(...outputSizeChecks(input.recipe, input.task, input.inputSizes));
   const transforms = input.transforms ?? [];
   checks.push(
     transforms.length === 0

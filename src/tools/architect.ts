@@ -18,7 +18,7 @@ import { z } from "zod";
 import { ARCHITECT_SCHEMA_VERSION } from "../fork-identity.js";
 import { ModelAcquirer, defaultAcquisitionIo } from "../services/architect/acquisition.js";
 import { formatBytes } from "../services/architect/acquisition-policy.js";
-import { requireFeasible } from "../services/architect/admission.js";
+import { requireFeasible, requireInputsUnchanged } from "../services/architect/admission.js";
 import { ARCHITECT_RESIDENCY_ENV, architectEnabled } from "../services/architect/config.js";
 import { RunController } from "../services/architect/controller.js";
 import { ArchitectExecution } from "../services/architect/execution.js";
@@ -89,6 +89,8 @@ function defaultPlanningFactory(service: ArchitectService, upstream: UpstreamFac
       newId: () => randomUUID(),
       isPaidNode: (def) => upstream.isPaidNode(def),
       families: new FamilyObserver({ store, locate: (folder, file) => upstream.locateModelFile(folder, file), rules: loaded.rules, now }),
+      // Input sizes for recipes whose output follows an input image (ARCH 2026-11-16, output size).
+      inputFiles: upstream,
       familyRuleErrors: [
         ...loaded.errors.map((e) => `family rule file ${e.file}: ${e.message}`),
         ...(loaded.dirFound ? [] : ["the family rules folder architect/families/ wasn't found: model families stay unverified"]),
@@ -156,8 +158,12 @@ function defaultRunContext(planning: PlanningFactory, upstream: UpstreamFacade):
         return task;
       },
       // A run that waited for its resources, or acquired model files, is validated again
-      // against a fresh snapshot before it's submitted.
-      revalidate: (run) => requireFeasible(p, run.planId, run.candidateId),
+      // against a fresh snapshot before it's submitted, and its input files are read again:
+      // one changed since start invalidates the approval (GAPS Q33).
+      revalidate: async (run) => {
+        await requireFeasible(p, run.planId, run.candidateId);
+        await requireInputsUnchanged({ store, readInputFile: (name) => upstream.readInputFile(name) }, run);
+      },
       acquirer,
     });
     const execution = new ArchitectExecution({

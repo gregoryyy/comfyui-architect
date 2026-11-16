@@ -1,0 +1,145 @@
+{
+  "schemaVersion": 1,
+  "id": "recipe-realesrgan.upscale-2x",
+  "revision": 1,
+  "title": "Real-ESRGAN x4plus: 2x upscale",
+  "description": "Upscales a source image 2x: RealESRGAN x4plus upscales 4x and a lanczos ImageScaleBy of 0.5 brings it to twice the source's width and height, which keeps more detail than a direct 2x resize. No diffusion model and no prompt. The contract check compares twice the source's size with the task's. LoadImage drops an alpha channel, so the output is RGB.",
+  "kind": "image",
+  "operations": [
+    "upscale"
+  ],
+  "graph": {
+    "1": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      },
+      "_meta": {
+        "title": "Source image"
+      }
+    },
+    "2": {
+      "class_type": "UpscaleModelLoader",
+      "inputs": {
+        "model_name": "RealESRGAN_x4plus.safetensors"
+      }
+    },
+    "3": {
+      "class_type": "ImageUpscaleWithModel",
+      "inputs": {
+        "upscale_model": [
+          "2",
+          0
+        ],
+        "image": [
+          "1",
+          0
+        ]
+      }
+    },
+    "4": {
+      "class_type": "ImageScaleBy",
+      "inputs": {
+        "image": [
+          "3",
+          0
+        ],
+        "upscale_method": "lanczos",
+        "scale_by": 0.5
+      }
+    },
+    "5": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "4",
+          0
+        ],
+        "filename_prefix": "architect/realesrgan-upscale-2x"
+      }
+    }
+  },
+  "slots": [
+    {
+      "id": "upscale_model",
+      "label": "4x upscale model",
+      "valueType": "model_file",
+      "target": {
+        "node": "2",
+        "input": "model_name"
+      },
+      "required": true,
+      "default": "RealESRGAN_x4plus.safetensors",
+      "modelFolder": "upscale_models",
+      "modelFamily": "esrgan-4x"
+    },
+    {
+      "id": "source_image",
+      "label": "Source image (file name in ComfyUI's input folder)",
+      "valueType": "input_image",
+      "target": {
+        "node": "1",
+        "input": "image"
+      },
+      "required": true,
+      "fromTask": "inputs.source_image"
+    }
+  ],
+  "outputs": [
+    {
+      "role": "image",
+      "node": "5",
+      "format": "png",
+      "count": 1,
+      "scaleOfInput": {
+        "input": "inputs.source_image",
+        "factor": 2
+      }
+    }
+  ],
+  "dependencies": {
+    "nodeClasses": [
+      "LoadImage",
+      "UpscaleModelLoader",
+      "ImageUpscaleWithModel",
+      "ImageScaleBy",
+      "SaveImage"
+    ]
+  },
+  "modelSources": [
+    {
+      "folder": "upscale_models",
+      "file": "RealESRGAN_x4plus.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Real-ESRGAN",
+        "revision": "5fd49b7b278836f48af63ecd314d0f98ab336105",
+        "path": "RealESRGAN_x4plus.safetensors",
+        "sha256": "37f9a931c215f040aa6d50f711f2cb115f713c46df1d0d6469a8bd7bfe9a60bb",
+        "sizeBytes": 66857836,
+        "license": "bsd-3-clause"
+      }
+    }
+  ],
+  "certification": "proposed",
+  "evidence": [
+    {
+      "kind": "upstream_pack",
+      "source": "plugin/skills/comfyui-core/SKILL.md at fork baseline 707474d2 (blob f7bb340d)",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "The upscale chain of the section Upscale: LoadImage, UpscaleModelLoader, ImageUpscaleWithModel (upscale_model, image), SaveImage. ComfyUI's template index has no image template for an upscale model alone (utility-gan_upscaler is a video template)."
+    },
+    {
+      "kind": "documentation",
+      "source": "GET http://127.0.0.1:8188/object_info, ComfyUI Desktop 0.44.0; the classes used captured in src/__tests__/architect/fixtures/object-info-desktop-0.44.0.json",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "LoadImage, UpscaleModelLoader, ImageUpscaleWithModel, ImageScaleBy (upscale_method lanczos, scale_by 0.01 to 8) and SaveImage are in the live schema; ImageScaleBy rounds width times 0.5 to the nearest pixel, exact for the 4x model's output."
+    },
+    {
+      "kind": "documentation",
+      "source": "Hugging Face API: /api/models/<repo>/revision/main and /api/models/<repo>/tree/<commit>, read by scripts/architect/pin-source.mjs",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "RealESRGAN_x4plus.safetensors pinned as in recipe-zimage-turbo.t2i-upscale2x: Comfy-Org/Real-ESRGAN at commit 5fd49b7b (requested as Comfy-Org/Real-ESRGAN_repackaged, renamed), BSD-3-Clause per the repository card."
+    }
+  ]
+}

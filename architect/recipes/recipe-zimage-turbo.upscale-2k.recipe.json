@@ -1,0 +1,359 @@
+{
+  "schemaVersion": 1,
+  "id": "recipe-zimage-turbo.upscale-2k",
+  "revision": 1,
+  "title": "Z-Image Turbo: 2x upscale with a refining pass",
+  "description": "Upscales a source image 2x: RealESRGAN x4plus, a lanczos downscale by 0.5, then a Z-Image Turbo pass at denoise 0.33 (5 steps of dpmpp_2m_sde, beta, CFG 1.0) that refines detail. The output is twice the source image's size; the VAE encode crops to multiples of 8, so the source's sides must be multiples of 4, which the contract check holds it to. ComfyUI's template first scales the source to one megapixel, which gives an output of about 2048x2048 whatever the source; this recipe leaves that step out, so the output size follows the source exactly, and a source of about one megapixel gives the template's result. The prompt is the template's fixed quality prompt; the task's intent isn't used.",
+  "kind": "image",
+  "operations": [
+    "upscale"
+  ],
+  "graph": {
+    "1": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "z_image_turbo_bf16.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "2": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen_3_4b.safetensors",
+        "type": "lumina2",
+        "device": "default"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "ae.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      },
+      "_meta": {
+        "title": "Source image"
+      }
+    },
+    "5": {
+      "class_type": "UpscaleModelLoader",
+      "inputs": {
+        "model_name": "RealESRGAN_x4plus.safetensors"
+      }
+    },
+    "6": {
+      "class_type": "ImageUpscaleWithModel",
+      "inputs": {
+        "upscale_model": [
+          "5",
+          0
+        ],
+        "image": [
+          "4",
+          0
+        ]
+      }
+    },
+    "7": {
+      "class_type": "ImageScaleBy",
+      "inputs": {
+        "image": [
+          "6",
+          0
+        ],
+        "upscale_method": "lanczos",
+        "scale_by": 0.5
+      }
+    },
+    "8": {
+      "class_type": "VAEEncode",
+      "inputs": {
+        "pixels": [
+          "7",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "9": {
+      "class_type": "ModelSamplingAuraFlow",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "shift": 3
+      }
+    },
+    "10": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "2",
+          0
+        ],
+        "text": "masterpiece, 8k"
+      },
+      "_meta": {
+        "title": "Positive (the template's)"
+      }
+    },
+    "11": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "2",
+          0
+        ],
+        "text": ""
+      },
+      "_meta": {
+        "title": "Negative"
+      }
+    },
+    "12": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "9",
+          0
+        ],
+        "positive": [
+          "10",
+          0
+        ],
+        "negative": [
+          "11",
+          0
+        ],
+        "latent_image": [
+          "8",
+          0
+        ],
+        "seed": 0,
+        "steps": 5,
+        "cfg": 1,
+        "sampler_name": "dpmpp_2m_sde",
+        "scheduler": "beta",
+        "denoise": 0.33
+      }
+    },
+    "13": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "12",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "14": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "13",
+          0
+        ],
+        "filename_prefix": "architect/zimage-turbo-upscale-2k"
+      }
+    }
+  },
+  "slots": [
+    {
+      "id": "diffusion_model",
+      "label": "Z-Image Turbo diffusion model",
+      "valueType": "model_file",
+      "target": {
+        "node": "1",
+        "input": "unet_name"
+      },
+      "required": true,
+      "default": "z_image_turbo_bf16.safetensors",
+      "modelFolder": "diffusion_models",
+      "modelFamily": "z-image-turbo"
+    },
+    {
+      "id": "text_encoder",
+      "label": "Qwen 3 4B text encoder",
+      "valueType": "model_file",
+      "target": {
+        "node": "2",
+        "input": "clip_name"
+      },
+      "required": true,
+      "default": "qwen_3_4b.safetensors",
+      "modelFolder": "text_encoders",
+      "modelFamily": "qwen3-4b"
+    },
+    {
+      "id": "vae",
+      "label": "Z-Image VAE",
+      "valueType": "model_file",
+      "target": {
+        "node": "3",
+        "input": "vae_name"
+      },
+      "required": true,
+      "default": "ae.safetensors",
+      "modelFolder": "vae",
+      "modelFamily": "z-image-vae"
+    },
+    {
+      "id": "upscale_model",
+      "label": "4x upscale model",
+      "valueType": "model_file",
+      "target": {
+        "node": "5",
+        "input": "model_name"
+      },
+      "required": true,
+      "default": "RealESRGAN_x4plus.safetensors",
+      "modelFolder": "upscale_models",
+      "modelFamily": "esrgan-4x"
+    },
+    {
+      "id": "source_image",
+      "label": "Source image (file name in ComfyUI's input folder)",
+      "valueType": "input_image",
+      "target": {
+        "node": "4",
+        "input": "image"
+      },
+      "required": true,
+      "fromTask": "inputs.source_image"
+    },
+    {
+      "id": "seed",
+      "label": "Seed",
+      "valueType": "seed",
+      "target": {
+        "node": "12",
+        "input": "seed"
+      },
+      "required": true,
+      "default": 0
+    }
+  ],
+  "outputs": [
+    {
+      "role": "image",
+      "node": "14",
+      "format": "png",
+      "count": 1,
+      "scaleOfInput": {
+        "input": "inputs.source_image",
+        "factor": 2,
+        "multipleOf": 8
+      }
+    }
+  ],
+  "dependencies": {
+    "nodeClasses": [
+      "UNETLoader",
+      "CLIPLoader",
+      "VAELoader",
+      "LoadImage",
+      "UpscaleModelLoader",
+      "ImageUpscaleWithModel",
+      "ImageScaleBy",
+      "VAEEncode",
+      "ModelSamplingAuraFlow",
+      "CLIPTextEncode",
+      "KSampler",
+      "VAEDecode",
+      "SaveImage"
+    ]
+  },
+  "modelSources": [
+    {
+      "folder": "diffusion_models",
+      "file": "z_image_turbo_bf16.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Z-Image-Turbo",
+        "revision": "6fc90a3b1b653e935a0d175e260736de25b84df5",
+        "path": "split_files/diffusion_models/z_image_turbo_bf16.safetensors",
+        "sha256": "2407613050b809ffdff18a4ac99af83ea6b95443ecebdf80e064a79c825574a6",
+        "sizeBytes": 12309866400,
+        "license": "apache-2.0"
+      }
+    },
+    {
+      "folder": "text_encoders",
+      "file": "qwen_3_4b.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Z-Image-Turbo",
+        "revision": "6fc90a3b1b653e935a0d175e260736de25b84df5",
+        "path": "split_files/text_encoders/qwen_3_4b.safetensors",
+        "sha256": "6c671498573ac2f7a5501502ccce8d2b08ea6ca2f661c458e708f36b36edfc5a",
+        "sizeBytes": 8044982048,
+        "license": "apache-2.0"
+      }
+    },
+    {
+      "folder": "vae",
+      "file": "ae.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Z-Image-Turbo",
+        "revision": "6fc90a3b1b653e935a0d175e260736de25b84df5",
+        "path": "split_files/vae/ae.safetensors",
+        "sha256": "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38",
+        "sizeBytes": 335304388,
+        "license": "apache-2.0"
+      }
+    },
+    {
+      "folder": "upscale_models",
+      "file": "RealESRGAN_x4plus.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Real-ESRGAN",
+        "revision": "5fd49b7b278836f48af63ecd314d0f98ab336105",
+        "path": "RealESRGAN_x4plus.safetensors",
+        "sha256": "37f9a931c215f040aa6d50f711f2cb115f713c46df1d0d6469a8bd7bfe9a60bb",
+        "sizeBytes": 66857836,
+        "license": "bsd-3-clause"
+      }
+    }
+  ],
+  "certification": "proposed",
+  "evidence": [
+    {
+      "kind": "upstream_pack",
+      "source": "plugin/skills/z-image-txt2img/SKILL.md at fork baseline 707474d2 (blob 3dafc274)",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "Components as in recipe-zimage-turbo.t2i: z_image_turbo_bf16, qwen_3_4b, the Z-Image ae.safetensors; CFG 1.0 because Turbo is distilled. The installed VAE matches the flux-ae family rule, the family the skill and this recipe call z-image-vae."
+    },
+    {
+      "kind": "documentation",
+      "source": "ComfyUI workflow template utility_z_image_turbo_2k_upscaler.app (comfyui-workflow-templates 0.11.103, GET http://127.0.0.1:8188/templates/utility_z_image_turbo_2k_upscaler.app.json, sha256 a8f23127fb7671ce6b43b456d6a5ef8639a0e8334208963913597cdc7c84eb42)",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "The graph follows the template without its ImageCompare node (a viewer with no output) and without its ImageScaleToTotalPixels (lanczos, 1 megapixel) before the upscale model, whose output size depends on the source only through its aspect ratio and so can't be stated as a factor of the input. Kept: UpscaleModelLoader RealESRGAN_x4plus, ImageUpscaleWithModel, ImageScaleBy lanczos 0.5, VAEEncode, ModelSamplingAuraFlow shift 3, CLIPLoader type lumina2, CLIPTextEncode \"masterpiece, 8k\" and an empty negative, KSampler 5 steps, CFG 1, dpmpp_2m_sde, beta, denoise 0.33, VAEDecode, SaveImage."
+    },
+    {
+      "kind": "documentation",
+      "source": "GET http://127.0.0.1:8188/object_info, ComfyUI Desktop 0.44.0; the classes used captured in src/__tests__/architect/fixtures/object-info-desktop-0.44.0.json",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "UpscaleModelLoader, ImageUpscaleWithModel, ImageScaleBy (scale_by 0.01 to 8), VAEEncode, ModelSamplingAuraFlow and the Z-Image classes are in the live schema; dpmpp_2m_sde and beta are KSampler choices."
+    },
+    {
+      "kind": "documentation",
+      "source": "Hugging Face API: /api/models/<repo>/revision/main and /api/models/<repo>/tree/<commit>, read by scripts/architect/pin-source.mjs",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "RealESRGAN_x4plus.safetensors pinned as in recipe-zimage-turbo.t2i-upscale2x: Comfy-Org/Real-ESRGAN at commit 5fd49b7b, BSD-3-Clause per the repository card; the Z-Image files as in recipe-zimage-turbo.t2i."
+    }
+  ]
+}

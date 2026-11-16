@@ -9,6 +9,7 @@ import {
   type AcquireModelsEffect,
   type ApiGraph,
   type ReleaseResidencyEffect,
+  type RenderInput,
   type RunRecord,
   actionPlanHash,
 } from "../../../services/architect/schemas.js";
@@ -34,6 +35,8 @@ export interface SeedOptions {
   release?: ReleaseResidencyEffect;
   /** An `acquire_models` effect the user approved before the render (TODO 4.5). */
   acquire?: AcquireModelsEffect;
+  /** The input files the render's grant binds (TODO 5.7.2). */
+  inputs?: RenderInput[];
 }
 
 /** Seed everything up to a run in PREPARING and return it. */
@@ -41,7 +44,7 @@ export function seedRun(store: ArchitectStore, opts: SeedOptions = {}): RunRecor
   const budgets = { maxRuns: 1, maxWallTimeSeconds: opts.maxWallTimeSeconds ?? 600 };
   const effects = [
     ...(opts.acquire ? [opts.acquire] : []),
-    { kind: "local_render" as const, graphFingerprint: GRAPH_FINGERPRINT, outputNodes: ["2"] },
+    { kind: "local_render" as const, graphFingerprint: GRAPH_FINGERPRINT, outputNodes: ["2"], ...(opts.inputs ? { inputs: opts.inputs } : {}) },
     ...(opts.release ? [opts.release] : []),
   ];
   const binding = {

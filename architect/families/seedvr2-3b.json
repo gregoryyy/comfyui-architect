@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "seedvr2-3b",
+  "title": "SeedVR2 3B restoration transformer (32 blocks, 2560 wide)",
+  "folders": ["diffusion_models", "unet"],
+  "requiredTensors": [
+    "vid_in.proj.weight",
+    "txt_in.weight",
+    "emb_in.proj_in.weight",
+    "blocks.0.attn.proj_qkv.vid.weight",
+    "blocks.31.attn.proj_qkv.all.weight",
+    "vid_out.proj.weight"
+  ],
+  "forbiddenTensors": ["blocks.32.*", "*double_blocks.*"],
+  "shapes": {
+    "vid_in.proj.weight": [2560, 132],
+    "txt_in.weight": [2560, 5120],
+    "vid_out.proj.weight": [64, 2560]
+  },
+  "provenance": [
+    {
+      "source": "safetensors header of diffusion_models/seedvr2_3b_fp16.safetensors (6784268336 bytes) in Comfy-Org/SeedVR2 at commit df48879708206a403d2a61acd55578c2e80fd233, read with HTTP Range requests for the 8-byte length and the 66152-byte header from https://huggingface.co/Comfy-Org/SeedVR2/resolve/df48879708206a403d2a61acd55578c2e80fd233/diffusion_models/seedvr2_3b_fp16.safetensors; no weights were read",
+      "observedAt": "2026-11-16T09:53:40+01:00",
+      "note": "637 tensors, F16 apart from the stored positive_conditioning [58, 5120] and negative_conditioning [64, 5120] text embeddings (BF16): vid_in.proj [2560, 132], txt_in [2560, 5120], emb_in, vid_out.proj [64, 2560], blocks 0 to 9 with separate vid and txt weights and blocks 10 to 31 with shared all weights. The file isn't installed on the reference target yet. The 7B model is 3072 wide with more blocks and doesn't match; the int8 file of ComfyUI's template wasn't read."
+    }
+  ]
+}

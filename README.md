@@ -44,15 +44,7 @@ Selecting a candidate records a choice and authorizes nothing. To render it:
 
 ### Recipes
 
-Recipes live in [`architect/recipes/`](architect/recipes/). Each records its graph, typed slots, dependencies and the evidence behind it. A recipe is `proposed` when an agent wrote it, `curated` after a maintainer reviewed it, and `certified` once it passes a recorded test matrix.
-
-| Recipe | Operation | Tier |
-|---|---|---|
-| Z-Image Turbo | text to image | curated |
-| Z-Image Turbo | image to image | curated |
-| FLUX.1-schnell, separate components | text to image | curated |
-| FLUX.1-schnell, all-in-one checkpoint | text to image | proposed |
-| Z-Image Turbo at half size, upscaled 2× with RealESRGAN (downloads the 67 MB upscaler) | text to image | proposed |
+Recipes live in [`architect/recipes/`](architect/recipes/). Each records its graph, typed slots, dependencies and the evidence behind it. A recipe is `proposed` when an agent wrote it or changed it, `curated` after a maintainer reviewed that revision, and `certified` once it also passes a recorded test matrix (GAPS Q27). There are 16 recipes for Z-Image Turbo, FLUX.1-schnell, FLUX.2 Klein 4B, RealESRGAN and SeedVR2, covering text to image, image editing, inpainting, reference images and upscaling; the [recipe list](architect/recipes/README.md) has each one's operation, output size, files and tier. One is `curated` today (FLUX.1-schnell from separate components); the rest wait for the owner's review.
 
 ## Try it
 

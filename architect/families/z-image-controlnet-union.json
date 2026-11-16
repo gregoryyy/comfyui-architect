@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "z-image-controlnet-union",
+  "title": "Z-Image Turbo Fun ControlNet Union model patch (6 control layers, 2 refiner blocks, 3840 wide)",
+  "folders": ["model_patches"],
+  "requiredTensors": [
+    "control_all_x_embedder.2-1.weight",
+    "control_layers.0.before_proj.weight",
+    "control_layers.5.after_proj.weight",
+    "control_layers.5.attention.to_q.weight",
+    "control_noise_refiner.1.attention.to_q.weight"
+  ],
+  "forbiddenTensors": ["control_layers.6.*", "control_noise_refiner.2.*", "*double_blocks.*", "cap_embedder.*"],
+  "shapes": {
+    "control_all_x_embedder.2-1.weight": [3840, 64],
+    "control_layers.5.attention.to_q.weight": [3840, 3840]
+  },
+  "provenance": [
+    {
+      "source": "safetensors header of Z-Image-Turbo-Fun-Controlnet-Union.safetensors (3101572408 bytes) in alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union at commit 01c794d57ff16844b24d0580471fa9d686e7a465, read with HTTP Range requests for the 8-byte length and the 15664-byte header from https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union/resolve/01c794d57ff16844b24d0580471fa9d686e7a465/Z-Image-Turbo-Fun-Controlnet-Union.safetensors; no weights were read",
+      "observedAt": "2026-11-16T09:53:40+01:00",
+      "note": "136 tensors, BF16: control_all_x_embedder.2-1 [3840, 64], control_layers 0 to 5 (before_proj in layer 0 only, after_proj in each), control_noise_refiner 0 and 1; no cap_embedder and no main transformer layers, so the Z-Image Turbo rule can't match it and this rule can't match a Z-Image diffusion model. The file isn't installed on the reference target yet. Later releases of the patch with more control layers match no rule and stay unknown."
+    }
+  ]
+}

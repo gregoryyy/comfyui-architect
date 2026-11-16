@@ -1,0 +1,371 @@
+{
+  "schemaVersion": 1,
+  "id": "recipe-zimage-turbo.inpaint",
+  "revision": 1,
+  "title": "Z-Image Turbo: inpainting",
+  "description": "Repaints the masked area of a source image from the prompt with Z-Image Turbo. InpaintModelConditioning encodes the source and sets the mask as the latent's noise mask, KSampler samples 9 steps at CFG 1.0 and denoise 0.77, and ImageCompositeMasked puts the repainted area over the source, so the pixels outside the mask are the source's and the output has the source image's size. The mask is a separate image in ComfyUI's input folder, white where the image is repainted, read from its red channel by LoadImageMask. Lower denoise keeps more of the source inside the mask.",
+  "kind": "image",
+  "operations": [
+    "inpaint"
+  ],
+  "graph": {
+    "1": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "z_image_turbo_bf16.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "2": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen_3_4b.safetensors",
+        "type": "lumina2",
+        "device": "default"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "ae.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "2",
+          0
+        ],
+        "text": ""
+      },
+      "_meta": {
+        "title": "Positive"
+      }
+    },
+    "5": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "2",
+          0
+        ],
+        "text": ""
+      },
+      "_meta": {
+        "title": "Negative (ignored at CFG 1)"
+      }
+    },
+    "6": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      },
+      "_meta": {
+        "title": "Source image"
+      }
+    },
+    "7": {
+      "class_type": "LoadImageMask",
+      "inputs": {
+        "image": "",
+        "channel": "red"
+      },
+      "_meta": {
+        "title": "Mask (white repaints)"
+      }
+    },
+    "8": {
+      "class_type": "InpaintModelConditioning",
+      "inputs": {
+        "positive": [
+          "4",
+          0
+        ],
+        "negative": [
+          "5",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ],
+        "pixels": [
+          "6",
+          0
+        ],
+        "mask": [
+          "7",
+          0
+        ],
+        "noise_mask": true
+      }
+    },
+    "9": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "positive": [
+          "8",
+          0
+        ],
+        "negative": [
+          "8",
+          1
+        ],
+        "latent_image": [
+          "8",
+          2
+        ],
+        "seed": 0,
+        "steps": 9,
+        "cfg": 1,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "denoise": 0.77
+      }
+    },
+    "10": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "9",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "11": {
+      "class_type": "ImageCompositeMasked",
+      "inputs": {
+        "destination": [
+          "6",
+          0
+        ],
+        "source": [
+          "10",
+          0
+        ],
+        "x": 0,
+        "y": 0,
+        "resize_source": false,
+        "mask": [
+          "7",
+          0
+        ]
+      },
+      "_meta": {
+        "title": "Repainted area over the source"
+      }
+    },
+    "12": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "11",
+          0
+        ],
+        "filename_prefix": "architect/zimage-turbo-inpaint"
+      }
+    }
+  },
+  "slots": [
+    {
+      "id": "diffusion_model",
+      "label": "Z-Image Turbo diffusion model",
+      "valueType": "model_file",
+      "target": {
+        "node": "1",
+        "input": "unet_name"
+      },
+      "required": true,
+      "default": "z_image_turbo_bf16.safetensors",
+      "modelFolder": "diffusion_models",
+      "modelFamily": "z-image-turbo"
+    },
+    {
+      "id": "text_encoder",
+      "label": "Qwen 3 4B text encoder",
+      "valueType": "model_file",
+      "target": {
+        "node": "2",
+        "input": "clip_name"
+      },
+      "required": true,
+      "default": "qwen_3_4b.safetensors",
+      "modelFolder": "text_encoders",
+      "modelFamily": "qwen3-4b"
+    },
+    {
+      "id": "vae",
+      "label": "Z-Image VAE",
+      "valueType": "model_file",
+      "target": {
+        "node": "3",
+        "input": "vae_name"
+      },
+      "required": true,
+      "default": "ae.safetensors",
+      "modelFolder": "vae",
+      "modelFamily": "z-image-vae"
+    },
+    {
+      "id": "prompt",
+      "label": "Prompt",
+      "valueType": "string",
+      "target": {
+        "node": "4",
+        "input": "text"
+      },
+      "required": true,
+      "fromTask": "intent"
+    },
+    {
+      "id": "source_image",
+      "label": "Source image (file name in ComfyUI's input folder)",
+      "valueType": "input_image",
+      "target": {
+        "node": "6",
+        "input": "image"
+      },
+      "required": true,
+      "fromTask": "inputs.source_image"
+    },
+    {
+      "id": "mask",
+      "label": "Mask (file name in ComfyUI's input folder; white repaints)",
+      "valueType": "input_image",
+      "target": {
+        "node": "7",
+        "input": "image"
+      },
+      "required": true,
+      "fromTask": "inputs.mask"
+    },
+    {
+      "id": "denoise",
+      "label": "Denoise inside the mask (lower keeps more of the source)",
+      "valueType": "float",
+      "target": {
+        "node": "9",
+        "input": "denoise"
+      },
+      "required": true,
+      "default": 0.77,
+      "min": 0,
+      "max": 1
+    },
+    {
+      "id": "seed",
+      "label": "Seed",
+      "valueType": "seed",
+      "target": {
+        "node": "9",
+        "input": "seed"
+      },
+      "required": true,
+      "default": 0
+    }
+  ],
+  "outputs": [
+    {
+      "role": "image",
+      "node": "12",
+      "format": "png",
+      "count": 1,
+      "scaleOfInput": {
+        "input": "inputs.source_image",
+        "factor": 1
+      }
+    }
+  ],
+  "dependencies": {
+    "nodeClasses": [
+      "UNETLoader",
+      "CLIPLoader",
+      "VAELoader",
+      "CLIPTextEncode",
+      "LoadImage",
+      "LoadImageMask",
+      "InpaintModelConditioning",
+      "KSampler",
+      "VAEDecode",
+      "ImageCompositeMasked",
+      "SaveImage"
+    ]
+  },
+  "modelSources": [
+    {
+      "folder": "diffusion_models",
+      "file": "z_image_turbo_bf16.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Z-Image-Turbo",
+        "revision": "6fc90a3b1b653e935a0d175e260736de25b84df5",
+        "path": "split_files/diffusion_models/z_image_turbo_bf16.safetensors",
+        "sha256": "2407613050b809ffdff18a4ac99af83ea6b95443ecebdf80e064a79c825574a6",
+        "sizeBytes": 12309866400,
+        "license": "apache-2.0"
+      }
+    },
+    {
+      "folder": "text_encoders",
+      "file": "qwen_3_4b.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Z-Image-Turbo",
+        "revision": "6fc90a3b1b653e935a0d175e260736de25b84df5",
+        "path": "split_files/text_encoders/qwen_3_4b.safetensors",
+        "sha256": "6c671498573ac2f7a5501502ccce8d2b08ea6ca2f661c458e708f36b36edfc5a",
+        "sizeBytes": 8044982048,
+        "license": "apache-2.0"
+      }
+    },
+    {
+      "folder": "vae",
+      "file": "ae.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Z-Image-Turbo",
+        "revision": "6fc90a3b1b653e935a0d175e260736de25b84df5",
+        "path": "split_files/vae/ae.safetensors",
+        "sha256": "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38",
+        "sizeBytes": 335304388,
+        "license": "apache-2.0"
+      }
+    }
+  ],
+  "certification": "proposed",
+  "evidence": [
+    {
+      "kind": "upstream_pack",
+      "source": "plugin/skills/z-image-txt2img/SKILL.md at fork baseline 707474d2 (blob 3dafc274)",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "Components as in recipe-zimage-turbo.t2i: z_image_turbo_bf16, qwen_3_4b, the Z-Image ae.safetensors; CFG 1.0 because Turbo is distilled. The installed VAE matches the flux-ae family rule, the family the skill and this recipe call z-image-vae."
+    },
+    {
+      "kind": "upstream_pack",
+      "source": "packs/z-image-turbo-inpainting/workflow.json at fork baseline 707474d2 (blob 3dc586db)",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "The graph follows the pack's Z-IMAGE TURBO INPAINTING slice: InpaintModelConditioning with noise_mask on, KSampler 9 steps, CFG 1, euler, simple, denoise 0.77, VAEDecode, then ImageCompositeMasked of the result over the source. The pack loads GGUF files through custom nodes (UnetLoaderGGUF, CLIPLoaderGGUF, type lumina2) and blurs the mask with MaskBlur+ (ComfyUI_essentials); this recipe loads the bf16 files with the core loaders and composites with the unblurred mask, since no core node blurs a mask. The pack takes the mask from the painted image's alpha; this recipe takes it from a separate mask file, the task's mask input."
+    },
+    {
+      "kind": "documentation",
+      "source": "GET http://127.0.0.1:8188/object_info, ComfyUI Desktop 0.44.0; the classes used captured in src/__tests__/architect/fixtures/object-info-desktop-0.44.0.json",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "LoadImageMask (image, channel red), InpaintModelConditioning (positive, negative, vae, pixels, mask, noise_mask), ImageCompositeMasked (destination, source, x, y, resize_source, mask) and the Z-Image classes are in the live schema; denoise bounds 0 to 1 come from KSampler."
+    },
+    {
+      "kind": "documentation",
+      "source": "Hugging Face API: /api/models/<repo>/revision/main and /api/models/<repo>/tree/<commit>, read by scripts/architect/pin-source.mjs",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "The Z-Image files are pinned as in recipe-zimage-turbo.t2i: Comfy-Org/Z-Image-Turbo at commit 6fc90a3b (requested as Comfy-Org/z_image_turbo, renamed); sha256 and size are the LFS values Hugging Face reports."
+    }
+  ]
+}

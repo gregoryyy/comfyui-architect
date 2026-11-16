@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "id": "recipe-zimage-turbo.img2img",
-  "revision": 4,
+  "revision": 5,
   "title": "Z-Image Turbo: image to image",
-  "description": "Prompt-guided image to image with Z-Image Turbo: the source image is encoded to a latent and sampled again at a denoise below 1, so the prompt reshapes the image while lower denoise keeps more of its structure. It is not instruction editing: the model doesn't follow edit instructions, it renders the prompt starting from the source. The output has the source image's size. The source image slot takes a file name in ComfyUI's input folder.",
+  "description": "Prompt-guided image to image with Z-Image Turbo: the source image is encoded to a latent and sampled again at a denoise below 1, so the prompt reshapes the image while lower denoise keeps more of its structure. It is not instruction editing: the model doesn't follow edit instructions, it renders the prompt starting from the source. The source image is the task's source image, a file in ComfyUI's input folder. The output has the source image's size, rounded down to multiples of 8 by the VAE encode, so the task's width and height must be the source's, and the contract check refuses a source whose sides aren't multiples of 8.",
   "kind": "image",
   "operations": [
     "image_edit"
@@ -202,12 +202,13 @@
     {
       "id": "source_image",
       "label": "Source image (file name in ComfyUI's input folder)",
-      "valueType": "string",
+      "valueType": "input_image",
       "target": {
         "node": "6",
         "input": "image"
       },
-      "required": true
+      "required": true,
+      "fromTask": "inputs.source_image"
     },
     {
       "id": "denoise",
@@ -238,7 +239,12 @@
       "role": "image",
       "node": "10",
       "format": "png",
-      "count": 1
+      "count": 1,
+      "scaleOfInput": {
+        "input": "inputs.source_image",
+        "factor": 1,
+        "multipleOf": 8
+      }
     }
   ],
   "dependencies": {
@@ -296,7 +302,7 @@
       }
     }
   ],
-  "certification": "curated",
+  "certification": "proposed",
   "evidence": [
     {
       "kind": "upstream_pack",
@@ -314,7 +320,8 @@
       "kind": "maintainer_review",
       "source": "Owner review, GAPS Q12 and PR #7 (2026-11-15 18:49)",
       "observedAt": "2026-11-15T18:49:40+01:00",
-      "note": "The owner accepted the recipe as curated. Not yet run on a recorded matrix, so not certified (AT-03)."
+      "note": "The owner accepted the recipe as curated. Not yet run on a recorded matrix, so not certified (AT-03).",
+      "revision": 3
     }
   ]
 }

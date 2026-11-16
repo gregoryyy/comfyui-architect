@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ObjectInfo } from "../../comfyui/types.js";
-import { ApprovalError, describeActionPlan, issueGrant } from "../../services/architect/admission.js";
+import { ApprovalError, describeActionPlan, issueGrant, requireInputsUnchanged } from "../../services/architect/admission.js";
 import { compileRecipe } from "../../services/architect/compile.js";
 import { ArchitectExecution, type RunDriver } from "../../services/architect/execution.js";
 import { deriveAcquisition } from "../../services/architect/acquisition-policy.js";
@@ -486,6 +486,51 @@ describe("action plans bind each input's content", () => {
     expect(lock.inputs).toEqual(expected);
     expect(JSON.stringify(written.lineage.inputs)).not.toContain("/Users");
     expect(JSON.stringify(lock.inputs)).not.toContain(s.dataDir);
+  });
+});
+
+describe("inputs read again before a delayed submission (requireInputsUnchanged)", () => {
+  async function startedRun() {
+    const s = await inputSetup([{ assetId: "comfyui-input:pets/cat.png", role: "source_image" }]);
+    const r = await s.execution.prepare({ planId: s.planId });
+    issueGrant(s, { requestId: r.approvalRequest.id, channel: "terminal", issuer: "terminal", confirmHash: r.shortHash });
+    const { run } = await s.execution.start({ actionPlanId: r.actionPlan.id });
+    const reader = async (name: string) => {
+      s.reads.push(name);
+      const bytes = s.files.get(name);
+      if (!bytes) throw new Error(`ComfyUI /view returned 404 for "${name}" (input)`);
+      return { bytes };
+    };
+    return { s, run, reader };
+  }
+
+  it("passes when every input is the approved file, reading each once", async () => {
+    const { s, run, reader } = await startedRun();
+    s.reads.length = 0;
+    await requireInputsUnchanged({ store: s.store, readInputFile: reader }, run);
+    expect(s.reads).toEqual(["pets/cat.png"]);
+  });
+
+  it("invalidates the approval for a changed file, a vanished one, and a server that can't read them", async () => {
+    const { s, run, reader } = await startedRun();
+    s.files.set("pets/cat.png", Buffer.from("another cat"));
+    const changed = await approvalError(requireInputsUnchanged({ store: s.store, readInputFile: reader }, run));
+    expect(changed.code).toBe("APPROVAL_INVALIDATED");
+    expect(changed.message).toMatch(/changed since it was approved/);
+    s.files.delete("pets/cat.png");
+    expect((await approvalError(requireInputsUnchanged({ store: s.store, readInputFile: reader }, run))).code).toBe("APPROVAL_INVALIDATED");
+    expect((await approvalError(requireInputsUnchanged({ store: s.store }, run))).code).toBe("APPROVAL_INVALIDATED");
+    expect((await approvalError(requireInputsUnchanged({ store: s.store, readInputFile: reader }, { ...run, actionPlanId: "actions-gone" }))).code).toBe(
+      "APPROVAL_INVALIDATED",
+    );
+  });
+
+  it("reads nothing for a run whose render has no inputs", async () => {
+    const s = await approvalSetup();
+    const r = await s.execution.prepare({ planId: s.planId });
+    const readInputFile = vi.fn(async () => ({ bytes: Buffer.alloc(0) }));
+    await requireInputsUnchanged({ store: s.store, readInputFile }, { id: "run-x", actionPlanId: r.actionPlan.id });
+    expect(readInputFile).not.toHaveBeenCalled();
   });
 });
 

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "seedvr2-vae",
+  "title": "SeedVR2 causal video autoencoder (3D convolutions, 16 latent channels)",
+  "folders": ["vae"],
+  "requiredTensors": [
+    "encoder.conv_in.weight",
+    "encoder.down_blocks.0.resnets.0.conv1.weight",
+    "decoder.conv_in.weight",
+    "decoder.up_blocks.0.upsamplers.0.upscale_conv.weight",
+    "decoder.conv_out.weight"
+  ],
+  "shapes": {
+    "encoder.conv_in.weight": [128, 3, 3, 3, 3],
+    "encoder.conv_out.weight": [32, 512, 3, 3, 3],
+    "decoder.conv_in.weight": [512, 16, 3, 3, 3]
+  },
+  "provenance": [
+    {
+      "source": "safetensors header of vae/seedvr2_ema_vae_fp16.safetensors (501324814 bytes) in Comfy-Org/SeedVR2 at commit df48879708206a403d2a61acd55578c2e80fd233, read with HTTP Range requests for the 8-byte length and the 28352-byte header from https://huggingface.co/Comfy-Org/SeedVR2/resolve/df48879708206a403d2a61acd55578c2e80fd233/vae/seedvr2_ema_vae_fp16.safetensors; no weights were read",
+      "observedAt": "2026-11-16T09:53:40+01:00",
+      "note": "250 tensors, F16, in the diffusers layout: encoder.down_blocks, decoder.up_blocks with upscale_conv [4096, 512, 1, 1, 1], mid_block attentions; every convolution has five dimensions (encoder.conv_in [128, 3, 3, 3, 3], decoder.conv_in [512, 16, 3, 3, 3]). The file isn't installed on the reference target yet. The FLUX.1 and FLUX.2 autoencoders have four-dimensional convolutions and the original layout (encoder.down.N.block), so neither they nor this rule match each other's files."
+    }
+  ]
+}

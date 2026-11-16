@@ -1,0 +1,299 @@
+{
+  "schemaVersion": 1,
+  "id": "recipe-seedvr2-3b.upscale",
+  "revision": 1,
+  "title": "SeedVR2 3B: 4x restoring upscale",
+  "description": "Upscales and restores a source image 4x with SeedVR2 3B, a one-step diffusion restorer: the source is resized 4x (lanczos), padded for the model (SeedVR2Preprocess), encoded with the tiled SeedVR2 VAE, sampled in one step, decoded tiled and cropped back to the resized size (SeedVR2PostProcessing, no colour correction). The output is four times the source image's width and height, which the contract check compares with the task's size; an alpha channel is carried through. The model has its text conditioning stored in the file, so there is no prompt. This recipe binds the fp16 model and VAE; ComfyUI's template loads an int8 model.",
+  "kind": "image",
+  "operations": [
+    "upscale"
+  ],
+  "graph": {
+    "1": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      },
+      "_meta": {
+        "title": "Source image"
+      }
+    },
+    "2": {
+      "class_type": "JoinImageWithAlpha",
+      "inputs": {
+        "image": [
+          "1",
+          0
+        ],
+        "alpha": [
+          "1",
+          1
+        ]
+      }
+    },
+    "3": {
+      "class_type": "ImageScaleBy",
+      "inputs": {
+        "image": [
+          "2",
+          0
+        ],
+        "upscale_method": "lanczos",
+        "scale_by": 4
+      }
+    },
+    "4": {
+      "class_type": "SeedVR2Preprocess",
+      "inputs": {
+        "resized_images": [
+          "3",
+          0
+        ]
+      }
+    },
+    "5": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "seedvr2_3b_fp16.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "6": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "seedvr2_ema_vae_fp16.safetensors"
+      }
+    },
+    "7": {
+      "class_type": "VAEEncodeTiled",
+      "inputs": {
+        "pixels": [
+          "4",
+          0
+        ],
+        "vae": [
+          "6",
+          0
+        ],
+        "tile_size": 512,
+        "overlap": 128,
+        "temporal_size": 4096,
+        "temporal_overlap": 8
+      }
+    },
+    "8": {
+      "class_type": "SeedVR2Conditioning",
+      "inputs": {
+        "model": [
+          "5",
+          0
+        ],
+        "vae_conditioning": [
+          "7",
+          0
+        ]
+      }
+    },
+    "9": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "5",
+          0
+        ],
+        "positive": [
+          "8",
+          0
+        ],
+        "negative": [
+          "8",
+          1
+        ],
+        "latent_image": [
+          "7",
+          0
+        ],
+        "seed": 0,
+        "steps": 1,
+        "cfg": 1,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "denoise": 1
+      }
+    },
+    "10": {
+      "class_type": "VAEDecodeTiled",
+      "inputs": {
+        "samples": [
+          "9",
+          0
+        ],
+        "vae": [
+          "6",
+          0
+        ],
+        "tile_size": 512,
+        "overlap": 128,
+        "temporal_size": 4096,
+        "temporal_overlap": 8
+      }
+    },
+    "11": {
+      "class_type": "SeedVR2PostProcessing",
+      "inputs": {
+        "images": [
+          "10",
+          0
+        ],
+        "original_resized_images": [
+          "3",
+          0
+        ],
+        "color_correction_method": "none"
+      }
+    },
+    "12": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "11",
+          0
+        ],
+        "filename_prefix": "architect/seedvr2-3b-upscale"
+      }
+    }
+  },
+  "slots": [
+    {
+      "id": "diffusion_model",
+      "label": "SeedVR2 3B diffusion model",
+      "valueType": "model_file",
+      "target": {
+        "node": "5",
+        "input": "unet_name"
+      },
+      "required": true,
+      "default": "seedvr2_3b_fp16.safetensors",
+      "modelFolder": "diffusion_models",
+      "modelFamily": "seedvr2-3b"
+    },
+    {
+      "id": "vae",
+      "label": "SeedVR2 VAE",
+      "valueType": "model_file",
+      "target": {
+        "node": "6",
+        "input": "vae_name"
+      },
+      "required": true,
+      "default": "seedvr2_ema_vae_fp16.safetensors",
+      "modelFolder": "vae",
+      "modelFamily": "seedvr2-vae"
+    },
+    {
+      "id": "source_image",
+      "label": "Source image (file name in ComfyUI's input folder)",
+      "valueType": "input_image",
+      "target": {
+        "node": "1",
+        "input": "image"
+      },
+      "required": true,
+      "fromTask": "inputs.source_image"
+    },
+    {
+      "id": "seed",
+      "label": "Seed",
+      "valueType": "seed",
+      "target": {
+        "node": "9",
+        "input": "seed"
+      },
+      "required": true,
+      "default": 0
+    }
+  ],
+  "outputs": [
+    {
+      "role": "image",
+      "node": "12",
+      "format": "png",
+      "count": 1,
+      "scaleOfInput": {
+        "input": "inputs.source_image",
+        "factor": 4
+      }
+    }
+  ],
+  "dependencies": {
+    "nodeClasses": [
+      "LoadImage",
+      "JoinImageWithAlpha",
+      "ImageScaleBy",
+      "SeedVR2Preprocess",
+      "UNETLoader",
+      "VAELoader",
+      "VAEEncodeTiled",
+      "SeedVR2Conditioning",
+      "KSampler",
+      "VAEDecodeTiled",
+      "SeedVR2PostProcessing",
+      "SaveImage"
+    ]
+  },
+  "modelSources": [
+    {
+      "folder": "diffusion_models",
+      "file": "seedvr2_3b_fp16.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/SeedVR2",
+        "revision": "df48879708206a403d2a61acd55578c2e80fd233",
+        "path": "diffusion_models/seedvr2_3b_fp16.safetensors",
+        "sha256": "98669fd2c06df5eca88baf68cd5c478775c8e61fc110e598c52b350145ea2660",
+        "sizeBytes": 6784268336,
+        "license": "apache-2.0"
+      }
+    },
+    {
+      "folder": "vae",
+      "file": "seedvr2_ema_vae_fp16.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/SeedVR2",
+        "revision": "df48879708206a403d2a61acd55578c2e80fd233",
+        "path": "vae/seedvr2_ema_vae_fp16.safetensors",
+        "sha256": "20678548f420d98d26f11442d3528f8b8c94e57ee046ef93dbb7633da8612ca1",
+        "sizeBytes": 501324814,
+        "license": "apache-2.0"
+      }
+    }
+  ],
+  "certification": "proposed",
+  "evidence": [
+    {
+      "kind": "upstream_pack",
+      "source": "plugin/skills/video-upscale/SKILL.md at fork baseline 707474d2 (blob 6cd24447)",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "The skill describes SeedVR2 as a restore stage that wants a clean low-resolution input, through the ComfyUI-SeedVR2_VideoUpscaler custom pack. This recipe uses ComfyUI's own SeedVR2 nodes (SeedVR2Preprocess, SeedVR2Conditioning, SeedVR2PostProcessing) as the template below does, and no custom node."
+    },
+    {
+      "kind": "documentation",
+      "source": "ComfyUI workflow template utility_seedvr2_3b_int8_upscale_image (comfyui-workflow-templates 0.11.103, GET http://127.0.0.1:8188/templates/utility_seedvr2_3b_int8_upscale_image.json, sha256 7075ec75f71f30eeb381510c2a549e3cf7419b906a48e89bd3570a115a608c8c)",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "The graph follows the template without its ImageCompare node: LoadImage, JoinImageWithAlpha of the image and its mask, a 4x lanczos resize, SeedVR2Preprocess, VAEEncodeTiled (512, 128, 4096, 8), SeedVR2Conditioning, KSampler 1 step, CFG 1, euler, simple, VAEDecodeTiled, SeedVR2PostProcessing with colour correction none, SaveImage. Changed: the template's ResizeImageMaskNode (scale by multiplier 4, lanczos), whose dynamic resize_type input the validator can't check, is replaced by ImageScaleBy 4 lanczos; the model is seedvr2_3b_fp16.safetensors where the template loads seedvr2_3b_int8_convrot.safetensors (ARCH 2026-11-16, precision)."
+    },
+    {
+      "kind": "documentation",
+      "source": "GET http://127.0.0.1:8188/object_info, ComfyUI Desktop 0.44.0; the classes used captured in src/__tests__/architect/fixtures/object-info-desktop-0.44.0.json",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "JoinImageWithAlpha (image, alpha), ImageScaleBy (scale_by up to 8), SeedVR2Preprocess (resized_images), VAEEncodeTiled and VAEDecodeTiled (tile_size, overlap, temporal_size, temporal_overlap), SeedVR2Conditioning (model, vae_conditioning; two CONDITIONING outputs) and SeedVR2PostProcessing (images, original_resized_images, color_correction_method none) are in the live schema. comfy_extras/nodes_seedvr.py of the running install pads to multiples of 16 and crops the decoded image back to the resized size, even sides."
+    },
+    {
+      "kind": "documentation",
+      "source": "Hugging Face API: /api/models/<repo>/revision/main and /api/models/<repo>/tree/<commit>, read by scripts/architect/pin-source.mjs",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "seedvr2_3b_fp16.safetensors (6784268336 bytes) and seedvr2_ema_vae_fp16.safetensors (501324814 bytes) pinned from Comfy-Org/SeedVR2 at commit df488797, licence apache-2.0 per the repository card."
+    }
+  ]
+}

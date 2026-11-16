@@ -1,0 +1,487 @@
+{
+  "schemaVersion": 1,
+  "id": "recipe-flux2-klein-4b.masked-edit",
+  "revision": 1,
+  "title": "FLUX.2 Klein 4B: edit inside a mask",
+  "description": "Edits the masked area of a source image as the prompt instructs, with the distilled FLUX.2 Klein 4B: the source, scaled to the task's width and height, is encoded, given to the instruction as a ReferenceLatent and used as the sampling latent with the mask as its noise mask, so only the masked area is sampled anew (4 steps, CFG 1.0); ImageCompositeMasked then puts the result over the scaled source, so the pixels outside the mask are the source's. The output has the task's size; a soft check reports when the aspect ratios differ, since source and mask would be stretched. The mask is a separate image in ComfyUI's input folder, white where the image is repainted, read from its red channel by LoadImageMask. No Klein template has a mask: the masked path is this recipe's, after the inpaint pattern of upstream's comfyui-core skill.",
+  "kind": "image",
+  "operations": [
+    "inpaint"
+  ],
+  "graph": {
+    "1": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "flux-2-klein-4b.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "2": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen_3_4b.safetensors",
+        "type": "flux2",
+        "device": "default"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "flux2-vae.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "2",
+          0
+        ],
+        "text": ""
+      },
+      "_meta": {
+        "title": "Instruction or prompt"
+      }
+    },
+    "5": {
+      "class_type": "ConditioningZeroOut",
+      "inputs": {
+        "conditioning": [
+          "4",
+          0
+        ]
+      }
+    },
+    "6": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      },
+      "_meta": {
+        "title": "Source image"
+      }
+    },
+    "7": {
+      "class_type": "LoadImageMask",
+      "inputs": {
+        "image": "",
+        "channel": "red"
+      },
+      "_meta": {
+        "title": "Mask (white repaints)"
+      }
+    },
+    "8": {
+      "class_type": "ImageScale",
+      "inputs": {
+        "image": [
+          "6",
+          0
+        ],
+        "upscale_method": "lanczos",
+        "width": 1024,
+        "height": 1024,
+        "crop": "disabled"
+      },
+      "_meta": {
+        "title": "Source at the task's size"
+      }
+    },
+    "9": {
+      "class_type": "VAEEncode",
+      "inputs": {
+        "pixels": [
+          "8",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "10": {
+      "class_type": "SetLatentNoiseMask",
+      "inputs": {
+        "samples": [
+          "9",
+          0
+        ],
+        "mask": [
+          "7",
+          0
+        ]
+      }
+    },
+    "11": {
+      "class_type": "ReferenceLatent",
+      "inputs": {
+        "conditioning": [
+          "4",
+          0
+        ],
+        "latent": [
+          "9",
+          0
+        ]
+      }
+    },
+    "12": {
+      "class_type": "ReferenceLatent",
+      "inputs": {
+        "conditioning": [
+          "5",
+          0
+        ],
+        "latent": [
+          "9",
+          0
+        ]
+      }
+    },
+    "13": {
+      "class_type": "GetImageSize",
+      "inputs": {
+        "image": [
+          "8",
+          0
+        ]
+      }
+    },
+    "14": {
+      "class_type": "Flux2Scheduler",
+      "inputs": {
+        "steps": 4,
+        "width": [
+          "13",
+          0
+        ],
+        "height": [
+          "13",
+          1
+        ]
+      }
+    },
+    "15": {
+      "class_type": "KSamplerSelect",
+      "inputs": {
+        "sampler_name": "euler"
+      }
+    },
+    "16": {
+      "class_type": "RandomNoise",
+      "inputs": {
+        "noise_seed": 0
+      }
+    },
+    "17": {
+      "class_type": "CFGGuider",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "positive": [
+          "11",
+          0
+        ],
+        "negative": [
+          "12",
+          0
+        ],
+        "cfg": 1
+      }
+    },
+    "18": {
+      "class_type": "SamplerCustomAdvanced",
+      "inputs": {
+        "noise": [
+          "16",
+          0
+        ],
+        "guider": [
+          "17",
+          0
+        ],
+        "sampler": [
+          "15",
+          0
+        ],
+        "sigmas": [
+          "14",
+          0
+        ],
+        "latent_image": [
+          "10",
+          0
+        ]
+      }
+    },
+    "19": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "18",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "20": {
+      "class_type": "ImageCompositeMasked",
+      "inputs": {
+        "destination": [
+          "8",
+          0
+        ],
+        "source": [
+          "19",
+          0
+        ],
+        "x": 0,
+        "y": 0,
+        "resize_source": false,
+        "mask": [
+          "7",
+          0
+        ]
+      },
+      "_meta": {
+        "title": "Repainted area over the source"
+      }
+    },
+    "21": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "20",
+          0
+        ],
+        "filename_prefix": "architect/flux2-klein-4b-masked-edit"
+      }
+    }
+  },
+  "slots": [
+    {
+      "id": "diffusion_model",
+      "label": "FLUX.2 Klein 4B diffusion model (distilled)",
+      "valueType": "model_file",
+      "target": {
+        "node": "1",
+        "input": "unet_name"
+      },
+      "required": true,
+      "default": "flux-2-klein-4b.safetensors",
+      "modelFolder": "diffusion_models",
+      "modelFamily": "flux2-klein-4b"
+    },
+    {
+      "id": "text_encoder",
+      "label": "Qwen 3 4B text encoder",
+      "valueType": "model_file",
+      "target": {
+        "node": "2",
+        "input": "clip_name"
+      },
+      "required": true,
+      "default": "qwen_3_4b.safetensors",
+      "modelFolder": "text_encoders",
+      "modelFamily": "qwen-3-4b"
+    },
+    {
+      "id": "vae",
+      "label": "FLUX.2 VAE",
+      "valueType": "model_file",
+      "target": {
+        "node": "3",
+        "input": "vae_name"
+      },
+      "required": true,
+      "default": "flux2-vae.safetensors",
+      "modelFolder": "vae",
+      "modelFamily": "flux2-vae"
+    },
+    {
+      "id": "prompt",
+      "label": "Prompt",
+      "valueType": "string",
+      "target": {
+        "node": "4",
+        "input": "text"
+      },
+      "required": true,
+      "fromTask": "intent"
+    },
+    {
+      "id": "source_image",
+      "label": "Source image (file name in ComfyUI's input folder)",
+      "valueType": "input_image",
+      "target": {
+        "node": "6",
+        "input": "image"
+      },
+      "required": true,
+      "fromTask": "inputs.source_image"
+    },
+    {
+      "id": "mask",
+      "label": "Mask (file name in ComfyUI's input folder; white repaints)",
+      "valueType": "input_image",
+      "target": {
+        "node": "7",
+        "input": "image"
+      },
+      "required": true,
+      "fromTask": "inputs.mask"
+    },
+    {
+      "id": "width",
+      "label": "Width",
+      "valueType": "int",
+      "target": {
+        "node": "8",
+        "input": "width"
+      },
+      "required": true,
+      "default": 1024,
+      "fromTask": "media.output.width",
+      "min": 16,
+      "max": 16384
+    },
+    {
+      "id": "height",
+      "label": "Height",
+      "valueType": "int",
+      "target": {
+        "node": "8",
+        "input": "height"
+      },
+      "required": true,
+      "default": 1024,
+      "fromTask": "media.output.height",
+      "min": 16,
+      "max": 16384
+    },
+    {
+      "id": "seed",
+      "label": "Seed",
+      "valueType": "seed",
+      "target": {
+        "node": "16",
+        "input": "noise_seed"
+      },
+      "required": true,
+      "default": 0
+    }
+  ],
+  "outputs": [
+    {
+      "role": "image",
+      "node": "21",
+      "format": "png",
+      "count": 1,
+      "scalesInputToTask": "inputs.source_image"
+    }
+  ],
+  "dependencies": {
+    "nodeClasses": [
+      "UNETLoader",
+      "CLIPLoader",
+      "VAELoader",
+      "CLIPTextEncode",
+      "ConditioningZeroOut",
+      "LoadImage",
+      "LoadImageMask",
+      "ImageScale",
+      "VAEEncode",
+      "SetLatentNoiseMask",
+      "ReferenceLatent",
+      "GetImageSize",
+      "Flux2Scheduler",
+      "KSamplerSelect",
+      "RandomNoise",
+      "CFGGuider",
+      "SamplerCustomAdvanced",
+      "VAEDecode",
+      "ImageCompositeMasked",
+      "SaveImage"
+    ]
+  },
+  "modelSources": [
+    {
+      "folder": "diffusion_models",
+      "file": "flux-2-klein-4b.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Flux-2-Klein-4B",
+        "revision": "5b3abca5c0dc1ecd4eaf3340868d09063fc1c965",
+        "path": "split_files/diffusion_models/flux-2-klein-4b.safetensors",
+        "sha256": "ec3d4e733a771f61c052fb4856c48b336c55eaf2c65487c2a1faeb9bbda7a343",
+        "sizeBytes": 7751105712,
+        "license": "apache-2.0"
+      }
+    },
+    {
+      "folder": "text_encoders",
+      "file": "qwen_3_4b.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Z-Image-Turbo",
+        "revision": "6fc90a3b1b653e935a0d175e260736de25b84df5",
+        "path": "split_files/text_encoders/qwen_3_4b.safetensors",
+        "sha256": "6c671498573ac2f7a5501502ccce8d2b08ea6ca2f661c458e708f36b36edfc5a",
+        "sizeBytes": 8044982048,
+        "license": "apache-2.0"
+      }
+    },
+    {
+      "folder": "vae",
+      "file": "flux2-vae.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Flux-2-Klein-4B",
+        "revision": "5b3abca5c0dc1ecd4eaf3340868d09063fc1c965",
+        "path": "split_files/vae/flux2-vae.safetensors",
+        "sha256": "868fe7b343cc8f3a19dbcfcafbc3d5f888802be3f89bd81b65b3621a066ce8f3",
+        "sizeBytes": 336211292,
+        "license": "apache-2.0"
+      }
+    }
+  ],
+  "certification": "proposed",
+  "evidence": [
+    {
+      "kind": "upstream_pack",
+      "source": "plugin/skills/flux-txt2img/SKILL.md at fork baseline 707474d2 (blob 3bc69dca)",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "The skill's Klein pattern, written for Klein 9B: one CLIPLoader with type flux2 (not flux), flux2-vae.safetensors, the distilled model at 4 steps and CFG 1.0. Klein 4B takes the Qwen 3 4B encoder where 9B takes Qwen3-8B, as the templates below load it."
+    },
+    {
+      "kind": "upstream_pack",
+      "source": "plugin/skills/comfyui-core/SKILL.md at fork baseline 707474d2 (blob f7bb340d)",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "The inpaint pattern: VAEEncode of the source, SetLatentNoiseMask (samples, mask) as the sampler's latent. SamplerCustomAdvanced honours a latent's noise mask as KSampler does."
+    },
+    {
+      "kind": "documentation",
+      "source": "ComfyUI workflow template image_flux2_klein_image_edit_4b_distilled (comfyui-workflow-templates 0.11.103, GET http://127.0.0.1:8188/templates/image_flux2_klein_image_edit_4b_distilled.json, sha256 7f1ead62d1456d485e95fb432fb492d2783f5ec9cfeefefe4ef71bfb448ba1a3)",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "Loaders, ReferenceLatent on the positive and the zeroed negative, and the sampler setup (Flux2Scheduler 4 steps, euler, CFG 1, SamplerCustomAdvanced) are the template's; the sampling latent is the masked source latent instead of EmptyFlux2LatentImage, and the source is scaled with ImageScale to the task's size instead of ImageScaleToTotalPixels."
+    },
+    {
+      "kind": "documentation",
+      "source": "GET http://127.0.0.1:8188/object_info, ComfyUI Desktop 0.44.0; the classes used captured in src/__tests__/architect/fixtures/object-info-desktop-0.44.0.json",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "UNETLoader, CLIPLoader (type flux2), VAELoader, ReferenceLatent (conditioning, latent), EmptyFlux2LatentImage (width and height 16 to 16384, step 16), Flux2Scheduler (steps, width, height), KSamplerSelect, RandomNoise, CFGGuider, SamplerCustomAdvanced (noise, guider, sampler, sigmas, latent_image) and VAEDecode are in the live schema. LoadImageMask, ImageScale, SetLatentNoiseMask, GetImageSize and ImageCompositeMasked are too."
+    },
+    {
+      "kind": "documentation",
+      "source": "Hugging Face API: /api/models/<repo>/revision/main and /api/models/<repo>/tree/<commit>, read by scripts/architect/pin-source.mjs",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "flux-2-klein-4b.safetensors (bf16, 7751105712 bytes) and flux2-vae.safetensors pinned from Comfy-Org/Flux-2-Klein-4B at commit 5b3abca5, licence apache-2.0 per the repository card. The templates load flux-2-klein-4b-fp8.safetensors; this recipe binds the bf16 file, since fp8 support on Apple GPUs is unverified (ARCH 2026-11-16, precision). The Qwen 3 4B encoder is Comfy-Org/Z-Image-Turbo's qwen_3_4b.safetensors, the installed file, whose sha256 6c671498 is the pin's."
+    }
+  ]
+}

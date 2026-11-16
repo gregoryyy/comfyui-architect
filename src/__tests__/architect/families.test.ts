@@ -87,13 +87,72 @@ const HEADERS = {
     "conv_hr.weight": [64, 64, 3, 3],
     "conv_last.weight": [3, 64, 3, 3],
   },
+  // The files below aren't installed on the reference target: their names and shapes are
+  // from the headers each rule's provenance cites, read with HTTP Range requests.
+  flux2Klein4b: {
+    "double_blocks.4.img_attn.qkv.weight": [9216, 3072],
+    "single_blocks.19.linear1.weight": [27648, 3072],
+    "double_stream_modulation_img.lin.weight": [18432, 3072],
+    "single_stream_modulation.lin.weight": [9216, 3072],
+    "img_in.weight": [3072, 128],
+    "txt_in.weight": [3072, 7680],
+    "time_in.in_layer.weight": [3072, 256],
+    "final_layer.linear.weight": [128, 3072],
+  },
+  flux2Vae: {
+    "bn.running_mean": [128],
+    "bn.running_var": [128],
+    "encoder.conv_in.weight": [128, 3, 3, 3],
+    "encoder.conv_out.weight": [64, 512, 3, 3],
+    "encoder.quant_conv.weight": [64, 64, 1, 1],
+    "decoder.post_quant_conv.weight": [32, 32, 1, 1],
+    "decoder.conv_in.weight": [512, 32, 3, 3],
+    "decoder.conv_out.weight": [3, 128, 3, 3],
+  },
+  zImageControlnetUnion: {
+    "control_all_x_embedder.2-1.weight": [3840, 64],
+    "control_layers.0.before_proj.weight": [3840, 3840],
+    "control_layers.5.after_proj.weight": [3840, 3840],
+    "control_layers.5.attention.to_q.weight": [3840, 3840],
+    "control_noise_refiner.1.attention.to_q.weight": [3840, 3840],
+  },
+  seedvr2_3b: {
+    "vid_in.proj.weight": [2560, 132],
+    "txt_in.weight": [2560, 5120],
+    "emb_in.proj_in.weight": [2560, 256],
+    "blocks.0.attn.proj_qkv.vid.weight": [7680, 2560],
+    "blocks.31.attn.proj_qkv.all.weight": [7680, 2560],
+    "vid_out.proj.weight": [64, 2560],
+    positive_conditioning: [58, 5120],
+  },
+  seedvr2Vae: {
+    "encoder.conv_in.weight": [128, 3, 3, 3, 3],
+    "encoder.conv_out.weight": [32, 512, 3, 3, 3],
+    "encoder.down_blocks.0.resnets.0.conv1.weight": [128, 128, 3, 3, 3],
+    "decoder.conv_in.weight": [512, 16, 3, 3, 3],
+    "decoder.up_blocks.0.upsamplers.0.upscale_conv.weight": [4096, 512, 1, 1, 1],
+    "decoder.conv_out.weight": [3, 128, 3, 3, 3],
+  },
 } satisfies Record<string, Record<string, number[]>>;
 
 describe("the shipped family rules", () => {
   it("load without errors, one per family the shipped recipes bind", () => {
     expect(dirFound).toBe(true);
     expect(LOAD_ERRORS).toEqual([]);
-    expect(SHIPPED.map((r) => r.id).sort()).toEqual(["clip-l", "flux-ae", "flux1-schnell", "qwen-3-4b", "realesrgan-x4", "t5-xxl", "z-image-turbo"]);
+    expect(SHIPPED.map((r) => r.id).sort()).toEqual([
+      "clip-l",
+      "flux-ae",
+      "flux1-schnell",
+      "flux2-klein-4b",
+      "flux2-vae",
+      "qwen-3-4b",
+      "realesrgan-x4",
+      "seedvr2-3b",
+      "seedvr2-vae",
+      "t5-xxl",
+      "z-image-controlnet-union",
+      "z-image-turbo",
+    ]);
     for (const r of SHIPPED) expect(r.provenance.length).toBeGreaterThan(0);
   });
 
@@ -115,6 +174,11 @@ describe("the shipped family rules", () => {
     ["qwen", "qwen-3-4b"],
     ["fluxAe", "flux-ae"],
     ["esrgan", "realesrgan-x4"],
+    ["flux2Klein4b", "flux2-klein-4b"],
+    ["flux2Vae", "flux2-vae"],
+    ["zImageControlnetUnion", "z-image-controlnet-union"],
+    ["seedvr2_3b", "seedvr2-3b"],
+    ["seedvr2Vae", "seedvr2-vae"],
   ] as const)("the %s header matches %s and no other rule", (name, id) => {
     expect(classifyHeader(SHIPPED, shapes(HEADERS[name]))).toMatchObject({ outcome: "matched", family: id, matches: [id] });
   });
@@ -154,6 +218,44 @@ describe("the shipped family rules", () => {
     expect(matchRule(rule("flux-ae"), sdVae).matches).toBe(false);
     const x2 = shapes({ ...HEADERS.esrgan, "conv_first.weight": [64, 12, 3, 3] });
     expect(matchRule(rule("realesrgan-x4"), x2).matches).toBe(false);
+  });
+
+  it("keeps the rules of the files not yet installed off the installed families' files", () => {
+    // The installed files' headers (each older rule's provenance): with the new rules
+    // loaded, each still matches its own rule only, and no new rule matches any of them.
+    const added = ["flux2-klein-4b", "flux2-vae", "z-image-controlnet-union", "seedvr2-3b", "seedvr2-vae"];
+    const ckpt = shapes({
+      ...prefixed("model.diffusion_model.", HEADERS.fluxDiffusion),
+      ...prefixed("text_encoders.t5xxl.transformer.", HEADERS.t5),
+      ...prefixed("text_encoders.clip_l.transformer.", HEADERS.clipL),
+      ...prefixed("vae.", HEADERS.fluxAe),
+    });
+    for (const h of [HEADERS.zImage, HEADERS.fluxDiffusion, HEADERS.t5, HEADERS.clipL, HEADERS.qwen, HEADERS.fluxAe, HEADERS.esrgan]) {
+      for (const id of added) expect(matchRule(rule(id), shapes(h)).matches, id).toBe(false);
+    }
+    for (const id of added) expect(matchRule(rule(id), ckpt).matches, `${id} on the all-in-one checkpoint`).toBe(false);
+  });
+
+  it("keeps FLUX.2 Klein apart from FLUX.1 and Klein 9B, and the FLUX.2 VAE from FLUX.1's and SeedVR2's", () => {
+    expect(matchRule(rule("flux2-klein-4b"), shapes(HEADERS.fluxDiffusion)).matches).toBe(false);
+    expect(matchRule(rule("flux1-schnell"), shapes(HEADERS.flux2Klein4b)).matches).toBe(false);
+    const klein9b = shapes({ ...HEADERS.flux2Klein4b, "img_in.weight": [4096, 128], "txt_in.weight": [4096, 12288], "double_blocks.7.img_attn.qkv.weight": [12288, 4096] });
+    expect(matchRule(rule("flux2-klein-4b"), klein9b).matches).toBe(false);
+    expect(matchRule(rule("flux-ae"), shapes(HEADERS.flux2Vae)).matches).toBe(false);
+    expect(matchRule(rule("flux2-vae"), shapes(HEADERS.fluxAe)).matches).toBe(false);
+    expect(matchRule(rule("flux-ae"), shapes(HEADERS.seedvr2Vae)).matches).toBe(false);
+    expect(matchRule(rule("flux2-vae"), shapes(HEADERS.seedvr2Vae)).matches).toBe(false);
+    expect(matchRule(rule("seedvr2-vae"), shapes(HEADERS.flux2Vae)).matches).toBe(false);
+  });
+
+  it("keeps the ControlNet patch apart from the Z-Image model, and SeedVR2 3B from 7B", () => {
+    expect(matchRule(rule("z-image-turbo"), shapes(HEADERS.zImageControlnetUnion)).matches).toBe(false);
+    expect(matchRule(rule("z-image-controlnet-union"), shapes(HEADERS.zImage)).matches).toBe(false);
+    // A later release with 15 control layers (0 to 14) isn't the pinned layout.
+    const union2 = shapes({ ...HEADERS.zImageControlnetUnion, "control_layers.6.attention.to_q.weight": [3840, 3840], "control_layers.14.attention.to_q.weight": [3840, 3840] });
+    expect(classifyHeader(SHIPPED, union2).outcome).toBe("no_match");
+    const seedvr7b = shapes({ ...HEADERS.seedvr2_3b, "vid_in.proj.weight": [3072, 132], "blocks.35.attn.proj_qkv.all.weight": [9216, 3072] });
+    expect(matchRule(rule("seedvr2-3b"), seedvr7b).matches).toBe(false);
   });
 
   it("refuses a rule file with an alias another rule already claims", () => {

@@ -16,6 +16,7 @@ import { planningReadiness } from "./environment.js";
 import { canonicalJson, sha256Hex } from "./hash.js";
 import { deriveAcquisition, formatBytes } from "./acquisition-policy.js";
 import type { FamilyObserver, Unobserved } from "./families.js";
+import { type InputSizes, inputNamesToSize, readInputSizes } from "./output-size.js";
 import { MAX_PRESENTED_CANDIDATES, boundModelFiles, candidateStatus, missingTaskFields, planCandidates, type ProposedBinding } from "./planner.js";
 import { ensureBuiltInSources, sourceView } from "./sources.js";
 import {
@@ -61,6 +62,11 @@ export interface PlanningDeps {
   families?: Pick<FamilyObserver, "observeAll">;
   /** Problems loading the family rules, carried as warnings like the catalog's. */
   familyRuleErrors?: readonly string[];
+  /**
+   * Reads the task's input files whose size a recipe's output follows (output-size.ts; the
+   * facade's `readInputFile` and `decodeImage`). Absent, those size checks stay hard unknowns.
+   */
+  inputFiles?: Pick<UpstreamFacade, "readInputFile" | "decodeImage">;
 }
 
 /** A refusal with a stable code (spec §16.4), for the tool to put into the envelope. */
@@ -156,6 +162,17 @@ export class ArchitectPlanning {
     if (!this.deps.families || files.length === 0) return { unobserved: [] };
     const { evidence, unobserved } = await this.deps.families.observeAll(files);
     return { evidence, unobserved };
+  }
+
+  /**
+   * The sizes of the task's input files that these recipes size their output from, read
+   * once for this validation (ARCH 2026-11-16, output size). Undefined without a reader or
+   * when no recipe needs one, which leaves those checks unknown.
+   */
+  private async inputSizes(recipes: readonly Recipe[], task: TaskSpec): Promise<InputSizes | undefined> {
+    const names = inputNamesToSize(recipes, task);
+    if (!this.deps.inputFiles || names.length === 0) return undefined;
+    return readInputSizes(this.deps.inputFiles, names);
   }
 
   /**
@@ -291,6 +308,7 @@ export class ArchitectPlanning {
     const families = await this.observeFamilies(
       boundModelFiles({ task, snapshot, recipes, ...(request.proposals ? { proposals: request.proposals } : {}) }),
     );
+    const inputSizes = await this.inputSizes(recipes, task);
     const out = planCandidates({
       task,
       snapshot,
@@ -302,6 +320,7 @@ export class ArchitectPlanning {
       newId,
       ...(this.deps.isPaidNode ? { isPaidNode: this.deps.isPaidNode } : {}),
       ...(families.evidence ? { families: families.evidence } : {}),
+      ...(inputSizes ? { inputSizes } : {}),
     });
     store.transaction(() => {
       for (const c of out.presented) store.putCandidate(c);
@@ -410,6 +429,7 @@ export class ArchitectPlanning {
         return s.valueType === "model_file" && typeof file === "string" && snapshot.installedModels?.folders[folder]?.includes(file) ? [{ folder, file }] : [];
       }),
     );
+    const inputSizes = await this.inputSizes([recipe], task);
     const outcome = validateGraph({
       graph,
       recipe,
@@ -419,6 +439,7 @@ export class ArchitectPlanning {
       snapshot,
       ...(this.deps.isPaidNode ? { isPaidNode: this.deps.isPaidNode } : {}),
       ...(families.evidence ? { families: families.evidence } : {}),
+      ...(inputSizes ? { inputSizes } : {}),
     });
     const verdict = candidateStatus({ recipe, task, report: outcome.report, bindings: candidate.bindings, snapshot });
     const status = verdict.status;
@@ -599,6 +620,11 @@ export function candidateSummary(c: PlanCandidate) {
     overall: c.validation.overall,
     blocking: blockingChecks(c.validation),
     softUnknowns: c.validation.checks.filter((x) => !x.hard && x.verdict === "unknown").map((x) => x.message),
+    // A soft failure doesn't block the candidate but changes the result (an input stretched
+    // to the task's aspect ratio), so the user sees it before selecting (spec §4.3).
+    ...(c.validation.checks.some((x) => !x.hard && x.verdict === "fail")
+      ? { softFailures: c.validation.checks.filter((x) => !x.hard && x.verdict === "fail").map((x) => x.message) }
+      : {}),
     dependencyDelta: c.dependencyDelta,
     ...(c.acquisition
       ? {

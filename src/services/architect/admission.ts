@@ -29,6 +29,7 @@ import {
   type Recipe,
   type ReleaseResidencyEffect,
   type RenderInput,
+  type RunRecord,
   type TaskSpec,
   actionPlanHash,
   parseAssetId,
@@ -249,6 +250,50 @@ export async function requireFeasible(
   candidateId: string,
 ): Promise<void> {
   await requireAdmissible(planning, planId, candidateId);
+}
+
+/**
+ * Read a run's input files again and require each to be the one its grant approved: the
+ * asset id, sha256 and size the action plan's render records (TODO 5.7.2, GAPS Q33). Start
+ * reads them before the grant is consumed; a run that then waited for its pool or
+ * downloaded model files may reach submission much later, so the controller calls this
+ * before the POST too. A changed file, one that can't be read, or an action plan that can't
+ * be found invalidates the approval; the run fails and the user approves a new plan.
+ */
+export async function requireInputsUnchanged(
+  deps: { store: Pick<ArchitectStore, "getActionPlan">; readInputFile?: AdmissionDeps["readInputFile"] },
+  run: Pick<RunRecord, "id" | "actionPlanId">,
+): Promise<void> {
+  const actionPlan = deps.store.getActionPlan(run.actionPlanId);
+  if (!actionPlan) throw new ApprovalError("APPROVAL_INVALIDATED", `run ${run.id}'s action plan ${run.actionPlanId} is not stored`, "Prepare the run again.");
+  const approved = actionPlan.effects.find((e): e is Extract<Effect, { kind: "local_render" }> => e.kind === "local_render")?.inputs;
+  if (approved === undefined || approved.length === 0) return;
+  const read = deps.readInputFile;
+  if (!read) {
+    throw new ApprovalError("APPROVAL_INVALIDATED", `run ${run.id}'s input files can't be read again before submission here`, "Prepare the run again on a server set up with the target.");
+  }
+  for (const input of approved) {
+    const parsed = parseAssetId(input.assetId);
+    if (!parsed.ok) throw new ApprovalError("APPROVAL_INVALIDATED", `run ${run.id}: ${parsed.problem}`, "Revise the task's inputs, then plan again.");
+    let bytes: Buffer;
+    try {
+      ({ bytes } = await read(parsed.name));
+    } catch (err) {
+      throw new ApprovalError(
+        "APPROVAL_INVALIDATED",
+        `input ${input.assetId} couldn't be read again before submission: ${err instanceof Error ? err.message : String(err)}`,
+        "Check that the file is still in ComfyUI's input folder, then prepare the run again; the user approves the new plan.",
+      );
+    }
+    const sha256 = sha256Hex(bytes);
+    if (sha256 !== input.sha256 || bytes.length !== input.sizeBytes) {
+      throw new ApprovalError(
+        "APPROVAL_INVALIDATED",
+        `input ${input.assetId} changed since it was approved (sha256 ${shortHash(input.sha256)}, ${input.sizeBytes} bytes; now ${shortHash(sha256)}, ${bytes.length} bytes)`,
+        "Prepare the run again; the user approves the plan with the new input.",
+      );
+    }
+  }
 }
 
 /**

@@ -103,7 +103,9 @@ function taskFieldChecks(recipe: Recipe, task: TaskSpec): CheckResult[] {
   const primary = recipe.outputs[0];
   const media = task.media;
   if (media.kind !== "image") return out;
-  for (const dim of ["width", "height"] as const) {
+  // A size taken from an input image needs that image's dimensions, which the compiler
+  // doesn't read: the validator's contract layer decides width and height (output-size.ts).
+  for (const dim of primary.scaleOfInput ? [] : (["width", "height"] as const)) {
     const path = `media.output.${dim}`;
     const divisor = divisors.get(path);
     out.push(

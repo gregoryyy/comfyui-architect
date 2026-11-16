@@ -284,7 +284,8 @@
       "kind": "maintainer_review",
       "source": "Owner review, GAPS Q12 and PR #7 (2026-11-15 18:49)",
       "observedAt": "2026-11-15T18:49:40+01:00",
-      "note": "The owner accepted the recipe as curated. Not yet run on a recorded matrix, so not certified (AT-03)."
+      "note": "The owner accepted the recipe as curated. Not yet run on a recorded matrix, so not certified (AT-03).",
+      "revision": 3
     }
   ]
 }

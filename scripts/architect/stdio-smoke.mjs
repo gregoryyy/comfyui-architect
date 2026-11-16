@@ -5,6 +5,7 @@
 // packed tarball; this checks what an MCP client sees, with the Architect flag off and on.
 //
 // Usage: node scripts/architect/stdio-smoke.mjs [off|on|both] [--offline] [--plan] [--run] [--acquire]
+//        node scripts/architect/stdio-smoke.mjs [on] --recipes <id,id,...|all> [--dry] [--upload-mask] [--downloads]
 //   both (default)  runs off, then on, and checks that on adds exactly the architect_* tools
 //   --offline       accepts the STALE_ENVIRONMENT error when no ComfyUI answers, so the
 //                   wiring can be checked without a running ComfyUI
@@ -22,10 +23,27 @@
 //                   the checks cover the acquire effect, the refused unapproved start, the
 //                   placed file and its sha256 in the run's dependency lock. When the file is
 //                   already installed, the candidate is feasible and the script runs it as --run
+//   --recipes       with the flag on, for each named shipped recipe (or all): prepares a task that
+//                   fits its operation and size rule (input images blue_poppies_field.png,
+//                   egyptian_queen.png and medusa_poster.png from the target's input folder, whose
+//                   sizes it reads there), proposes, selects that recipe's candidate, prepares the
+//                   run and prints the action plan's effects; then approves it through the terminal
+//                   channel's code, RENDERS it on the target, checks the outputs and prints one
+//                   summary line per recipe. An acquirable candidate is only run with --downloads
+//   --dry           with --recipes: stops after the run's prepare for every recipe and prints the
+//                   download list (folder/file, repo@commit, size, licence) and its total. Nothing
+//                   is downloaded, rendered or uploaded; inpaint recipes plan with medusa_poster.png
+//                   standing in for the mask when the smoke mask isn't in the input folder
+//   --upload-mask   with --recipes: before the session, UPLOADS architect-smoke-mask.png (1024x1024,
+//                   a white rectangle in the centre on black) into the target's input folder with
+//                   upstream's client; without it (and outside --dry) inpaint recipes are skipped
+//   --downloads     with --recipes: approve action plans that DOWNLOAD the candidate's pinned files
+//                   INTO THE TARGET'S MODEL FOLDERS before rendering
 // The target comes from the usual environment (COMFYUI_URL, COMFYUI_HOST/PORT, ...).
 // Needs `npm run build` first. Exits 1 if any check fails.
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { crc32, deflateSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +52,23 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const ENTRY = fileURLToPath(new URL("../../dist/index.js", import.meta.url));
 const args = process.argv.slice(2);
+const recipesAt = args.indexOf("--recipes");
+const recipesArg = recipesAt >= 0 ? args[recipesAt + 1] : undefined;
+if (recipesAt >= 0 && (recipesArg === undefined || recipesArg.startsWith("--"))) {
+  console.error("--recipes needs a comma-separated list of recipe ids, or all");
+  process.exit(2);
+}
+const dry = args.includes("--dry");
+const uploadMask = args.includes("--upload-mask");
+const allowDownloads = args.includes("--downloads");
+if ((dry || uploadMask || allowDownloads) && recipesArg === undefined) {
+  console.error("--dry, --upload-mask and --downloads go with --recipes");
+  process.exit(2);
+}
+if (dry && (uploadMask || allowDownloads)) {
+  console.error("--dry uploads and downloads nothing; leave out --upload-mask and --downloads");
+  process.exit(2);
+}
 const offline = args.includes("--offline");
 const acquire = args.includes("--acquire");
 const run = args.includes("--run") || acquire;
@@ -41,7 +76,7 @@ const ACQUIRE_RECIPE = "recipe-zimage-turbo.t2i-upscale2x";
 const side = acquire ? 2048 : 1024;
 const plan = args.includes("--plan") || run;
 const dataDir = mkdtempSync(join(tmpdir(), "architect-smoke-"));
-const mode = args.find((a) => !a.startsWith("--")) ?? "both";
+const mode = args.find((a, i) => !a.startsWith("--") && i !== recipesAt + 1) ?? (recipesArg !== undefined ? "on" : "both");
 if (!["off", "on", "both"].includes(mode)) {
   console.error(`unknown mode "${mode}"; use off, on or both`);
   process.exit(2);
@@ -103,6 +138,7 @@ async function session(flagOn) {
     check(reachable || acceptedOffline, `${label} architect_inspect status ${envelope.status}${acceptedOffline ? " (offline accepted)" : ""}`);
     for (const w of envelope.warnings ?? []) console.log(`      warning: ${w}`);
     if (plan) await planTask(client, label);
+    if (recipesArg !== undefined) await recipeRuns(client, label);
     return { tools };
   } finally {
     await client.close();
@@ -260,6 +296,265 @@ async function runTask(client, label, planId, acquiring, progress) {
       );
     }
   }
+}
+
+// ---------------------------------------------------------------------------------------
+// --recipes: one task per shipped recipe (TODO 5.6)
+
+const RECIPES_DIR = fileURLToPath(new URL("../../architect/recipes/", import.meta.url));
+const MASK_NAME = "architect-smoke-mask.png";
+const INPUT_FILES = { source: "blue_poppies_field.png", wide: "egyptian_queen.png", poster: "medusa_poster.png" };
+const INTENTS = {
+  text_to_image: "A red bicycle leaning against a white wall, soft morning light.",
+  image_edit: "Turn the sky into a dramatic orange sunset.",
+  inpaint: "A small wooden rowing boat.",
+  reference_guided: "A portrait in the style and composition of the reference, soft window light.",
+  upscale: "The same image at a higher resolution.",
+};
+
+function shippedRecipes() {
+  return readdirSync(RECIPES_DIR)
+    .filter((f) => f.endsWith(".recipe.json"))
+    .sort()
+    .map((f) => JSON.parse(readFileSync(join(RECIPES_DIR, f), "utf-8")));
+}
+
+function chosenRecipes() {
+  const all = shippedRecipes();
+  if (recipesArg === "all") return all;
+  const ids = recipesArg.split(",").map((s) => s.trim()).filter(Boolean);
+  const unknown = ids.filter((id) => !all.some((r) => r.id === id));
+  if (unknown.length > 0) {
+    console.error(`no shipped recipe ${unknown.join(", ")}; shipped: ${all.map((r) => r.id).join(", ")}`);
+    process.exit(2);
+  }
+  return ids.map((id) => all.find((r) => r.id === id));
+}
+
+/** A PNG's pixel size from its IHDR chunk, or undefined for anything else. */
+function pngSize(bytes) {
+  if (bytes.length < 24 || bytes.readUInt32BE(0) !== 0x89504e47 || bytes.toString("ascii", 12, 16) !== "IHDR") return undefined;
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+}
+
+/** The size of a file in the target's input folder, read through ComfyUI's /view. */
+async function inputSize(baseUrl, name) {
+  const res = await fetch(`${baseUrl}/view?type=input&filename=${encodeURIComponent(name)}`);
+  if (!res.ok) return { error: `HTTP ${res.status}` };
+  return pngSize(Buffer.from(await res.arrayBuffer())) ?? { error: "not a PNG" };
+}
+
+/** A grayscale PNG, white inside the centred half-size rectangle and black outside. */
+function maskPng(side = 1024) {
+  const row = side + 1;
+  const raw = Buffer.alloc(row * side);
+  for (let y = side / 4; y < (side * 3) / 4; y++) raw.fill(255, y * row + 1 + side / 4, y * row + 1 + (side * 3) / 4);
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, "ascii"), data])) >>> 0);
+    return Buffer.concat([len, Buffer.from(type, "ascii"), data, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(side, 0);
+  ihdr.writeUInt32BE(side, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 0; // grayscale
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
+}
+
+/** The task inputs a recipe's input_image slots take, and which file stands in for each. */
+function inputsFor(recipe, maskName) {
+  const out = [];
+  for (const s of recipe.slots.filter((x) => x.valueType === "input_image")) {
+    if (s.fromTask === "inputs.source_image") {
+      // The edit recipes that scale the source to the task's size get the wide image, so the
+      // aspect check has something to compare; the others the square one.
+      out.push({ role: "source_image", name: recipe.outputs[0].scalesInputToTask && recipe.operations.includes("image_edit") ? INPUT_FILES.wide : INPUT_FILES.source });
+    } else if (s.fromTask === "inputs.mask") {
+      out.push({ role: "mask", name: maskName });
+    } else if (s.fromTask === "inputs.reference_image.1") {
+      out.push({ role: "reference_image", name: INPUT_FILES.poster });
+    } else if (s.fromTask === "inputs.reference_image.2") {
+      out.push({ role: "reference_image", name: INPUT_FILES.wide });
+    }
+  }
+  return out;
+}
+
+/** A task size that fits the recipe's size rule for these inputs, or why there is none. */
+function sizeFor(recipe, inputs, sizes) {
+  const o = recipe.outputs[0];
+  const of = (path) => {
+    const role = path === "inputs.mask" ? "mask" : path.startsWith("inputs.reference_image") ? "reference_image" : "source_image";
+    const n = path.startsWith("inputs.reference_image.") ? Number(path.split(".").pop()) : 1;
+    const input = inputs.filter((i) => i.role === role)[n - 1];
+    return input ? sizes.get(input.name) : undefined;
+  };
+  if (o.scaleOfInput) {
+    const d = of(o.scaleOfInput.input);
+    if (!d || d.error) return { error: `the size of ${o.scaleOfInput.input} wasn't read${d?.error ? `: ${d.error}` : ""}` };
+    return { width: d.width * o.scaleOfInput.factor, height: d.height * o.scaleOfInput.factor };
+  }
+  if (o.scalesInputToTask) {
+    // About one megapixel at the input's aspect ratio, sides multiples of 16.
+    const d = of(o.scalesInputToTask);
+    if (!d || d.error) return { error: `the size of ${o.scalesInputToTask} wasn't read` };
+    const scale = Math.sqrt((1024 * 1024) / (d.width * d.height));
+    return { width: Math.round((d.width * scale) / 16) * 16, height: Math.round((d.height * scale) / 16) * 16 };
+  }
+  return { width: 1024, height: 1024 };
+}
+
+/** Bindings for the slots neither the task nor a default fills: denoise, as the packs set it. */
+function bindingsFor(recipe) {
+  const out = {};
+  for (const s of recipe.slots) {
+    if (!s.required || s.default !== undefined || s.fromTask !== undefined) continue;
+    // 0.6: packs/z-image-turbo-img2img's denoise, inside comfyui-core's 0.5 to 0.8.
+    if (s.id === "denoise") out[s.id] = 0.6;
+  }
+  return out;
+}
+
+async function recipeRuns(client, label) {
+  const recipes = chosenRecipes();
+  // The target as upstream resolves it for this environment, the one the server uses.
+  const { createUpstreamFacade } = await import("../../dist/services/architect/upstream.js");
+  const baseUrl = createUpstreamFacade().comfyuiBaseUrl().replace(/\/$/, "");
+  const maskThere = !(await inputSize(baseUrl, MASK_NAME)).error;
+  const sizes = new Map();
+  for (const name of [...Object.values(INPUT_FILES), ...(maskThere ? [MASK_NAME] : [])]) sizes.set(name, await inputSize(baseUrl, name));
+  for (const [name, d] of sizes) console.log(`${label} input ${name}: ${d.error ? `unreadable (${d.error})` : `${d.width}x${d.height}`}`);
+  const summary = [];
+  const downloads = new Map();
+  for (const recipe of recipes) {
+    const id = recipe.id;
+    const operation = recipe.operations[0];
+    const needsMask = recipe.slots.some((s) => s.fromTask === "inputs.mask");
+    let maskName = MASK_NAME;
+    if (needsMask && !maskThere) {
+      if (!dry) {
+        summary.push(`${id}: SKIPPED, inpainting needs ${MASK_NAME} in the input folder (--upload-mask)`);
+        continue;
+      }
+      maskName = INPUT_FILES.poster;
+      console.log(`${label} ${id}: dry run, ${maskName} stands in for the mask`);
+    }
+    const inputs = inputsFor(recipe, maskName);
+    const size = sizeFor(recipe, inputs, sizes);
+    if (size.error) {
+      summary.push(`${id}: FAIL, no task size: ${size.error}`);
+      failures.push(`${id}: no task size`);
+      continue;
+    }
+    const task = {
+      intent: INTENTS[operation] ?? INTENTS.text_to_image,
+      media: { kind: recipe.kind, operation, output: { width: size.width, height: size.height } },
+      inputs: inputs.map((i) => ({ assetId: `comfyui-input:${i.name}`, role: i.role })),
+    };
+    console.log(`\n${label} ${id} r${recipe.revision}: ${operation} ${size.width}x${size.height}${inputs.length ? ` from ${inputs.map((i) => `${i.role} ${i.name}`).join(", ")}` : ""}`);
+    try {
+      summary.push(await recipeRun(client, label, recipe, task, downloads));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      summary.push(`${id}: FAIL, ${message}`);
+      failures.push(`${id}: ${message}`);
+    }
+  }
+  if (dry) {
+    console.log(`\n${label} downloads the selected candidates need (each file once):`);
+    let total = 0;
+    for (const f of [...downloads.values()].sort((a, b) => (a.key < b.key ? -1 : 1))) {
+      total += f.sizeBytes;
+      console.log(`      ${f.key.padEnd(62)} ${f.repo}@${f.revision}  ${formatSize(f.sizeBytes).padStart(9)}  ${f.license ?? "licence not given"}  for ${f.recipes.join(", ")}`);
+    }
+    console.log(`      total: ${downloads.size} file(s), ${formatSize(total)} (${total} bytes)`);
+  }
+  console.log(`\n${label} summary:`);
+  for (const line of summary) console.log(`      ${line}`);
+}
+
+function formatSize(bytes) {
+  return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GiB` : `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
+}
+
+async function recipeRun(client, label, recipe, task, downloads) {
+  const id = recipe.id;
+  const prepared = await callPlan(client, { action: "prepare", task });
+  const planId = prepared.data?.plan?.id;
+  if (!planId) return `${id}: FAIL, prepare: ${prepared.summary}`;
+  const bindings = bindingsFor(recipe);
+  const proposals = Object.keys(bindings).length > 0 ? [{ recipeId: id, bindings }] : undefined;
+  const proposed = await callPlan(client, { action: "propose", planId, ...(proposals ? { proposals } : {}) });
+  const candidate = (proposed.data?.candidates ?? []).find((c) => c.recipe === `${id} r${recipe.revision}`);
+  if (!candidate) {
+    const blockers = Object.values(proposed.data?.plan?.blockers ?? {}).flat().filter((b) => String(b).startsWith(`${id}:`));
+    return `${id}: NOT PRESENTED among ${(proposed.data?.candidates ?? []).map((c) => `${c.recipe} (${c.status})`).join(", ") || "no candidates"}${blockers.length ? `; ${blockers.join("; ")}` : ""}`;
+  }
+  console.log(`      candidate ${candidate.status}${candidate.acquisition ? `, ${candidate.acquisition.files.length} file(s), ${candidate.acquisition.total} to download` : ""}`);
+  for (const b of candidate.blocking) console.log(`        blocking: ${b}`);
+  for (const w of candidate.softFailures ?? []) console.log(`        soft: ${w}`);
+  if (candidate.status !== "feasible" && candidate.status !== "acquirable") return `${id}: ${candidate.status.toUpperCase()}, ${candidate.blocking[0] ?? "see the blocking checks"}`;
+  const selected = await callPlan(client, { action: "select", planId, candidateId: candidate.id });
+  if (selected.status !== "ok") return `${id}: FAIL, select: ${selected.summary}`;
+  const run = await callRun(client, { action: "prepare", planId });
+  const actionPlan = run.data?.actionPlan;
+  if (!actionPlan) return `${id}: FAIL, run prepare: ${run.error?.code ?? ""} ${run.summary}`;
+  const acquire = actionPlan.effects.find((e) => e.kind === "acquire_models");
+  console.log(`      effects: ${actionPlan.effects.map((e) => e.kind).join(", ")} (hash ${run.data.shortHash})`);
+  for (const e of actionPlan.effects) {
+    if (e.kind === "local_render") for (const i of e.inputs ?? []) console.log(`        input ${i.assetId} sha256 ${i.sha256.slice(0, 12)} ${i.sizeBytes} bytes`);
+  }
+  for (const f of acquire?.files ?? []) {
+    console.log(`        download ${f.folder}/${f.file} from ${f.source.repo}@${f.source.revision} (${formatSize(f.source.sizeBytes)}, ${f.source.license ?? "licence not given"}) into ${f.destinationRoot}`);
+    const key = `${f.folder}/${f.file}`;
+    const entry = downloads.get(key) ?? { key, repo: f.source.repo, revision: f.source.revision, sizeBytes: f.source.sizeBytes, license: f.source.license, recipes: [] };
+    entry.recipes.push(id);
+    downloads.set(key, entry);
+  }
+  if (dry) return `${id}: DRY, ${candidate.status}${acquire ? `, downloads ${acquire.files.length} file(s), ${formatSize(acquire.files.reduce((n, f) => n + f.source.sizeBytes, 0))}` : ", nothing to download"}`;
+  if (acquire && !allowDownloads) return `${id}: STOPPED after prepare, the run would download ${acquire.files.length} file(s); rerun with --downloads`;
+  // The stand-in for the user: the terminal command's code, with the hash the plan shows.
+  const { runArchitectCli } = await import("../../dist/services/architect/cli.js");
+  const { ArchitectStore } = await import("../../dist/services/architect/store.js");
+  const store = ArchitectStore.open(dataDir);
+  let code;
+  try {
+    code = await runArchitectCli(["approve", run.data.approvalRequest.id], {
+      store,
+      io: { interactive: true, write: () => undefined, ask: async () => run.data.shortHash },
+    });
+  } finally {
+    store.close();
+  }
+  if (code !== 0) return `${id}: FAIL, the terminal approval returned ${code}`;
+  const started = await callRun(client, { action: "start", actionPlanId: actionPlan.id });
+  const runId = started.data?.run?.id;
+  if (!runId) return `${id}: FAIL, start: ${started.error?.code ?? ""} ${started.summary}`;
+  let status;
+  const deadline = Date.now() + 30 * 60 * 1000;
+  do {
+    await new Promise((r) => setTimeout(r, 3000));
+    status = await callRun(client, { action: "status", runId });
+  } while (!["AWAITING_REVIEW", "COMPLETED", "FAILED", "CANCELLED"].includes(status.data?.run?.state) && Date.now() < deadline);
+  const r = status.data?.run;
+  const dims = (status.data?.evaluations ?? []).find((e) => e.criterion === "output_dimensions");
+  const finalized = await callRun(client, { action: "finalize", runId });
+  const ok = (r?.state === "AWAITING_REVIEW" || r?.state === "COMPLETED") && status.data?.verdicts?.execution === "passed" && dims?.verdict === "pass";
+  if (!ok) failures.push(`${id}: run ${runId} ${r?.state}`);
+  return (
+    `${id}: ${ok ? "OK" : "FAIL"}, run ${runId} ${r?.state}${r?.error ? ` (${r.error.code}: ${r.error.message})` : ""}, ` +
+    `execution ${status.data?.verdicts?.execution}, output_dimensions ${dims?.verdict ?? "none"}, outputs ${(r?.outputs ?? []).map((o) => o.filename).join(" ") || "none"}, finalize ${finalized.status}`
+  );
+}
+
+if (uploadMask) {
+  // Before the session, so the server's first node-schema read lists the file.
+  const { uploadImageHttp } = await import("../../dist/comfyui/client.js");
+  const uploaded = await uploadImageHttp(MASK_NAME, maskPng(), "image/png", true);
+  console.log(`uploaded ${MASK_NAME} (1024x1024 mask) into the target's input folder: ${JSON.stringify(uploaded)}`);
 }
 
 const off = mode === "on" ? undefined : await session(false);

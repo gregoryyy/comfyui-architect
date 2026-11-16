@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "flux2-vae",
+  "title": "FLUX.2 autoencoder (32 latent channels, batch-norm statistics for the 128-channel patched latent)",
+  "folders": ["vae"],
+  "requiredTensors": [
+    "encoder.conv_in.weight",
+    "encoder.quant_conv.weight",
+    "decoder.post_quant_conv.weight",
+    "decoder.conv_in.weight",
+    "bn.running_mean",
+    "bn.running_var"
+  ],
+  "shapes": {
+    "encoder.conv_in.weight": [128, 3, 3, 3],
+    "encoder.conv_out.weight": [64, 512, 3, 3],
+    "decoder.conv_in.weight": [512, 32, 3, 3],
+    "bn.running_mean": [128]
+  },
+  "provenance": [
+    {
+      "source": "safetensors header of split_files/vae/flux2-vae.safetensors (336211292 bytes) in Comfy-Org/Flux-2-Klein-4B at commit 5b3abca5c0dc1ecd4eaf3340868d09063fc1c965, read with HTTP Range requests for the 8-byte length and the 25792-byte header from https://huggingface.co/Comfy-Org/Flux-2-Klein-4B/resolve/5b3abca5c0dc1ecd4eaf3340868d09063fc1c965/split_files/vae/flux2-vae.safetensors; no weights were read",
+      "observedAt": "2026-11-16T09:53:40+01:00",
+      "note": "251 tensors, F32: encoder and decoder with conv_in, conv_out, encoder.quant_conv [64, 64, 1, 1], decoder.post_quant_conv [32, 32, 1, 1], decoder.conv_in [512, 32, 3, 3] (32 latent channels), and bn.running_mean and bn.running_var [128]. The file isn't installed on the reference target yet. The FLUX.1 autoencoder (flux-ae) has 16 latent channels, encoder.conv_out [32, 512, 3, 3] and no bn.*, so neither rule matches the other's file."
+    }
+  ]
+}

@@ -23,6 +23,7 @@ import type {
   ValidationReport,
 } from "./schemas.js";
 import type { ComfyUINodeDef, ObjectInfo } from "../../comfyui/types.js";
+import type { InputSizes } from "./output-size.js";
 import { type FamilyEvidence, validateGraph } from "./validate.js";
 
 export const MAX_EXPANDED_CANDIDATES = 24;
@@ -63,6 +64,8 @@ export interface PlanningInput {
   isPaidNode?: (def: ComfyUINodeDef) => boolean;
   /** Observed families of the files `boundModelFiles` names; absent, family checks stay unknown. */
   families?: FamilyEvidence;
+  /** Sizes of the task's input files that recipes size their output from; absent, those checks stay unknown. */
+  inputSizes?: InputSizes;
   now: () => Date;
   newId: () => string;
 }
@@ -263,6 +266,7 @@ export function planCandidates(input: PlanningInput): PlanningOutput {
         snapshot,
         ...(input.isPaidNode ? { isPaidNode: input.isPaidNode } : {}),
         ...(input.families ? { families: input.families } : {}),
+        ...(input.inputSizes ? { inputSizes: input.inputSizes } : {}),
       });
       // The model files the graph actually binds, defaults included, so the candidate,
       // the agent and the export's lock name every file (compiling these again gives the

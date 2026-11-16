@@ -34,6 +34,7 @@ const objectInfo = ObjectInfo.parse(
 );
 
 const NumberOptions = z.object({ min: z.number().optional(), max: z.number().optional() }).passthrough();
+const ComboOptions = z.object({ options: z.array(z.string()) }).passthrough();
 
 function inputSpec(info: ObjectInfo, classType: string, input: string) {
   const schema = info[classType];
@@ -79,8 +80,10 @@ function schemaProblems(recipe: Recipe, info: ObjectInfo): string[] {
         else if (produced !== type) problems.push(`node ${id}.${name}: expects ${String(type)}, linked to ${produced}`);
         continue;
       }
-      if (Array.isArray(type)) {
-        if (!slotted.has(`${id}.${name}`) && !type.includes(String(value))) {
+      if (Array.isArray(type) || type === "COMBO") {
+        // A classic COMBO lists its choices as the type, a V3 one in `options`.
+        const choices = Array.isArray(type) ? type : ComboOptions.safeParse(rawOptions ?? {}).data?.options;
+        if (!slotted.has(`${id}.${name}`) && (choices === undefined || !choices.includes(String(value)))) {
           problems.push(`node ${id}.${name}: "${String(value)}" is not one of its choices`);
         }
         continue;
@@ -135,6 +138,26 @@ function schemaProblems(recipe: Recipe, info: ObjectInfo): string[] {
 }
 
 const loaded = loadRecipeDir(SHIPPED_RECIPES_DIR);
+
+/** Every shipped recipe: the five of milestones 2 to 4 and the eleven of GAPS Q24's set (TODO 5.4). */
+const SHIPPED_IDS = [
+  "recipe-flux1-schnell.ckpt-img2img",
+  "recipe-flux1-schnell.ckpt-inpaint",
+  "recipe-flux1-schnell.ckpt-t2i",
+  "recipe-flux1-schnell.t2i",
+  "recipe-flux2-klein-4b.edit",
+  "recipe-flux2-klein-4b.masked-edit",
+  "recipe-flux2-klein-4b.reference",
+  "recipe-realesrgan.upscale-2x",
+  "recipe-realesrgan.upscale-4x",
+  "recipe-seedvr2-3b.upscale",
+  "recipe-zimage-turbo.controlnet-union",
+  "recipe-zimage-turbo.img2img",
+  "recipe-zimage-turbo.inpaint",
+  "recipe-zimage-turbo.t2i",
+  "recipe-zimage-turbo.t2i-upscale2x",
+  "recipe-zimage-turbo.upscale-2k",
+];
 const byId = new Map(loaded.recipes.map((r) => [r.recipe.id, r.recipe]));
 
 function shipped(id: string): Recipe {
@@ -147,23 +170,48 @@ describe("shipped recipes", () => {
   it("loads the shipped recipes with no errors", () => {
     expect(loaded.dirFound).toBe(true);
     expect(loaded.errors).toEqual([]);
-    expect([...byId.keys()].sort()).toEqual([
-      "recipe-flux1-schnell.ckpt-t2i",
-      "recipe-flux1-schnell.t2i",
-      "recipe-zimage-turbo.img2img",
-      "recipe-zimage-turbo.t2i",
-      "recipe-zimage-turbo.t2i-upscale2x",
-    ]);
+    expect([...byId.keys()].sort()).toEqual(SHIPPED_IDS);
   });
 
   it("ships a recipe as curated only with the owner's review on record, else as proposed (spec §8.4)", () => {
     for (const { recipe } of loaded.recipes) {
-      const reviewed = recipe.evidence.some((e) => e.kind === "maintainer_review");
+      // A review covers the revision it looked at (EvidenceRef.revision).
+      const reviewed = recipe.evidence.some((e) => e.kind === "maintainer_review" && e.revision === recipe.revision);
       expect(recipe.certification, recipe.id).toBe(reviewed ? "curated" : "proposed");
     }
     expect(shipped("recipe-flux1-schnell.ckpt-t2i").certification).toBe("proposed");
-    expect(shipped("recipe-zimage-turbo.t2i").certification).toBe("curated");
+    // Reviewed at revision 3; revision 4 added pinned sources, so it waits for a new review.
+    expect(shipped("recipe-zimage-turbo.t2i")).toMatchObject({ revision: 5, certification: "proposed" });
+    expect(shipped("recipe-flux1-schnell.t2i").certification).toBe("curated");
     expect(shipped("recipe-zimage-turbo.t2i-upscale2x").certification).toBe("proposed");
+    // The img2img recipe changed in revision 5 (an input_image slot) after its review.
+    expect(shipped("recipe-zimage-turbo.img2img")).toMatchObject({ revision: 5, certification: "proposed" });
+    for (const id of SHIPPED_IDS.filter((i) => i !== "recipe-flux1-schnell.t2i")) {
+      expect(shipped(id).certification, id).toBe("proposed");
+    }
+  });
+
+  it("starts each recipe new in this milestone at revision 1 and cites the template it was built from, by name and hash", () => {
+    const fromTemplate: Record<string, string[]> = {
+      "recipe-zimage-turbo.controlnet-union": ["image_z_image_turbo_fun_union_controlnet"],
+      "recipe-zimage-turbo.upscale-2k": ["utility_z_image_turbo_2k_upscaler.app"],
+      "recipe-flux1-schnell.ckpt-img2img": ["flux_schnell"],
+      "recipe-flux1-schnell.ckpt-inpaint": ["flux_schnell"],
+      "recipe-flux2-klein-4b.edit": ["image_flux2_klein_image_edit_4b_distilled", "image_flux2_klein_text_to_image"],
+      "recipe-flux2-klein-4b.reference": ["image_flux2_klein_image_edit_4b_distilled", "image_flux2_klein_text_to_image"],
+      "recipe-flux2-klein-4b.masked-edit": ["image_flux2_klein_image_edit_4b_distilled"],
+      "recipe-seedvr2-3b.upscale": ["utility_seedvr2_3b_int8_upscale_image"],
+    };
+    for (const [id, templates] of Object.entries(fromTemplate)) {
+      const r = shipped(id);
+      expect(r.revision, id).toBe(1);
+      for (const t of templates) {
+        const cited = r.evidence.find((e) => e.kind === "documentation" && e.source.startsWith(`ComfyUI workflow template ${t} `));
+        expect(cited?.source, `${id} cites ${t}`).toMatch(/sha256 [0-9a-f]{64}\)$/);
+      }
+      // An agent wrote these: no maintainer review is claimed.
+      expect(r.evidence.some((e) => e.kind === "maintainer_review"), id).toBe(false);
+    }
   });
 
   it("names the operation each recipe solves", () => {
@@ -172,15 +220,23 @@ describe("shipped recipes", () => {
     expect(shipped("recipe-flux1-schnell.ckpt-t2i").operations).toEqual(["text_to_image"]);
     expect(shipped("recipe-zimage-turbo.img2img").operations).toEqual(["image_edit"]);
     expect(shipped("recipe-zimage-turbo.t2i-upscale2x").operations).toEqual(["text_to_image"]);
+    const ops: Record<string, string> = {
+      "recipe-zimage-turbo.inpaint": "inpaint",
+      "recipe-zimage-turbo.controlnet-union": "reference_guided",
+      "recipe-zimage-turbo.upscale-2k": "upscale",
+      "recipe-flux1-schnell.ckpt-img2img": "image_edit",
+      "recipe-flux1-schnell.ckpt-inpaint": "inpaint",
+      "recipe-flux2-klein-4b.edit": "image_edit",
+      "recipe-flux2-klein-4b.reference": "reference_guided",
+      "recipe-flux2-klein-4b.masked-edit": "inpaint",
+      "recipe-realesrgan.upscale-4x": "upscale",
+      "recipe-realesrgan.upscale-2x": "upscale",
+      "recipe-seedvr2-3b.upscale": "upscale",
+    };
+    for (const [id, op] of Object.entries(ops)) expect(shipped(id).operations, id).toEqual([op]);
   });
 
-  it.each([
-    "recipe-zimage-turbo.t2i",
-    "recipe-flux1-schnell.t2i",
-    "recipe-flux1-schnell.ckpt-t2i",
-    "recipe-zimage-turbo.img2img",
-    "recipe-zimage-turbo.t2i-upscale2x",
-  ])(
+  it.each(SHIPPED_IDS)(
     "%s fits the node schemas of ComfyUI Desktop 0.44.0",
     (id) => {
       expect(schemaProblems(shipped(id), objectInfo)).toEqual([]);
@@ -202,9 +258,11 @@ describe("shipped recipes", () => {
         expect(slot.modelFamily, `${recipe.id}.${slot.id}`).toBeTruthy();
       }
       const fromTask = recipe.slots.flatMap((s) => (s.fromTask ? [s.fromTask] : []));
-      // The prompt always comes from the task's intent, so planning can compile without an
-      // agent-supplied binding; text to image also takes its size from the task.
-      expect(fromTask, recipe.id).toContain("intent");
+      // A prompt slot always fills from the task's intent, so planning can compile without
+      // an agent-supplied binding; the upscalers have no prompt slot. Text to image also
+      // takes its size from the task.
+      if (recipe.slots.some((s) => s.id === "prompt")) expect(fromTask, recipe.id).toContain("intent");
+      else expect(recipe.operations, recipe.id).toEqual(["upscale"]);
       if (recipe.operations.includes("text_to_image")) {
         expect(fromTask.sort(), recipe.id).toEqual(["intent", "media.output.height", "media.output.width"]);
       }
@@ -215,8 +273,37 @@ describe("shipped recipes", () => {
     const slots = new Map(shipped("recipe-zimage-turbo.img2img").slots.map((s) => [s.id, s]));
     expect(slots.get("denoise")).toMatchObject({ valueType: "float", required: true, min: 0, max: 1 });
     expect(slots.get("denoise")?.default).toBeUndefined();
-    expect(slots.get("source_image")).toMatchObject({ valueType: "string", required: true, target: { input: "image" } });
+    expect(slots.get("source_image")).toMatchObject({ valueType: "input_image", required: true, target: { input: "image" }, fromTask: "inputs.source_image" });
     expect(slots.get("source_image")?.default).toBeUndefined();
+    // The output has the source's size: the task's width and height are checked against it.
+    expect(shipped("recipe-zimage-turbo.img2img").outputs[0].scaleOfInput).toEqual({ input: "inputs.source_image", factor: 1, multipleOf: 8 });
+  });
+
+  it("declares each image-taking recipe's output size from an input or from the task, never both", () => {
+    const rule: Record<string, string> = {
+      "recipe-zimage-turbo.img2img": "x1 of inputs.source_image",
+      "recipe-zimage-turbo.inpaint": "x1 of inputs.source_image",
+      "recipe-zimage-turbo.controlnet-union": "x1 of inputs.reference_image.1",
+      "recipe-zimage-turbo.upscale-2k": "x2 of inputs.source_image",
+      "recipe-flux1-schnell.ckpt-img2img": "x1 of inputs.source_image",
+      "recipe-flux1-schnell.ckpt-inpaint": "x1 of inputs.source_image",
+      "recipe-flux2-klein-4b.edit": "task, scales inputs.source_image",
+      "recipe-flux2-klein-4b.reference": "task",
+      "recipe-flux2-klein-4b.masked-edit": "task, scales inputs.source_image",
+      "recipe-realesrgan.upscale-4x": "x4 of inputs.source_image",
+      "recipe-realesrgan.upscale-2x": "x2 of inputs.source_image",
+      "recipe-seedvr2-3b.upscale": "x4 of inputs.source_image",
+    };
+    for (const [id, want] of Object.entries(rule)) {
+      const r = shipped(id);
+      const o = r.outputs[0];
+      const fromTask = r.slots.some((s) => s.fromTask === "media.output.width");
+      const got = o.scaleOfInput
+        ? `x${o.scaleOfInput.factor} of ${o.scaleOfInput.input}`
+        : `task${o.scalesInputToTask ? `, scales ${o.scalesInputToTask}` : ""}`;
+      expect(got, id).toBe(want);
+      expect(fromTask, id).toBe(o.scaleOfInput === undefined);
+    }
   });
 });
 
@@ -321,8 +408,11 @@ describe("pinned model sources and the 2x upscale recipe (TODO 4.3)", () => {
     });
   }
 
-  it("pins each source of the Z-Image recipes to a model slot's folder and default file", () => {
-    for (const id of ["recipe-zimage-turbo.t2i", "recipe-zimage-turbo.img2img", "recipe-zimage-turbo.t2i-upscale2x"]) {
+  it("pins each source of a recipe that pins any to a model slot's folder and default file", () => {
+    const pinning = SHIPPED_IDS.filter((id) => (shipped(id).modelSources ?? []).length > 0);
+    // Every recipe but the two FLUX.1-schnell ones of milestone 2, written before pins.
+    expect(pinning.length).toBe(SHIPPED_IDS.length - 2);
+    for (const id of pinning) {
       const r = shipped(id);
       const defaults = r.slots.filter((s) => s.valueType === "model_file").map((s) => `${s.modelFolder}/${String(s.default)}`);
       const pinned = (r.modelSources ?? []).map((m) => `${m.folder}/${m.file}`);
@@ -332,6 +422,18 @@ describe("pinned model sources and the 2x upscale recipe (TODO 4.3)", () => {
         expect(m.source.path.split("/").pop(), `${id} ${m.file}`).toBe(m.file);
       }
     }
+  });
+
+  it("binds bf16 or fp16 files, except the installed fp8 FLUX.1-schnell checkpoint (ARCH 2026-11-16, precision)", () => {
+    for (const id of SHIPPED_IDS) {
+      for (const s of shipped(id).slots.filter((x) => x.valueType === "model_file")) {
+        const file = String(s.default);
+        if (file === "flux1-schnell-fp8.safetensors" || file === "t5xxl_fp8_e4m3fn.safetensors") continue;
+        expect(file, `${id}.${s.id}`).not.toMatch(/fp8|int8|nvfp4|gguf/i);
+      }
+    }
+    const pinned = SHIPPED_IDS.flatMap((id) => (shipped(id).modelSources ?? []).map((m) => m.file));
+    expect(pinned).toEqual(expect.arrayContaining(["flux-2-klein-4b.safetensors", "flux2-vae.safetensors", "seedvr2_3b_fp16.safetensors", "seedvr2_ema_vae_fp16.safetensors", "Z-Image-Turbo-Fun-Controlnet-Union.safetensors"]));
   });
 
   it("generates at half the task's size and saves through the 4x model and a 0.5 scale", () => {
