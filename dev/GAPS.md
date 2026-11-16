@@ -1,6 +1,6 @@
 # Gaps
 
-Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-16 07:50.
+Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-16 08:51.
 
 How this file works:
 - Answers are recorded with date, time and author: `**Answer** (2026-11-15 13:30, Gregor Heinrich): …`. Corrections of assumptions record the same in the **Correction** column. Short answers are fine.
@@ -305,6 +305,22 @@ Spec §8.5 asks for a configured source registry: adapter, root or URL, allowed 
 - **Proposed:** for Hugging Face downloads the pins and Q25's rules are enough. The registry comes with the template sources in milestone 5 (TODO 5.2), whose configured roots and refresh state need it.
 - **Answer** (2026-11-16 07:50, Gregor Heinrich): as proposed.
 - **Resolved** (2026-11-16 07:50, Opus 5.5 for Gregor Heinrich): recipe pins and Q25's rules serve Hugging Face downloads; the source registry of spec §8.5 comes with the template sources (TODO 5.2).
+
+### Q33. Where may a task's input images come from? — blocking for TODO 5.7
+
+Nine of the 15 recipes of Q24 take an input image or a mask (image to image, inpainting, editing, reference images, upscaling an image). A task names its inputs by `assetId`, and nothing resolves an asset to a file on the target yet.
+
+- **Proposed:** only files already in the target ComfyUI's input folder, which its image loaders list. Architect reads no other local file and uploads nothing; the user puts images there or uploads them in ComfyUI. Each input file is hashed into the action plan and the run record. The alternatives are a local path the user names, copied into the input folder after a separate approval, or any local path the agent names.
+- **Answer** (2026-11-16 08:51, Gregor Heinrich): the ComfyUI input folder, as proposed.
+- **Resolved** (2026-11-16 08:51, Opus 5.5 for Gregor Heinrich): TODO 5.7; [ARCH](ARCH.md#decision-log).
+
+### Q34. How are milestone 5's live downloads and renders approved?
+
+Milestone 5's live checks download the files of Q24 (about 20 GB) and render each recipe once. In milestones 3 and 4 the smoke approved its run through the terminal channel's code, standing in for the owner, after the owner agreed to the run.
+
+- **Proposed:** before the live runs the exact file list, sources and sizes are shown to the owner; on the owner's go-ahead the e2e runner approves through the terminal channel's code, as in milestones 3 and 4. The alternatives are the owner approving each request in the terminal, or no live downloads in this milestone.
+- **Answer** (2026-11-16 08:51, Gregor Heinrich): as proposed.
+- **Resolved** (2026-11-16 08:51, Opus 5.5 for Gregor Heinrich): TODO 5.6.
 
 ## Assumptions
 

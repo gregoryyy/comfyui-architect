@@ -143,7 +143,10 @@ Exit: the certified set (spec §2.2: 12 to 20 variants across 2 to 3 families) c
 - [ ] 5.3 Semantic compatibility rules (spec §8.1, §9.3): a model file's family identified from its safetensors header (tensor names and shapes) as an observation with provenance; family relationships with their applicability (loader, precision, node revision). This replaces GAPS Q14's soft unknown for the recipe default with an observed check
 - [ ] 5.4 The recipes of 5.1, each with its slots, sources, outputs and graph-contract tests
 - [ ] 5.5 UI export (FR-07, spec §10.4): a certified recipe's UI graph loads and exports to the same executable graph, modulo documented fields (AT-11)
-- [ ] 5.6 Live: each certified recipe renders once on the reference target, the outputs pass their checks, and the owner reviews each recipe for `curated`
+- [ ] 5.6 Live: each certified recipe renders once on the reference target, the outputs pass their checks, and the owner reviews each recipe for `curated`. The downloads are shown to the owner as a list before the runs; on the owner's go-ahead the smoke approves (GAPS Q34)
+- [ ] 5.7 Input images (GAPS Q33): a task's inputs are files in the target ComfyUI's input folder (`comfyui-input:<name>`); `input_image` slots bind them; the action plan and the run record carry each input's sha256, and a changed input invalidates the grant; no other local file is read and nothing is uploaded
+  - [ ] 5.7.1 Schemas, compile and validation, with negative tests: an unlisted name, a path escape in the name, an input no slot consumes, a mask without a mask slot
+  - [ ] 5.7.2 Facade read of an input file, the effect's inputs in the hash, start's re-read; tests for a changed and a vanished input
 
 ## 6. Repair, region checks and the acceptance suite (spec Phase 3, third part)
 
