@@ -153,7 +153,7 @@ describe("migration 5", () => {
     store.putModelObservation({ ...obs, mtimeMs: 2 });
     expect(store.getModelObservation("vae", "ae.safetensors")?.mtimeMs).toBe(2);
     const check = new BetterSqlite3(join(dir, "architect.db"));
-    expect(check.prepare("SELECT MAX(version) AS v FROM schema_migrations").get()).toEqual({ v: 5 });
+    expect(check.prepare("SELECT MAX(version) AS v FROM schema_migrations").get()).toEqual({ v: MIGRATIONS.at(-1)?.version });
     expect(check.prepare("SELECT COUNT(*) AS n FROM model_observations").get()).toEqual({ n: 1 });
     // A payload moved to another row is refused on read.
     check.prepare("UPDATE model_observations SET file = 'other.safetensors'").run();

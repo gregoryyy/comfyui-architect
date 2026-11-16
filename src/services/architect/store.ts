@@ -35,6 +35,8 @@ import {
   ArchitectErrorCode,
   EnvironmentSnapshot,
   EvaluationRecord,
+  GraphRevision,
+  type LocalRenderEffect,
   ModelObservation,
   Plan,
   PlanCandidate,
@@ -56,8 +58,10 @@ import {
   actionPlanHash,
   canAcquisitionTransition,
   canTransition,
+  limitsWithin,
   parseStored,
 } from "./schemas.js";
+import { repairSteps } from "./repair.js";
 
 /** The database file inside the Architect data directory. */
 export const ARCHITECT_DB_FILE = "architect.db";
@@ -298,6 +302,95 @@ function readStored<K extends StoredKind>(kind: K, payload: string, row: { id: s
   return record;
 }
 
+const sameRef = (a: { id: string; version: number }, b: { id: string; version: number }) => a.id === b.id && a.version === b.version;
+
+/**
+ * Why a run the grant starts doesn't fit its action plan's stages, or undefined. A plan with
+ * stages or a repair scope starts attempt 1, its stage the plan's first; a smoke stage's
+ * attempt renders a revision with exactly the effect's smoke transformation on the approved
+ * graph. A plan without them starts a run without `attempt`, as before milestone 6.
+ */
+function rootAttemptProblem(run: RunRecord, actionPlan: ActionPlan, revision: GraphRevision | undefined): string | undefined {
+  const render = actionPlan.effects.find((e): e is LocalRenderEffect => e.kind === "local_render");
+  const chained = render?.stages !== undefined || render?.repair !== undefined;
+  if (!run.attempt) {
+    if (chained) return "its action plan has stages, so it starts as attempt 1";
+    return revision ? "a run without stages renders the approved graph" : undefined;
+  }
+  if (!render || !chained) return "its action plan has no stages, so the run isn't an attempt";
+  if (run.attempt.index !== 1) return "a grant starts attempt 1";
+  const smoke = render.stages?.find((s) => s.stage === "smoke");
+  const first = smoke ? "smoke" : "final";
+  if (run.attempt.stage !== first) return `the plan's first stage is ${first}, not ${run.attempt.stage}`;
+  if (!smoke) return revision || run.attempt.revisionId !== undefined ? "a final first attempt renders the approved graph" : undefined;
+  if (!revision || run.attempt.revisionId !== revision.id) return "the smoke attempt names its graph revision";
+  if (revision.rootRunId !== run.id || revision.actionPlanId !== actionPlan.id || revision.candidateId !== run.candidateId) {
+    return `revision ${revision.id} belongs to another run`;
+  }
+  if (revision.parentRevisionId !== undefined) return "the smoke revision derives from the approved graph";
+  if (revision.baseFingerprint !== run.graphFingerprint) return `revision ${revision.id} isn't a revision of the approved graph`;
+  if (revision.steps.length !== 1 || !sameRef(revision.steps[0], smoke.transformation) || revision.steps[0].node !== undefined) {
+    return `the smoke revision applies the effect's ${smoke.transformation.id} ${smoke.transformation.version} and nothing else`;
+  }
+  return undefined;
+}
+
+/**
+ * Why a child attempt's transformations don't fit, or undefined: each is the effect's smoke
+ * transformation (first, and only on a smoke attempt) or one of its repair transformations;
+ * a final after its smoke keeps the smoke's repair steps and round, and only after the smoke
+ * passed; a repair is the predecessor's steps plus one, in the next round, at the same stage.
+ */
+function childStepsProblem(c: {
+  attempt: NonNullable<RunRecord["attempt"]>;
+  revision: GraphRevision | undefined;
+  render: LocalRenderEffect;
+  last: RunRecord;
+  lastSteps: GraphRevision["steps"];
+  rootId: string;
+  candidateId: string;
+  actionPlanId: string;
+}): string | undefined {
+  const { attempt, revision, render, last } = c;
+  const lastAttempt = last.attempt;
+  if (!lastAttempt) return "the predecessor isn't an attempt";
+  const steps = revision?.steps ?? [];
+  const smoke = render.stages?.find((s) => s.stage === "smoke");
+  if (attempt.stage === "smoke" && !smoke) return "the action plan has no smoke stage";
+  for (const [i, step] of steps.entries()) {
+    const isSmoke = smoke !== undefined && sameRef(step, smoke.transformation);
+    if (isSmoke && (attempt.stage !== "smoke" || i !== 0)) return `${step.id} belongs at the start of a smoke attempt only`;
+    if (!isSmoke && !(render.repair?.transformations ?? []).some((r) => sameRef(r, step))) {
+      return `${step.id} ${step.version} is outside the repair scope the grant approved`;
+    }
+  }
+  if (attempt.stage === "smoke" && (steps.length === 0 || smoke === undefined || !sameRef(steps[0], smoke.transformation))) {
+    return "a smoke attempt starts with the smoke transformation";
+  }
+  const before = canonicalJson(repairSteps(c.lastSteps));
+  const now = repairSteps(steps);
+  if (lastAttempt.stage === "smoke" && attempt.stage === "final") {
+    if (last.state !== "COMPLETED" || last.acceptance !== "passed") return "a final follows a smoke attempt only once the smoke passed";
+    if (attempt.repairRound !== lastAttempt.repairRound) return "a final keeps its smoke's repair round";
+    if (canonicalJson(now) !== before) return "a final keeps its smoke's repairs and adds none";
+  } else if (lastAttempt.stage === attempt.stage) {
+    if (attempt.repairRound !== lastAttempt.repairRound + 1) return "a repair at the same stage is the next repair round";
+    if (canonicalJson(now.slice(0, -1)) !== before || now.length !== repairSteps(c.lastSteps).length + 1) {
+      return "a repair keeps the predecessor's steps and adds one";
+    }
+  } else {
+    return `a ${attempt.stage} attempt doesn't follow a ${lastAttempt.stage} one`;
+  }
+  if (steps.length === 0) return revision || attempt.revisionId !== undefined ? "an attempt without steps renders the approved graph" : undefined;
+  if (!revision || attempt.revisionId !== revision.id) return "the attempt names its graph revision";
+  if (revision.rootRunId !== c.rootId || revision.actionPlanId !== c.actionPlanId || revision.candidateId !== c.candidateId) {
+    return `revision ${revision.id} belongs to another run`;
+  }
+  if (revision.baseFingerprint !== render.graphFingerprint) return `revision ${revision.id} isn't a revision of the approved graph`;
+  if (revision.parentRevisionId !== lastAttempt.revisionId) return `revision ${revision.id} doesn't derive from the predecessor's`;
+  return undefined;
+}
+
 /** Time columns hold UTC ISO strings, so ordering by them is ordering by time. */
 function utc(timestamp: string): string {
   return new Date(timestamp).toISOString();
@@ -438,8 +531,14 @@ function prepareStatements(db: Database.Database) {
     insertRun: db.prepare(
       `INSERT INTO runs
          (id, action_plan_id, plan_id, task_id, task_revision, candidate_id, base_url, idempotency_key, state, prompt_id,
-          grant_id, created_at, updated_at, payload)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          grant_id, created_at, updated_at, payload, root_run_id, attempt_index)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    childAttempts: db.prepare("SELECT id, payload FROM runs WHERE root_run_id = ? ORDER BY attempt_index"),
+
+    graphRevision: db.prepare("SELECT id, payload FROM graph_revisions WHERE id = ?"),
+    insertGraphRevision: db.prepare(
+      "INSERT INTO graph_revisions (id, root_run_id, parent_id, fingerprint, created_at, payload) VALUES (?, ?, ?, ?, ?, ?)",
     ),
     updateRun: db.prepare(
       "UPDATE runs SET state = ?, prompt_id = ?, updated_at = ?, payload = ? WHERE id = ? AND state = ?",
@@ -993,10 +1092,7 @@ export class ArchitectStore {
           `grant ${grant.id} names target ${grant.target.baseUrl}, the plan ${actionPlan.target.baseUrl}`,
         );
       }
-      if (
-        grant.limits.maxRuns > actionPlan.budgets.maxRuns ||
-        grant.limits.maxWallTimeSeconds > actionPlan.budgets.maxWallTimeSeconds
-      ) {
+      if (!limitsWithin(grant.limits, actionPlan.budgets)) {
         throw new StoreConflictError(`grant ${grant.id} allows more than action plan ${actionPlan.id} asks for`);
       }
       this.stmts.insertGrant.run(
@@ -1070,6 +1166,11 @@ export class ArchitectStore {
     now: Date;
     principal?: RunPrincipal;
     reason?: string;
+    /**
+     * The smoke stage's graph revision, for a root whose action plan has a smoke stage
+     * (TODO 6.2.1): written in this transaction, after the checks of `rootAttemptProblem`.
+     */
+    revision?: z.input<typeof GraphRevision>;
   }): { run: RunRecord; grant: ApprovalGrant; event: RunEvent } {
     if (args.run.grantId !== undefined && args.run.grantId !== args.grantId) {
       throw new StoreConflictError(`run ${args.run.id} names grant ${args.run.grantId}, not ${args.grantId}`);
@@ -1078,6 +1179,7 @@ export class ArchitectStore {
     if (run.state !== "PREPARING") {
       throw new StoreConflictError(`run ${run.id} must start in PREPARING, not ${run.state}`);
     }
+    const revision = args.revision === undefined ? undefined : GraphRevision.parse(args.revision);
     const now = args.now.getTime();
     return this.immediate(() => {
       const grant = this.getGrant(args.grantId);
@@ -1108,6 +1210,8 @@ export class ArchitectStore {
       }
       const prior = this.findRunByIdempotencyKey(run.idempotencyKey);
       if (prior) throw new StoreConflictError(`idempotency key ${run.idempotencyKey} already maps to run ${prior.id}`);
+      const problem = rootAttemptProblem(run, actionPlan, revision);
+      if (problem) throw new StoreConflictError(`run ${run.id}: ${problem}`);
 
       const at = args.now.toISOString();
       // The run first: the grant's consumed_by_run_id references it.
@@ -1126,10 +1230,13 @@ export class ArchitectStore {
         utc(run.createdAt),
         utc(run.updatedAt),
         canonicalJson(run),
+        null,
+        run.attempt?.index ?? null,
       );
       const consumed = ApprovalGrant.parse({ ...grant, consumedAt: at, consumedByRunId: run.id });
       const result = this.stmts.consumeGrant.run(utc(at), run.id, canonicalJson(consumed), grant.id);
       if (result.changes !== 1) throw new StoreConflictError(`grant ${grant.id} was consumed concurrently`);
+      if (revision) this.insertGraphRevision(revision);
       const event = this.insertEvent({
         runId: run.id,
         at,
@@ -1152,6 +1259,165 @@ export class ArchitectStore {
   findRunByIdempotencyKey(key: string): RunRecord | undefined {
     const row = parseRow(IdPayloadRow, this.stmts.runByIdempotencyKey.get(key));
     return row && readStored("run", row.payload, { id: row.id });
+  }
+
+  /**
+   * The attempts under a root's grant, in index order: the root, then its children (ARCH
+   * 2026-11-16, milestone 6, attempts). A run without `attempt` is its own one attempt; an
+   * id that isn't stored gives an empty list.
+   */
+  listAttempts(rootRunId: string): RunRecord[] {
+    const root = this.getRun(rootRunId);
+    if (!root) return [];
+    const children = this.stmts.childAttempts.all(rootRunId).map((value) => {
+      const row = IdPayloadRow.parse(value);
+      return readStored("run", row.payload, { id: row.id });
+    });
+    return [root, ...children];
+  }
+
+  /** A graph revision by id; undefined when not stored. */
+  getGraphRevision(id: string): GraphRevision | undefined {
+    const row = parseRow(IdPayloadRow, this.stmts.graphRevision.get(id));
+    return row && readStored("graphRevision", row.payload, { id: row.id });
+  }
+
+  /**
+   * Create the next attempt under a root's grant (spec §13.4, §14.2; ARCH 2026-11-16,
+   * milestone 6, attempts). Only the run controller calls this; no tool argument reaches
+   * it, and it never creates or widens a grant: the child runs under the grant its root
+   * consumed. One transaction that takes the write lock first checks everything:
+   * - the root's grant binds its action plan's hash as stored, and was consumed by the root;
+   * - the predecessor is the chain's latest attempt and FAILED or COMPLETED, never
+   *   OUTCOME_UNKNOWN or CANCELLED, and the root has no cancel request;
+   * - the smoke and final attempts, the repair rounds and all runs stay within the grant's
+   *   limits;
+   * - every transformation is the effect's smoke transformation or one of its repair
+   *   transformations, and the chain grows by at most one repair step per round;
+   * - the deadline, from the root's start, covers every attempt and hasn't passed;
+   * - the index is the next one, under the key `<root key>#<index>`.
+   * A retried creation with the same index finds the child it made and returns it with
+   * `created: false`; anything else is a StoreConflictError. The child starts in PREPARING.
+   */
+  createChildAttempt(args: {
+    run: z.input<typeof RunRecord>;
+    predecessorRunId: string;
+    revision?: z.input<typeof GraphRevision>;
+    now: Date;
+    reason: string;
+  }): { run: RunRecord; created: boolean } {
+    const child = RunRecord.parse(args.run);
+    const revision = args.revision === undefined ? undefined : GraphRevision.parse(args.revision);
+    const attempt = child.attempt;
+    if (!attempt || attempt.index < 2) throw new StoreConflictError(`run ${child.id} isn't a later attempt`);
+    if (child.state !== "PREPARING") throw new StoreConflictError(`attempt ${child.id} must start in PREPARING, not ${child.state}`);
+    const now = args.now.getTime();
+    return this.immediate(() => {
+      const root = this.getRun(attempt.rootRunId);
+      if (!root?.attempt || root.attempt.rootRunId !== root.id) throw new StoreConflictError(`run ${attempt.rootRunId} isn't the root of an attempt chain`);
+      const key = `${root.idempotencyKey}#${attempt.index}`;
+      if (child.idempotencyKey !== key) throw new StoreConflictError(`attempt ${attempt.index} of ${root.id} has the key ${key}`);
+      const existing = this.findRunByIdempotencyKey(key);
+      if (existing) {
+        const same =
+          existing.attempt !== undefined &&
+          canonicalJson({ ...existing.attempt, revisionId: undefined }) === canonicalJson({ ...attempt, revisionId: undefined }) &&
+          canonicalJson(this.stepsOf(existing)) === canonicalJson(revision?.steps ?? []);
+        if (!same) throw new StoreConflictError(`attempt ${attempt.index} of ${root.id} is already run ${existing.id}, another attempt`);
+        return { run: existing, created: false };
+      }
+      if (
+        child.actionPlanId !== root.actionPlanId ||
+        child.planId !== root.planId ||
+        child.taskId !== root.taskId ||
+        child.taskRevision !== root.taskRevision ||
+        child.candidateId !== root.candidateId ||
+        child.target.baseUrl !== root.target.baseUrl ||
+        child.graphFingerprint !== root.graphFingerprint ||
+        child.grantId === undefined ||
+        child.grantId !== root.grantId
+      ) {
+        throw new StoreConflictError(`attempt ${child.id} isn't under what root ${root.id} was approved for`);
+      }
+      const grant = this.getGrant(child.grantId);
+      const actionPlan = this.getActionPlan(root.actionPlanId);
+      if (!grant || !actionPlan) throw new StoreConflictError(`root ${root.id}'s grant or action plan is not stored`);
+      if (grant.consumedByRunId !== root.id) throw new StoreConflictError(`grant ${grant.id} wasn't consumed by root ${root.id}`);
+      // getActionPlan parsed it, and the parse checks the stored hash against the content.
+      if (grant.actionPlanId !== actionPlan.id || grant.actionPlanHash !== actionPlan.hash || actionPlan.hash !== actionPlanHash(actionPlan)) {
+        throw new StoreConflictError(`grant ${grant.id} doesn't bind action plan ${actionPlan.id} as it is stored`);
+      }
+      if (this.listRunEvents(root.id).some((e) => e.kind === "cancel")) throw new StoreConflictError(`root ${root.id} was cancelled`);
+      const attempts = this.listAttempts(root.id);
+      const last = attempts.at(-1);
+      if (!last?.attempt || last.id !== args.predecessorRunId) {
+        throw new StoreConflictError(`run ${args.predecessorRunId} isn't the latest attempt of ${root.id}`);
+      }
+      if (last.state !== "FAILED" && last.state !== "COMPLETED") {
+        throw new StoreConflictError(`attempt ${last.id} is ${last.state}; a further attempt follows only a FAILED or COMPLETED one`);
+      }
+      if (attempt.index !== last.attempt.index + 1) throw new StoreConflictError(`attempt ${attempt.index} doesn't follow attempt ${last.attempt.index}`);
+      const limits = grant.limits;
+      if (limits.maxPreviewRuns === undefined || limits.maxFinalRuns === undefined || limits.maxRepairRounds === undefined) {
+        throw new StoreConflictError(`grant ${grant.id} has no stage limits, so it allows one render`);
+      }
+      const count = (stage: string) => attempts.filter((a) => a.attempt?.stage === stage).length + (attempt.stage === stage ? 1 : 0);
+      if (count("smoke") > limits.maxPreviewRuns) throw new StoreConflictError(`grant ${grant.id} allows ${limits.maxPreviewRuns} preview run(s)`);
+      if (count("final") > limits.maxFinalRuns) throw new StoreConflictError(`grant ${grant.id} allows ${limits.maxFinalRuns} final run(s)`);
+      if (attempts.length + 1 > limits.maxRuns) throw new StoreConflictError(`grant ${grant.id} allows ${limits.maxRuns} run(s)`);
+      if (attempt.repairRound > limits.maxRepairRounds) throw new StoreConflictError(`grant ${grant.id} allows ${limits.maxRepairRounds} repair round(s)`);
+      if (now >= Date.parse(root.createdAt) + limits.maxWallTimeSeconds * 1000) {
+        throw new StoreConflictError(`the ${limits.maxWallTimeSeconds} s grant ${grant.id} allows from ${root.createdAt} have passed`);
+      }
+      const render = actionPlan.effects.find((e): e is LocalRenderEffect => e.kind === "local_render");
+      if (!render) throw new StoreConflictError(`action plan ${actionPlan.id} has no render`);
+      const problem = childStepsProblem({ attempt, revision, render, last, lastSteps: this.stepsOf(last), rootId: root.id, candidateId: root.candidateId, actionPlanId: actionPlan.id });
+      if (problem) throw new StoreConflictError(`attempt ${attempt.index} of ${root.id}: ${problem}`);
+
+      const at = args.now.toISOString();
+      this.stmts.insertRun.run(
+        child.id,
+        child.actionPlanId,
+        child.planId,
+        child.taskId,
+        child.taskRevision,
+        child.candidateId,
+        child.target.baseUrl,
+        child.idempotencyKey,
+        child.state,
+        null,
+        child.grantId,
+        utc(child.createdAt),
+        utc(child.updatedAt),
+        canonicalJson(child),
+        root.id,
+        attempt.index,
+      );
+      if (revision) this.insertGraphRevision(revision);
+      this.insertEvent({ runId: child.id, at, kind: "transition", to: child.state, principal: "controller", reason: args.reason });
+      return { run: child, created: true };
+    });
+  }
+
+  /** The steps of the revision a run renders; empty for the approved graph. */
+  private stepsOf(run: RunRecord): GraphRevision["steps"] {
+    const id = run.attempt?.revisionId;
+    if (id === undefined) return [];
+    const revision = this.getGraphRevision(id);
+    if (!revision) throw new StoreConflictError(`run ${run.id}'s graph revision ${id} is not stored`);
+    return revision.steps;
+  }
+
+  /** Write a graph revision. Callers hold the write lock and checked it against its run. */
+  private insertGraphRevision(revision: GraphRevision): void {
+    this.stmts.insertGraphRevision.run(
+      revision.id,
+      revision.rootRunId,
+      revision.parentRevisionId ?? null,
+      revision.fingerprint,
+      utc(revision.createdAt),
+      canonicalJson(revision),
+    );
   }
 
   /** Runs, oldest first; only those in `states` when given (the controller resumes non-final runs). */
