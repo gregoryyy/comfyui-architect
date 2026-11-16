@@ -8,6 +8,7 @@
 // Kept free of Architect-specific logic so it can be offered upstream as-is (GAPS Q8).
 
 import {
+  MAX_PREVIEW_SOURCE_BYTES,
   enqueuePrompt,
   fetchImage,
   getHistory,
@@ -34,6 +35,7 @@ import {
   listLocalModelsWithCoverage,
   localDownloadCacheIdentity,
   resolveDownloadTarget,
+  resolveExistingModelFile,
   shouldDispatchDownloadToManager,
 } from "../model-resolver.js";
 import {
@@ -82,6 +84,20 @@ export interface UpstreamFacade {
   interruptPrompt(promptId: string): Promise<void>;
   /** An output file's bytes, through /view. */
   outputFile(ref: { filename: string; subfolder: string; type: "output" | "temp" }): Promise<{ bytes: Buffer; mimeType: string }>;
+  /**
+   * A file in the target's input folder, through `/view?type=input`, with `name` split at
+   * its last `/` into subfolder and file name. Bounded by upstream's /view reader at
+   * `MAX_INPUT_FILE_BYTES`; throws when the target refuses, lacks the file or the body is
+   * larger (a failed read, never an empty file).
+   */
+  readInputFile(name: string): Promise<{ bytes: Buffer }>;
+  /**
+   * An installed model file located by upstream's resolver for existing files
+   * (`resolveExistingModelFile`, read mode): the configured model root and extra roots,
+   * containment-checked. Throws when it isn't found, isn't a file, or no local ComfyUI path
+   * is configured. Slow: the resolver may probe the running server on each call.
+   */
+  locateModelFile(folder: string, file: string): Promise<{ path: string; sizeBytes: number; mtimeMs: number }>;
   /**
    * Decode an image fully with sharp and return its pixel size. Throws when the data
    * doesn't decode (a truncated or corrupt file); throws ImageDecoderUnavailableError when
@@ -171,6 +187,18 @@ export function presetWithholds(preset: string, toolName: string): boolean {
   return !toolAllowed(toolName, resolveToolSurfacePolicy({ COMFYUI_MCP_TOOL_PRESET: preset }));
 }
 
+/**
+ * The largest input file `readInputFile` reads: upstream's ceiling for one /view body
+ * (`MAX_PREVIEW_SOURCE_BYTES`), which its reader won't raise for any caller.
+ */
+export const MAX_INPUT_FILE_BYTES = MAX_PREVIEW_SOURCE_BYTES;
+
+/** `sub/dir/name.png` as /view takes it: subfolder `sub/dir`, filename `name.png`. */
+export function splitInputName(name: string): { subfolder: string; filename: string } {
+  const cut = name.lastIndexOf("/");
+  return cut < 0 ? { subfolder: "", filename: name } : { subfolder: name.slice(0, cut), filename: name.slice(cut + 1) };
+}
+
 /** sharp couldn't be loaded, so no image was decoded: not a verdict on the image. */
 export class ImageDecoderUnavailableError extends Error {
   constructor(message: string) {
@@ -214,6 +242,16 @@ export function createUpstreamFacade(): UpstreamFacade {
     outputFile: async (ref) => {
       const r = await fetchImage(ref.filename, ref.type, ref.subfolder);
       return { bytes: Buffer.from(r.base64, "base64"), mimeType: r.mimeType };
+    },
+    readInputFile: async (name) => {
+      const { subfolder, filename } = splitInputName(name);
+      const r = await fetchImage(filename, "input", subfolder, { maxBytes: MAX_INPUT_FILE_BYTES });
+      return { bytes: Buffer.from(r.base64, "base64") };
+    },
+    locateModelFile: async (folder, file) => {
+      const found = await resolveExistingModelFile(`${folder}/${file}`, { mode: "read" });
+      if (!found.info.isFile()) throw new Error(`${folder}/${file} is not a file under ${found.root}`);
+      return { path: found.path, sizeBytes: found.info.size, mtimeMs: found.info.mtimeMs };
     },
     decodeImage: async (bytes) => {
       const loaded = await tryLoadSharp();

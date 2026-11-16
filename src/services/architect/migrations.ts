@@ -10,8 +10,9 @@
 // Relational columns carry identity, status, target and time, so they can be indexed and
 // constrained; the full record is JSON in `payload`, versioned by its own `schemaVersion`
 // and read back through `parseStored` (spec §15.2). Milestone 2 creates the planning
-// tables, milestone 3 the execution tables, milestone 4 the acquisitions; the other spec
-// §15.2 tables arrive with the milestones that write them.
+// tables, milestone 3 the execution tables, milestone 4 the acquisitions, milestone 5 the
+// model observations and the source registry; the other spec §15.2 tables arrive with the
+// milestones that write them.
 
 /** One schema step: applied once, in order, inside its own transaction. */
 export interface Migration {
@@ -258,6 +259,41 @@ CREATE TABLE acquisitions (
 );
 
 CREATE UNIQUE INDEX acquisitions_run_folder_file ON acquisitions(run_id, folder, file);
+`,
+  },
+  {
+    // Milestone 5 (TODO 5.2, 5.3; ARCH 2026-11-16, model families and sources). One row per
+    // observed model file, replaced when the file or the rules change; and the source
+    // registry of spec §8.5. `family` is NULL when no single rule matched, which the
+    // payload's outcome tells apart (no match, ambiguous, unreadable). As in migrations 2
+    // and 4, state columns have no CHECK; the Zod schemas are the authority.
+    version: 5,
+    name: "model_observations_and_sources",
+    sql: `
+CREATE TABLE model_observations (
+  folder      TEXT NOT NULL,
+  file        TEXT NOT NULL,
+  size        INTEGER NOT NULL CHECK (size >= 0),
+  mtime_ms    REAL NOT NULL,
+  family      TEXT,
+  reason      TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  payload     TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX model_observations_folder_file ON model_observations(folder, file);
+
+CREATE TABLE sources (
+  id              TEXT PRIMARY KEY,
+  adapter         TEXT NOT NULL,
+  root            TEXT NOT NULL,
+  allowed_ops     TEXT NOT NULL,
+  trust           TEXT NOT NULL,
+  refresh_policy  TEXT NOT NULL,
+  last_refresh_at TEXT,
+  state           TEXT NOT NULL,
+  payload         TEXT NOT NULL
+);
 `,
   },
 ];

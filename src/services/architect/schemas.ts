@@ -279,12 +279,85 @@ export const AcceptanceCriterion = z.discriminatedUnion("kind", [
 ]);
 export type AcceptanceCriterion = z.infer<typeof AcceptanceCriterion>;
 
+/**
+ * A task input (spec §7.2). `assetId` stays any non-empty string here, so a stored task
+ * with an older or foreign form still parses; the contract layer decides whether a recipe
+ * can take it (`parseAssetId`), and refuses every form but `comfyui-input:<name>` as
+ * unsupported (GAPS Q33).
+ */
 export const TaskInput = z
   .object({
     assetId: z.string().min(1),
     role: z.enum(["source_image", "reference_image", "mask", "protected_region"]),
   })
   .strict();
+export type TaskInput = z.infer<typeof TaskInput>;
+
+/** The one asset form milestone 5 resolves: a file in the target ComfyUI's input folder (GAPS Q33). */
+export const COMFYUI_INPUT_PREFIX = "comfyui-input:";
+
+/**
+ * Whether `name` can name a file inside ComfyUI's input folder: relative, `/` between
+ * segments, no empty, `.` or `..` segment, no backslash, no drive letter and no control
+ * character (NUL included). ComfyUI's `/view` checks containment itself; this check keeps
+ * a name that tries to leave the folder from reaching it, a grant or a record (SEC T9).
+ */
+export function inputNameProblem(name: string): string | undefined {
+  if (name.length === 0) return "the name is empty";
+  if (name.length > 1024) return "the name is longer than 1024 characters";
+  if (/[\u0000-\u001f\u007f]/.test(name)) return "the name contains a control character";
+  if (name.includes("\\")) return "the name contains a backslash; use / between folders";
+  if (name.startsWith("/")) return "the name is absolute; give it relative to ComfyUI's input folder";
+  if (/^[A-Za-z]:/.test(name)) return "the name starts with a drive letter";
+  const segments = name.split("/");
+  if (segments.some((s) => s === "..")) return "the name has a '..' segment";
+  if (segments.some((s) => s === "" || s === ".")) return "the name has an empty or '.' segment";
+  return undefined;
+}
+
+/** A task asset resolved to what it names, or why it can't be. */
+export type ParsedAssetId = { ok: true; kind: "comfyui_input"; name: string } | { ok: false; problem: string };
+
+/** Read a task input's `assetId` (GAPS Q33): `comfyui-input:<name>` and nothing else. */
+export function parseAssetId(assetId: string): ParsedAssetId {
+  if (!assetId.startsWith(COMFYUI_INPUT_PREFIX)) {
+    return {
+      ok: false,
+      problem: `asset id ${JSON.stringify(assetId)} isn't supported: only ${COMFYUI_INPUT_PREFIX}<name>, a file in the target ComfyUI's input folder, is`,
+    };
+  }
+  const name = assetId.slice(COMFYUI_INPUT_PREFIX.length);
+  const problem = inputNameProblem(name);
+  return problem === undefined ? { ok: true, kind: "comfyui_input", name } : { ok: false, problem: `asset id ${JSON.stringify(assetId)}: ${problem}` };
+}
+
+/** An `assetId` that `parseAssetId` accepts. */
+const InputAssetId = z.string().superRefine((id, ctx) => {
+  const parsed = parseAssetId(id);
+  if (!parsed.ok) ctx.addIssue({ code: "custom", message: parsed.problem });
+});
+
+/**
+ * The `fromTask` paths of an `input_image` slot: the task's source image, its mask, or its
+ * n-th reference image counted from 1 in task order.
+ */
+export const INPUT_IMAGE_PATH = /^inputs\.(?:source_image|mask|reference_image\.[1-9][0-9]*)$/;
+
+/**
+ * The `fromTask` path each task input answers to, in task order: `inputs.source_image` and
+ * `inputs.mask` for the first of their role, `inputs.reference_image.<n>` for each reference
+ * image, and `inputs.<role>.<n>` for a second source image or mask and for protected
+ * regions, which no slot path names, so they fail as unsupported (GAPS Q16).
+ */
+export function taskInputPaths(inputs: readonly TaskInput[]): { path: string; input: TaskInput }[] {
+  const seen = new Map<TaskInput["role"], number>();
+  return inputs.map((input) => {
+    const n = (seen.get(input.role) ?? 0) + 1;
+    seen.set(input.role, n);
+    const single = input.role === "source_image" || input.role === "mask";
+    return { path: single && n === 1 ? `inputs.${input.role}` : `inputs.${input.role}.${n}`, input };
+  });
+}
 
 export const TaskBudgets = z
   .object({
@@ -357,7 +430,11 @@ export const RecipeSlot = z
   .object({
     id: z.string().regex(/^[a-z][a-z0-9_]*$/),
     label: z.string().min(1),
-    valueType: z.enum(["model_file", "string", "int", "float", "seed", "enum"]),
+    /**
+     * `input_image`: a file in the target's input folder, taken from the task's inputs by
+     * `fromTask` (GAPS Q33); the slot writes the file's name, as ComfyUI's image loaders take it.
+     */
+    valueType: z.enum(["model_file", "string", "int", "float", "seed", "enum", "input_image"]),
     /** The node input this slot writes. */
     target: z.object({ node: z.string().min(1), input: z.string().min(1) }).strict(),
     required: z.boolean(),
@@ -385,6 +462,20 @@ export const RecipeSlot = z
   .refine((s) => s.fromTaskDivisor === undefined || s.fromTask !== undefined, {
     message: "fromTaskDivisor needs fromTask",
     path: ["fromTaskDivisor"],
+  })
+  // An input image comes from the task only: a default or a binding would put a file in the
+  // graph that the task, and so the approval, doesn't name (GAPS Q33).
+  .refine((s) => s.valueType !== "input_image" || (s.fromTask !== undefined && INPUT_IMAGE_PATH.test(s.fromTask)), {
+    message: "an input_image slot takes fromTask inputs.source_image, inputs.mask or inputs.reference_image.<n>",
+    path: ["fromTask"],
+  })
+  .refine((s) => s.valueType !== "input_image" || (s.default === undefined && s.fromTaskDivisor === undefined), {
+    message: "an input_image slot has no default and no fromTaskDivisor",
+    path: ["default"],
+  })
+  .refine((s) => s.fromTask === undefined || !s.fromTask.startsWith("inputs.") || s.valueType === "input_image", {
+    message: "only an input_image slot takes a task input",
+    path: ["valueType"],
   });
 export type RecipeSlot = z.infer<typeof RecipeSlot>;
 
@@ -652,6 +743,16 @@ export const Effect = z.discriminatedUnion("kind", [
       /** The compiled graph's fingerprint (spec §10.5), so the grant names the exact graph. */
       graphFingerprint: Sha256,
       outputNodes: z.array(z.string().min(1)).min(1),
+      /**
+       * The task's input files as read from the target when the plan was prepared, so the
+       * grant binds their content and not only their names (spec §14.2; GAPS Q33). Absent
+       * for a task without inputs, which keeps the hash of such a plan as it was.
+       */
+      inputs: z
+        .array(z.object({ assetId: InputAssetId, sha256: Sha256, sizeBytes: Bytes }).strict())
+        .min(1)
+        .refine((xs) => new Set(xs.map((x) => x.assetId)).size === xs.length, { message: "an input is listed twice" })
+        .optional(),
     })
     .strict(),
   z
@@ -711,6 +812,8 @@ export const Effect = z.discriminatedUnion("kind", [
     }),
 ]);
 export type Effect = z.infer<typeof Effect>;
+export type LocalRenderEffect = Extract<Effect, { kind: "local_render" }>;
+export type RenderInput = NonNullable<LocalRenderEffect["inputs"]>[number];
 export type ReleaseResidencyEffect = Extract<Effect, { kind: "release_residency" }>;
 export type AcquireModelsEffect = Extract<Effect, { kind: "acquire_models" }>;
 
@@ -1140,6 +1243,167 @@ export const ResourceLease = z
 export type ResourceLease = z.infer<typeof ResourceLease>;
 
 // ---------------------------------------------------------------------------------------
+// Model families (spec §8.1, §9.3; TODO 5.3; ARCH 2026-11-16, model families)
+
+/**
+ * A tensor name or a pattern of one: `*` stands for any run of characters, dots included,
+ * so `*img_in.weight` matches both `img_in.weight` and `model.diffusion_model.img_in.weight`.
+ */
+const TensorPattern = z.string().min(1).max(256);
+
+/** A family name as recipes write it in `modelFamily`. */
+const FamilyId = z.string().regex(/^[a-z0-9][a-z0-9.-]*$/, "expected a lower-case family id");
+
+/**
+ * How to recognise the files of one model family from their safetensors header, shipped as
+ * `architect/families/<id>.json` (TODO 5.3). A file matches when every `requiredTensors`
+ * pattern matches some tensor, no `forbiddenTensors` pattern matches any, and every tensor a
+ * `shapes` pattern matches has those dimensions (at least one must). Rules are evidence a
+ * maintainer wrote from observed headers; `provenance` says which.
+ */
+export const FamilyRule = z
+  .object({
+    schemaVersion: SchemaVersion,
+    id: FamilyId,
+    title: z.string().min(1),
+    /**
+     * Other names recipes use for this family, so a recipe written before the rule keeps its
+     * `modelFamily` (a renamed family would change its content hash under its revision).
+     */
+    aliases: z.array(FamilyId).optional(),
+    /** The model folders a slot of this family loads from. */
+    folders: z.array(ModelFolderName).min(1),
+    requiredTensors: z.array(TensorPattern).min(1),
+    forbiddenTensors: z.array(TensorPattern).optional(),
+    shapes: z.record(TensorPattern, z.array(z.number().int().nonnegative())).optional(),
+    provenance: z
+      .array(z.object({ source: z.string().min(1), observedAt: Timestamp, note: z.string().min(1) }).strict())
+      .min(1),
+  })
+  .strict();
+export type FamilyRule = z.infer<typeof FamilyRule>;
+
+/**
+ * What Architect read of one model file's family (TODO 5.3): the rules its safetensors
+ * header matched, kept by folder, file, size and modification time, and the digest of the
+ * rules it was matched against, so a changed file or a changed rule set is read again.
+ * `unreadable` is not a negative: the header couldn't be read, and the family stays unknown.
+ */
+export const ModelObservation = z
+  .object({
+    schemaVersion: SchemaVersion,
+    folder: ModelFolderName,
+    /** The name as the target lists it in the folder; may hold subfolders. */
+    file: z.string().min(1),
+    sizeBytes: Bytes,
+    mtimeMs: z.number().nonnegative(),
+    /** Where upstream's resolver found the file, so the next check needs only a stat. */
+    path: AbsolutePath,
+    rulesDigest: Sha256,
+    outcome: z.enum(["matched", "no_match", "ambiguous", "unreadable"]),
+    /** The one rule matched, exactly when `outcome` is `matched`. */
+    family: FamilyId.optional(),
+    /** Every rule id the header matched. */
+    matches: z.array(FamilyId),
+    reason: z.string().min(1),
+    observedAt: Timestamp,
+  })
+  .strict()
+  .superRefine((o, ctx) => {
+    const expected = o.outcome === "matched" ? 1 : o.outcome === "ambiguous" ? 2 : 0;
+    if (expected === 2 ? o.matches.length < 2 : o.matches.length !== expected) {
+      ctx.addIssue({ code: "custom", message: `a ${o.outcome} observation lists ${o.matches.length} match(es)`, path: ["matches"] });
+    }
+    if ((o.outcome === "matched") !== (o.family !== undefined) || (o.family !== undefined && o.family !== o.matches[0])) {
+      ctx.addIssue({ code: "custom", message: "family is the one match of a matched observation", path: ["family"] });
+    }
+  });
+export type ModelObservation = z.infer<typeof ModelObservation>;
+
+// ---------------------------------------------------------------------------------------
+// Source registry (spec §8.5; GAPS Q32; ARCH 2026-11-16, sources)
+
+/** How a source is read. Each adapter is code in Architect; an entry only configures it. */
+export const SourceAdapter = z.enum(["huggingface_pinned", "comfyui_template_index", "upstream_packs"]);
+export type SourceAdapter = z.infer<typeof SourceAdapter>;
+
+/** What Architect may do with a source. */
+export const SourceOperation = z.enum(["list", "import", "download"]);
+export type SourceOperation = z.infer<typeof SourceOperation>;
+
+/** The operations each adapter can carry out at all; an entry allows a subset. */
+const ADAPTER_OPERATIONS: Readonly<Record<SourceAdapter, readonly SourceOperation[]>> = {
+  huggingface_pinned: ["download"],
+  comfyui_template_index: ["list", "import"],
+  upstream_packs: ["list", "import"],
+};
+
+/**
+ * How far a source is trusted: `approved` (an owner-approved download host, GAPS Q25),
+ * `vendor` (ComfyUI's own templates on the target), `upstream` (the packs upstream ships),
+ * `user` (a source the user adds later). Trust never makes a recipe more than `proposed`.
+ */
+export const SourceTrust = z.enum(["approved", "vendor", "upstream", "user"]);
+
+/**
+ * When a source is read again. `pinned`: its content is fixed by pins (a Hugging Face
+ * commit), so nothing is refreshed; `on_demand`: read when a list or import needs it.
+ */
+export const SourceRefreshPolicy = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("pinned") }).strict(),
+  z.object({ kind: z.literal("on_demand") }).strict(),
+]);
+
+/**
+ * One configured source (spec §8.5): adapter, root, allowed operations, trust, refresh
+ * policy and the last successful refresh. `state` is `unrefreshed` until a refresh is
+ * tried, `ok` after one succeeded, and `unavailable` with its reason after one failed: an
+ * unreachable source is unavailable, never an empty one.
+ */
+export const SourceRegistryEntry = z
+  .object({
+    schemaVersion: SchemaVersion,
+    id: z.string().regex(/^[a-z][a-z0-9-]*$/, "expected a lower-case source id"),
+    adapter: SourceAdapter,
+    /** A URL for a remote source, an absolute path for a local one. */
+    root: z.string().min(1),
+    allowedOps: z.array(SourceOperation).min(1),
+    trust: SourceTrust,
+    refreshPolicy: SourceRefreshPolicy,
+    /** Shipped with Architect and written at startup, not configured by the user. */
+    builtIn: z.boolean(),
+    state: z.enum(["unrefreshed", "ok", "unavailable"]),
+    lastRefreshAt: Timestamp.optional(),
+    lastAttemptAt: Timestamp.optional(),
+    unavailableReason: z.string().min(1).optional(),
+  })
+  .strict()
+  .superRefine((s, ctx) => {
+    if (new Set(s.allowedOps).size !== s.allowedOps.length) {
+      ctx.addIssue({ code: "custom", message: "an operation is listed twice", path: ["allowedOps"] });
+    }
+    for (const op of s.allowedOps) {
+      if (!ADAPTER_OPERATIONS[s.adapter].includes(op)) {
+        ctx.addIssue({ code: "custom", message: `adapter ${s.adapter} can't ${op}`, path: ["allowedOps"] });
+      }
+    }
+    const local = s.adapter === "upstream_packs";
+    if (local ? !isAbsolute(s.root) : !/^https?:\/\/[^/]/.test(s.root)) {
+      ctx.addIssue({ code: "custom", message: local ? "a local source's root is an absolute path" : "a remote source's root is an http(s) URL", path: ["root"] });
+    }
+    if ((s.state === "unavailable") !== (s.unavailableReason !== undefined)) {
+      ctx.addIssue({ code: "custom", message: "unavailableReason is set exactly when the source is unavailable", path: ["unavailableReason"] });
+    }
+    if (s.state === "ok" && s.lastRefreshAt === undefined) {
+      ctx.addIssue({ code: "custom", message: "an ok source names its last successful refresh", path: ["lastRefreshAt"] });
+    }
+    if (s.state !== "unrefreshed" && s.lastAttemptAt === undefined) {
+      ctx.addIssue({ code: "custom", message: "a refreshed source names its last attempt", path: ["lastAttemptAt"] });
+    }
+  });
+export type SourceRegistryEntry = z.infer<typeof SourceRegistryEntry>;
+
+// ---------------------------------------------------------------------------------------
 // Result envelope (spec §16.2)
 
 export const ResultEnvelope = z
@@ -1179,6 +1443,8 @@ const STORED = {
   runEvent: RunEvent,
   evaluation: EvaluationRecord,
   acquisition: AcquisitionRecord,
+  modelObservation: ModelObservation,
+  source: SourceRegistryEntry,
 } as const;
 export type StoredKind = keyof typeof STORED;
 type StoredRecord<K extends StoredKind> = z.infer<(typeof STORED)[K]>;
@@ -1197,6 +1463,8 @@ const UPGRADES: { [K in StoredKind]: Record<number, (raw: Record<string, unknown
   runEvent: {},
   evaluation: {},
   acquisition: {},
+  modelObservation: {},
+  source: {},
 };
 
 export class StoredRecordError extends Error {

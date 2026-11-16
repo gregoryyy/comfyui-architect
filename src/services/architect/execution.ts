@@ -31,6 +31,7 @@ import {
   type Effect,
   type EvaluationRecord,
   FINAL_RUN_STATES,
+  type LocalRenderEffect,
   type RunPrincipal,
   type RunRecord,
   type TaskSpec,
@@ -398,10 +399,19 @@ export class ArchitectExecution {
     // before it was placed. Only placed files: the others never reached a model folder.
     const acquisitions = store.listAcquisitions(run.id);
     const acquired = acquisitions.filter((a) => a.state === "placed").map(acquiredLockEntry);
+    // The input files the grant bound, with the content hash read at start (GAPS Q33): asset
+    // id, sha256 and size, never a path on this machine.
+    const inputs = actionPlan?.effects.find((e): e is LocalRenderEffect => e.kind === "local_render")?.inputs;
     const baseLock = task ? this.deps.dependencyLock(run.candidateId, task) : undefined;
     const lockFields = LockObject.safeParse(baseLock);
     const lock =
-      baseLock === undefined || acquired.length === 0 ? baseLock : { ...(lockFields.success ? lockFields.data : { lock: baseLock }), acquired };
+      baseLock === undefined || (acquired.length === 0 && inputs === undefined)
+        ? baseLock
+        : {
+            ...(lockFields.success ? lockFields.data : { lock: baseLock }),
+            ...(acquired.length > 0 ? { acquired } : {}),
+            ...(inputs ? { inputs } : {}),
+          };
     const lockText = lock === undefined ? undefined : `${JSON.stringify(lock, null, 2)}\n`;
     const files: Record<string, string> = {
       "run.json": `${JSON.stringify(
@@ -417,6 +427,7 @@ export class ArchitectExecution {
             actionPlan: actionPlan ? { id: actionPlan.id, hash: actionPlan.hash } : run.actionPlanId,
             grant: grant ? { id: grant.id, channel: grant.channel, issuer: grant.issuer, issuedAt: grant.issuedAt } : undefined,
             promptId: run.promptId,
+            ...(inputs ? { inputs } : {}),
             ...(acquisitions.length > 0
               ? {
                   acquisitions: acquisitions.map((a) => ({

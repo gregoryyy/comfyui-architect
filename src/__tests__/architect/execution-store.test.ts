@@ -122,6 +122,7 @@ describe("migration 2", () => {
       { version: 2, name: "execution_tables" },
       { version: 3, name: "one_submission_per_run" },
       { version: 4, name: "acquisitions" },
+      { version: 5, name: "model_observations_and_sources" },
     ]);
     const tables = check
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")

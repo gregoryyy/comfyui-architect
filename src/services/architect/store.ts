@@ -35,6 +35,7 @@ import {
   ArchitectErrorCode,
   EnvironmentSnapshot,
   EvaluationRecord,
+  ModelObservation,
   Plan,
   PlanCandidate,
   Recipe,
@@ -47,6 +48,7 @@ import {
   RunRecord,
   RunState,
   RunTimings,
+  SourceRegistryEntry,
   type StoredKind,
   StoredRecordError,
   TaskSpec,
@@ -173,6 +175,16 @@ const LeaseRow = z.object({
   expires_at: z.string(),
 });
 const LeaseTtl = z.number().int().positive();
+const ObservationRow = z.object({ folder: z.string(), file: z.string(), payload: z.string() });
+
+/**
+ * A source as configured: everything but its refresh state, which only `recordSourceRefresh`
+ * writes. `ensureSource` takes this, so starting the server never claims a refresh.
+ */
+export type SourceDefinition = Pick<SourceRegistryEntry, "id" | "adapter" | "root" | "allowedOps" | "trust" | "refreshPolicy" | "builtIn">;
+
+/** What a refresh of a source found: it was read, or it couldn't be, with the reason. */
+export type SourceRefreshOutcome = { ok: true } | { ok: false; reason: string };
 
 /**
  * What a transition may change on a run besides its state. Identity, target, key and grant
@@ -458,6 +470,35 @@ function prepareStatements(db: Database.Database) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     updateAcquisition: db.prepare("UPDATE acquisitions SET state = ?, updated_at = ?, payload = ? WHERE id = ? AND state = ?"),
+
+    modelObservation: db.prepare("SELECT folder, file, payload FROM model_observations WHERE folder = ? AND file = ?"),
+    putModelObservation: db.prepare(
+      `INSERT INTO model_observations (folder, file, size, mtime_ms, family, reason, observed_at, payload)
+       VALUES (@folder, @file, @size, @mtimeMs, @family, @reason, @observedAt, @payload)
+       ON CONFLICT(folder, file) DO UPDATE SET
+         size = excluded.size,
+         mtime_ms = excluded.mtime_ms,
+         family = excluded.family,
+         reason = excluded.reason,
+         observed_at = excluded.observed_at,
+         payload = excluded.payload`,
+    ),
+
+    source: db.prepare("SELECT id, payload FROM sources WHERE id = ?"),
+    listSources: db.prepare("SELECT id, payload FROM sources ORDER BY id"),
+    putSource: db.prepare(
+      `INSERT INTO sources (id, adapter, root, allowed_ops, trust, refresh_policy, last_refresh_at, state, payload)
+       VALUES (@id, @adapter, @root, @allowedOps, @trust, @refreshPolicy, @lastRefreshAt, @state, @payload)
+       ON CONFLICT(id) DO UPDATE SET
+         adapter = excluded.adapter,
+         root = excluded.root,
+         allowed_ops = excluded.allowed_ops,
+         trust = excluded.trust,
+         refresh_policy = excluded.refresh_policy,
+         last_refresh_at = excluded.last_refresh_at,
+         state = excluded.state,
+         payload = excluded.payload`,
+    ),
 
     lease: db.prepare(
       "SELECT pool, owner_id, run_id, acquired_at, heartbeat_at, expires_at FROM resource_leases WHERE pool = ?",
@@ -1467,6 +1508,117 @@ export class ArchitectStore {
       const result = this.stmts.updateAcquisition.run(record.state, utc(at), canonicalJson(record), record.id, from);
       if (result.changes !== 1) throw new StoreConflictError(`acquisition ${current.id} changed while it was transitioned`);
       return record;
+    });
+  }
+
+  // -------------------------------------------------------------------------------------
+  // Model observations (TODO 5.3; ARCH 2026-11-16, model families)
+
+  /** The stored family observation of a model file; undefined when it was never observed. */
+  getModelObservation(folder: string, file: string): ModelObservation | undefined {
+    const row = parseRow(ObservationRow, this.stmts.modelObservation.get(folder, file));
+    if (!row) return undefined;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(row.payload);
+    } catch (err) {
+      throw new StoredRecordError("modelObservation", `payload is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const observation = parseStored("modelObservation", raw);
+    if (observation.folder !== row.folder || observation.file !== row.file) {
+      throw new StoredRecordError("modelObservation", `payload of row ${row.folder}/${row.file} carries ${observation.folder}/${observation.file}`);
+    }
+    return observation;
+  }
+
+  /** Store a model file's observation, replacing the earlier one of the same folder and file. */
+  putModelObservation(input: z.input<typeof ModelObservation>): ModelObservation {
+    const observation = ModelObservation.parse(input);
+    this.stmts.putModelObservation.run({
+      folder: observation.folder,
+      file: observation.file,
+      size: observation.sizeBytes,
+      mtimeMs: observation.mtimeMs,
+      family: observation.family ?? null,
+      reason: observation.reason,
+      observedAt: utc(observation.observedAt),
+      payload: canonicalJson(observation),
+    });
+    return observation;
+  }
+
+  // -------------------------------------------------------------------------------------
+  // Source registry (spec §8.5; GAPS Q32)
+
+  private writeSource(entry: SourceRegistryEntry): SourceRegistryEntry {
+    this.stmts.putSource.run({
+      id: entry.id,
+      adapter: entry.adapter,
+      root: entry.root,
+      allowedOps: canonicalJson(entry.allowedOps),
+      trust: entry.trust,
+      refreshPolicy: canonicalJson(entry.refreshPolicy),
+      lastRefreshAt: entry.lastRefreshAt === undefined ? null : utc(entry.lastRefreshAt),
+      state: entry.state,
+      payload: canonicalJson(entry),
+    });
+    return entry;
+  }
+
+  /**
+   * Register a source or update its configuration, keeping its refresh state. A changed
+   * adapter or root is another source behind the same id, so its refresh state starts over
+   * (`unrefreshed`): the old root's last refresh says nothing about the new one.
+   */
+  ensureSource(definition: SourceDefinition): SourceRegistryEntry {
+    return this.immediate(() => {
+      const existing = this.getSource(definition.id);
+      const sameRoot = existing !== undefined && existing.adapter === definition.adapter && existing.root === definition.root;
+      const state = sameRoot
+        ? {
+            state: existing.state,
+            ...(existing.lastRefreshAt ? { lastRefreshAt: existing.lastRefreshAt } : {}),
+            ...(existing.lastAttemptAt ? { lastAttemptAt: existing.lastAttemptAt } : {}),
+            ...(existing.unavailableReason ? { unavailableReason: existing.unavailableReason } : {}),
+          }
+        : { state: "unrefreshed" as const };
+      const entry = SourceRegistryEntry.parse({ schemaVersion: 1, ...definition, ...state });
+      if (existing && canonicalJson(existing) === canonicalJson(entry)) return existing;
+      return this.writeSource(entry);
+    });
+  }
+
+  /** A registered source; undefined when the id isn't registered. */
+  getSource(id: string): SourceRegistryEntry | undefined {
+    const row = parseRow(IdPayloadRow, this.stmts.source.get(id));
+    return row && readStored("source", row.payload, { id: row.id });
+  }
+
+  /** Every registered source, by id. */
+  listSources(): SourceRegistryEntry[] {
+    return this.stmts.listSources.all().map((value) => {
+      const row = IdPayloadRow.parse(value);
+      return readStored("source", row.payload, { id: row.id });
+    });
+  }
+
+  /**
+   * Record what a refresh of a source found. Success sets `ok` and the time; a failure sets
+   * `unavailable` with the reason and keeps the last successful refresh, so an unreachable
+   * source reads as unavailable since then, never as empty (spec §8.5).
+   */
+  recordSourceRefresh(args: { id: string; at: Date; outcome: SourceRefreshOutcome }): SourceRegistryEntry {
+    return this.immediate(() => {
+      const existing = this.getSource(args.id);
+      if (!existing) throw new StoreConflictError(`source ${args.id} is not registered`);
+      const at = args.at.toISOString();
+      const { unavailableReason: _previous, ...rest } = existing;
+      const entry = SourceRegistryEntry.parse(
+        args.outcome.ok
+          ? { ...rest, state: "ok", lastRefreshAt: at, lastAttemptAt: at }
+          : { ...rest, state: "unavailable", lastAttemptAt: at, unavailableReason: args.outcome.reason },
+      );
+      return this.writeSource(entry);
     });
   }
 

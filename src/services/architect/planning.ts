@@ -15,7 +15,9 @@ import { compileRecipe } from "./compile.js";
 import { planningReadiness } from "./environment.js";
 import { canonicalJson, sha256Hex } from "./hash.js";
 import { deriveAcquisition, formatBytes } from "./acquisition-policy.js";
-import { MAX_PRESENTED_CANDIDATES, candidateStatus, missingTaskFields, planCandidates, type ProposedBinding } from "./planner.js";
+import type { FamilyObserver, Unobserved } from "./families.js";
+import { MAX_PRESENTED_CANDIDATES, boundModelFiles, candidateStatus, missingTaskFields, planCandidates, type ProposedBinding } from "./planner.js";
+import { ensureBuiltInSources, sourceView } from "./sources.js";
 import {
   type ApiGraph,
   type EnvironmentSnapshot,
@@ -29,7 +31,7 @@ import {
 import type { ArchitectService } from "./service.js";
 import type { ArchitectStore } from "./store.js";
 import type { UpstreamFacade } from "./upstream.js";
-import { overallVerdict, validateGraph } from "./validate.js";
+import { type FamilyEvidence, overallVerdict, validateGraph } from "./validate.js";
 
 /** A recipe source the catalog loads: the shipped folder, and in tests a fixture folder. */
 export interface RecipeSource {
@@ -51,6 +53,13 @@ export interface PlanningDeps {
   newId: () => string;
   /** Upstream's paid-node rule when available; the validator's own otherwise. */
   isPaidNode?: (def: ComfyUINodeDef) => boolean;
+  /**
+   * Reads bound model files' families (TODO 5.3). Absent, family checks stay unknown as
+   * before (GAPS Q14), so planning runs without a local ComfyUI path.
+   */
+  families?: Pick<FamilyObserver, "observeAll">;
+  /** Problems loading the family rules, carried as warnings like the catalog's. */
+  familyRuleErrors?: readonly string[];
 }
 
 /** A refusal with a stable code (spec §16.4), for the tool to put into the envelope. */
@@ -134,7 +143,30 @@ export class ArchitectPlanning {
     return [
       ...sync.errors.map((e) => `recipe file ${e.file}: ${e.message}`),
       ...sync.missingSources.map((src) => `recipe source ${src} not found: its recipes are unknown`),
+      ...(this.deps.familyRuleErrors ?? []),
     ];
+  }
+
+  /**
+   * Read the families of the files candidates would bind, from the cache where it's current
+   * (TODO 5.3). Files the observer couldn't read in this call stay unknown and are listed.
+   */
+  private async observeFamilies(files: readonly { folder: string; file: string }[]): Promise<{ evidence?: FamilyEvidence; unobserved: Unobserved[] }> {
+    if (!this.deps.families || files.length === 0) return { unobserved: [] };
+    const { evidence, unobserved } = await this.deps.families.observeAll(files);
+    return { evidence, unobserved };
+  }
+
+  /**
+   * The source registry (spec §8.5): the built-in entries written for the configured target,
+   * then every registered entry with its state.
+   */
+  sources() {
+    const ensured = ensureBuiltInSources(this.deps.store, this.deps.upstream.comfyuiBaseUrl());
+    return {
+      sources: this.deps.store.listSources().map(sourceView),
+      errors: ensured.errors.map((e) => `source ${e.id}: ${e.message}`),
+    };
   }
 
   /** A snapshot fit for planning: the given one if still usable, else a new one, stored. */
@@ -166,7 +198,8 @@ export class ArchitectPlanning {
         installedFit: fit ? { ...fit.installedOverlap, unknownFolders: fit.unknownFolders } : undefined,
       };
     });
-    return { environmentId: snapshot.id, recipes, catalog: sync };
+    const sources = this.sources();
+    return { environmentId: snapshot.id, recipes, catalog: sync, sources: sources.sources, sourceErrors: sources.errors };
   }
 
   /** Store a task (a new one, or the next revision of `taskId`) and start a plan for it. */
@@ -253,16 +286,21 @@ export class ArchitectPlanning {
       throw new PlanningError("GRAPH_CONFLICT", `plan ${plan.id} is ${plan.state}`, "Call prepare for a new plan.");
     }
     const { snapshot, readiness } = await this.environment(store.getSnapshot(plan.environmentId));
+    const recipes = this.recipes(task.media.kind);
+    const families = await this.observeFamilies(
+      boundModelFiles({ task, snapshot, recipes, ...(request.proposals ? { proposals: request.proposals } : {}) }),
+    );
     const out = planCandidates({
       task,
       snapshot,
       objectInfo: await this.objectInfo(),
-      recipes: this.recipes(task.media.kind),
+      recipes,
       ...(request.proposals ? { proposals: request.proposals } : {}),
       planId: plan.id,
       now,
       newId,
       ...(this.deps.isPaidNode ? { isPaidNode: this.deps.isPaidNode } : {}),
+      ...(families.evidence ? { families: families.evidence } : {}),
     });
     store.transaction(() => {
       for (const c of out.presented) store.putCandidate(c);
@@ -283,6 +321,7 @@ export class ArchitectPlanning {
       truncated: out.truncated,
       readiness,
       limit: MAX_PRESENTED_CANDIDATES,
+      ...(families.unobserved.length > 0 ? { familiesUnobserved: families.unobserved } : {}),
     };
   }
 
@@ -363,6 +402,13 @@ export class ArchitectPlanning {
     const candidate = this.requireCandidate(plan, request.candidateId);
     const { recipe, graph } = this.compiledGraph(candidate, task);
     const { snapshot } = await this.environment();
+    const families = await this.observeFamilies(
+      recipe.slots.flatMap((s) => {
+        const file = candidate.bindings[s.id];
+        const folder = s.modelFolder ?? "";
+        return s.valueType === "model_file" && typeof file === "string" && snapshot.installedModels?.folders[folder]?.includes(file) ? [{ folder, file }] : [];
+      }),
+    );
     const outcome = validateGraph({
       graph,
       recipe,
@@ -371,6 +417,7 @@ export class ArchitectPlanning {
       objectInfo: await this.objectInfo(),
       snapshot,
       ...(this.deps.isPaidNode ? { isPaidNode: this.deps.isPaidNode } : {}),
+      ...(families.evidence ? { families: families.evidence } : {}),
     });
     const verdict = candidateStatus({ recipe, task, report: outcome.report, bindings: candidate.bindings, snapshot });
     const status = verdict.status;
@@ -400,6 +447,7 @@ export class ArchitectPlanning {
       previous: candidate.validation.overall,
       planState: stored.state,
       ...(deselect ? { selectionWithdrawn: true } : {}),
+      ...(families.unobserved.length > 0 ? { familiesUnobserved: families.unobserved } : {}),
     };
   }
 
@@ -445,12 +493,15 @@ export class ArchitectPlanning {
     const candidate = this.deps.store.getCandidate(candidateId);
     if (!candidate) throw new PlanningError("GRAPH_CONFLICT", `candidate ${candidateId} is not stored`, "Prepare a new run.");
     const { recipe, graph, fingerprint } = this.compiledGraph(candidate, task);
-    return this.lockFor(candidate, recipe, graph, fingerprint);
+    return this.lockFor(candidate, recipe, graph, fingerprint, task);
   }
 
-  private lockFor(candidate: PlanCandidate, recipe: Recipe, graph: ApiGraph, fingerprint: string) {
+  private lockFor(candidate: PlanCandidate, recipe: Recipe, graph: ApiGraph, fingerprint: string, task: TaskSpec) {
     const env = this.deps.store.getSnapshot(candidate.environmentId);
     return {
+      // The task's input files by asset id; their content hashes are read when a run is
+      // prepared and go into the run's lock, since planning reads no input file (GAPS Q33).
+      ...(task.inputs.length > 0 ? { inputs: task.inputs.map((i) => ({ role: i.role, assetId: i.assetId })) } : {}),
       // An acquirable candidate's files aren't on the target yet: the lock lists them with
       // the pinned source each would come from (ARCH 2026-11-16, sources).
       ...(candidate.acquisition
@@ -494,7 +545,7 @@ export class ArchitectPlanning {
     if (real !== resolve(realpathSync(this.deps.dataDir), "artifacts", task.id, plan.id)) {
       throw new PlanningError("GRAPH_CONFLICT", `refusing to export through a symbolic link under ${root}`, "Remove the link and export again.");
     }
-    const lock = this.lockFor(candidate, recipe, graph, fingerprint);
+    const lock = this.lockFor(candidate, recipe, graph, fingerprint, task);
     const files: Record<string, unknown> = {
       "task.json": task,
       "plan.json": { plan, candidate },

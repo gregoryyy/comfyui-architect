@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { type AcquisitionIo, diskShortfall, freeDiskBytesSync, hfEndpointRefusal, stagedNameOf } from "./acquisition.js";
 import { MIN_FREE_DISK_BYTES, acquisitionPolicy, formatBytes } from "./acquisition-policy.js";
 import { ARCHITECT_PANEL_RUNS_ENV, onPanelRoute, panelRunsAllowed } from "./config.js";
-import { canonicalJson } from "./hash.js";
+import { canonicalJson, sha256Hex } from "./hash.js";
 import type { ArchitectPlanning } from "./planning.js";
 import {
   type AcquireModelsEffect,
@@ -28,8 +28,10 @@ import {
   type PlanCandidate,
   type Recipe,
   type ReleaseResidencyEffect,
+  type RenderInput,
   type TaskSpec,
   actionPlanHash,
+  parseAssetId,
 } from "./schemas.js";
 import { architectDataDir, type ArchitectStore } from "./store.js";
 import { isLoopbackHostname } from "./validate.js";
@@ -116,6 +118,44 @@ export interface AdmissionDeps {
    * model files first (TODO 4.5). Without it such a candidate isn't prepared or started.
    */
   acquisitionIo?: AcquisitionIo;
+  /**
+   * Reads a file from the target's input folder (the facade's `readInputFile`), for a task
+   * with input images (GAPS Q33). Without it such a plan isn't prepared or started.
+   */
+  readInputFile?: (name: string) => Promise<{ bytes: Buffer }>;
+}
+
+/**
+ * The task's input files as the target serves them now: asset id, sha256 and size, in task
+ * order, one entry per asset (TODO 5.7.2). Undefined for a task without inputs, so the plan's
+ * hash stays what it was before inputs existed. A file that can't be read refuses the plan:
+ * the user would otherwise approve a render whose input nobody has seen (spec §14.2).
+ */
+async function readRenderInputs(deps: Pick<AdmissionDeps, "readInputFile">, task: TaskSpec): Promise<RenderInput[] | undefined> {
+  if (task.inputs.length === 0) return undefined;
+  const read = deps.readInputFile;
+  if (!read) {
+    throw new ApprovalError("MISSING_INPUT", "this server can't read the task's input files from the target", "Plan a task without input images, or use a server set up with the target.");
+  }
+  const out: RenderInput[] = [];
+  for (const input of task.inputs) {
+    if (out.some((x) => x.assetId === input.assetId)) continue;
+    const parsed = parseAssetId(input.assetId);
+    // Validation refuses these first; a stored task is still data, so it's checked again.
+    if (!parsed.ok) throw new ApprovalError("MISSING_INPUT", parsed.problem, "Revise the task's inputs, then plan again.");
+    let bytes: Buffer;
+    try {
+      ({ bytes } = await read(parsed.name));
+    } catch (err) {
+      throw new ApprovalError(
+        "MISSING_INPUT",
+        `couldn't read input ${input.assetId} (${input.role}) from the target's input folder: ${err instanceof Error ? err.message : String(err)}`,
+        "Check that the file is still in ComfyUI's input folder, then call architect_run prepare again.",
+      );
+    }
+    out.push({ assetId: input.assetId, sha256: sha256Hex(bytes), sizeBytes: bytes.length });
+  }
+  return out;
 }
 
 /** What the action plan binds, built from a selected candidate (everything the hash covers). */
@@ -124,6 +164,7 @@ function binding(
   baseUrl: string,
   residency: ReleaseResidencyEffect | undefined,
   acquire?: AcquireModelsEffect,
+  inputs?: RenderInput[],
 ) {
   return {
     planId: ctx.plan.id,
@@ -134,7 +175,12 @@ function binding(
     effects: [
       // The files are acquired before the render that needs them (ARCH 2026-11-16, candidates).
       ...(acquire ? [acquire] : []),
-      { kind: "local_render" as const, graphFingerprint: ctx.fingerprint, outputNodes: ctx.recipe.outputs.map((o) => o.node) },
+      {
+        kind: "local_render" as const,
+        graphFingerprint: ctx.fingerprint,
+        outputNodes: ctx.recipe.outputs.map((o) => o.node),
+        ...(inputs ? { inputs } : {}),
+      },
       ...(residency ? [residency] : []),
     ] satisfies Effect[],
     // The wall time counts from the run's start and so covers its downloads: a task without
@@ -167,9 +213,11 @@ export async function prepareActionPlan(deps: AdmissionDeps, planId: string): Pr
     requireLocalCapableTarget(store, baseUrl, ctx.candidate.environmentId);
     acquire = await acquireEffectFor(deps, ctx.task, ctx.candidate, { checkDisk: true });
   }
+  // The input files are read and hashed now, so the grant binds their content (GAPS Q33).
+  const inputs = await readRenderInputs(deps, ctx.task);
   // The models to unload are read now and shown in the approval, so the user is asked
   // before any of them is unloaded (GAPS Q23).
-  const bound = binding(ctx, baseUrl, await deps.releasable?.(baseUrl), acquire);
+  const bound = binding(ctx, baseUrl, await deps.releasable?.(baseUrl), acquire, inputs);
   const actionPlan = store.putActionPlan({
     schemaVersion: 1,
     id: `actions-${newId()}`,
@@ -392,7 +440,11 @@ export type FreeDiskReader = (path: string) => { known: true; bytes: number } | 
 function describeEffect(e: Effect, freeDisk: FreeDiskReader): string {
   switch (e.kind) {
     case "local_render":
-      return `Effect: local_render of graph ${shortHash(e.graphFingerprint)}`;
+      return [
+        `Effect: local_render of graph ${shortHash(e.graphFingerprint)}`,
+        // The content the grant binds; a changed file needs a new approval (GAPS Q33).
+        ...(e.inputs ?? []).map((i) => `  Input: ${i.assetId}, sha256 ${shortHash(i.sha256)}, ${formatBytes(i.sizeBytes)}, read from the target's input folder`),
+      ].join("\n");
     case "release_residency":
       return (
         `Effect: unload from Ollama at ${e.host} before the render, and load back after it: ` +
@@ -508,11 +560,14 @@ export async function admitEffect(
     }
     acquire = await acquireEffectFor(deps, ctx.task, ctx.candidate, { checkDisk: false });
   }
+  // The input files are read again: one changed since the approval gives another hash, and
+  // the user approves the new content; one that vanished refuses the start (GAPS Q33).
+  const inputs = await readRenderInputs(deps, ctx.task);
   // The residency effect is the one the user approved, not a fresh reading: a model that
   // left Ollama since doesn't invalidate the approval, and one that arrived since isn't
   // unloaded (the controller blocks on it).
   const rebuilt = actionPlanHash(
-    binding(ctx, baseUrl, actionPlan.effects.find((e): e is ReleaseResidencyEffect => e.kind === "release_residency"), acquire),
+    binding(ctx, baseUrl, actionPlan.effects.find((e): e is ReleaseResidencyEffect => e.kind === "release_residency"), acquire, inputs),
   );
   if (rebuilt !== actionPlan.hash) {
     throw new ApprovalError(

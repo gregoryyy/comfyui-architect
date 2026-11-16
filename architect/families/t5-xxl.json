@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "t5-xxl",
+  "title": "T5 v1.1 XXL encoder (24 blocks, 4096 wide, 32128 tokens), FLUX.1's long text encoder",
+  "folders": ["text_encoders", "clip"],
+  "requiredTensors": [
+    "shared.weight",
+    "encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight",
+    "encoder.block.23.layer.0.SelfAttention.q.weight"
+  ],
+  "forbiddenTensors": ["encoder.block.1.layer.0.SelfAttention.relative_attention_bias.weight", "encoder.block.24.*", "decoder.*", "model.*"],
+  "shapes": {
+    "shared.weight": [32128, 4096],
+    "encoder.block.0.layer.0.SelfAttention.q.weight": [4096, 4096]
+  },
+  "provenance": [
+    {
+      "source": "safetensors header of diffusion_models/flux1-schnell-fp8.safetensors (17236328572 bytes) on the reference target (ComfyUI Desktop 0.44.0 on port 8188, GAPS Q17), its text_encoders.t5xxl.transformer tensors",
+      "observedAt": "2026-11-16T09:07:17+01:00",
+      "note": "No stand-alone T5 XXL file is installed on the reference target, so the names are the embedded encoder's with the text_encoders.t5xxl.transformer. prefix removed: shared.weight [32128, 4096], encoder.block.0 to 23, and a relative_attention_bias in block 0 only. Not yet checked against a stand-alone t5xxl_fp8_e4m3fn.safetensors header; a file whose names differ matches no rule and stays unknown."
+    },
+    {
+      "source": "safetensors header of text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors (6735906897 bytes) on the reference target (ComfyUI Desktop 0.44.0 on port 8188, GAPS Q17)",
+      "observedAt": "2026-11-16T09:07:17+01:00",
+      "note": "The contrast: UMT5 XXL (Wan's encoder) has the same block layout but shared.weight [256384, 4096] and a relative_attention_bias in every block, so it doesn't match."
+    }
+  ]
+}

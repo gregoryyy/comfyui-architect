@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "qwen-3-4b",
+  "title": "Qwen 3 4B text encoder (36 layers, 2560 wide)",
+  "aliases": ["qwen3-4b"],
+  "folders": ["text_encoders", "clip"],
+  "requiredTensors": ["model.embed_tokens.weight", "model.layers.35.self_attn.q_norm.weight", "model.norm.weight"],
+  "forbiddenTensors": ["model.layers.36.*", "visual.*", "*encoder.block.*"],
+  "shapes": {
+    "model.embed_tokens.weight": [151936, 2560]
+  },
+  "provenance": [
+    {
+      "source": "safetensors header of text_encoders/qwen_3_4b.safetensors (8044982048 bytes, Comfy-Org/Z-Image-Turbo split_files/text_encoders) on the reference target (ComfyUI Desktop 0.44.0 on port 8188, GAPS Q17)",
+      "observedAt": "2026-11-16T09:07:17+01:00",
+      "note": "398 tensors: model.embed_tokens.weight [151936, 2560], model.layers.0 to 35 with q_norm and k_norm, model.norm.weight. Contrasted on the same target with qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors (embed_tokens [151936, 5120], visual.* tensors) and gemma4_e2b_it_int8_convrot.safetensors (embed_tokens [262144, 1536]), neither of which matches."
+    }
+  ]
+}

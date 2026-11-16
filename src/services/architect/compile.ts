@@ -6,7 +6,7 @@
 // well-typed. Whether the graph runs on the target is the validator's job (validate.ts).
 
 import { canonicalJson, sha256Hex } from "./hash.js";
-import type { ApiGraph, CheckResult, PlanCandidate, Recipe, RecipeSlot, TaskSpec } from "./schemas.js";
+import { type ApiGraph, type CheckResult, type PlanCandidate, type Recipe, type RecipeSlot, type TaskSpec, parseAssetId, taskInputPaths } from "./schemas.js";
 
 /** Slot ID to value, as a `PlanCandidate` stores it. Values come from the agent or the user. */
 export type Bindings = PlanCandidate["bindings"];
@@ -72,6 +72,7 @@ function checkSlotValue(slot: RecipeSlot, value: unknown): { value: string | num
     }
     case "string":
     case "model_file":
+    case "input_image":
     case "enum": {
       if (typeof value !== "string" || value.trim().length === 0) {
         return { problem: `expected a non-empty string, got ${JSON.stringify(value)}` };
@@ -133,25 +134,46 @@ function taskFieldChecks(recipe: Recipe, task: TaskSpec): CheckResult[] {
       : check(id, "fail", true, `the recipe writes ${field} ${has}, the task asks for ${want}`);
   };
   out.push(declared("count", media.output.count), declared("format", media.output.format));
-  // Input assets aren't resolved to files on the target before managed execution (ROAD
-  // phase 2); until then no slot can carry one, so each input the task names stays unknown.
-  for (const input of task.inputs) {
-    out.push(
-      check(
-        `contract.task.input.${input.role}`,
-        "unknown",
-        true,
-        `task input ${input.role} (asset ${input.assetId}) isn't bound to the graph: assets aren't resolved to target files yet`,
-      ),
-    );
-  }
+  out.push(...taskInputChecks(recipe, task));
   return out;
+}
+
+/**
+ * One check per task input (GAPS Q16, Q33): it passes when an `input_image` slot takes it
+ * and its asset names a file in the target's input folder. An asset of another form, or a
+ * name that would leave the folder, fails; so does an input no slot takes, as unsupported,
+ * because rendering without it would drop part of the task silently (spec §4.3).
+ */
+function taskInputChecks(recipe: Pick<Recipe, "id" | "slots">, task: TaskSpec): CheckResult[] {
+  return taskInputPaths(task.inputs).map(({ path, input }) => {
+    const id = `contract.task.${path}`;
+    const parsed = parseAssetId(input.assetId);
+    if (!parsed.ok) return check(id, "fail", true, `task ${path} (${input.role}): ${parsed.problem}`);
+    const takers = recipe.slots.filter((s) => s.valueType === "input_image" && s.fromTask === path).map((s) => s.id);
+    return takers.length > 0
+      ? check(id, "pass", true, `task ${path} (${parsed.name} in the input folder) goes to slot ${takers.join(", ")}`)
+      : check(
+          id,
+          "fail",
+          true,
+          `unsupported: recipe ${recipe.id} has no slot for task ${path} (${input.role}, ${input.assetId}); it would be ignored`,
+        );
+  });
+}
+
+/** The asset name an `input_image` slot takes from the task, or why it has none. */
+function inputForSlot(slot: RecipeSlot, task: TaskSpec): { name: string } | { missing: string } | { problem: string } {
+  const entry = taskInputPaths(task.inputs).find((e) => e.path === slot.fromTask);
+  if (entry === undefined) return { missing: `the task gives no ${slot.fromTask}` };
+  const parsed = parseAssetId(entry.input.assetId);
+  return parsed.ok ? { name: parsed.name } : { problem: parsed.problem };
 }
 
 /**
  * Compile `recipe` for `task` with `bindings` (spec §10.2). Each slot takes, in order, its
  * explicit binding, the value at its `fromTask` path (divided by `fromTaskDivisor` when the
- * slot sets one), its default. A binding for a slot the
+ * slot sets one), its default. An `input_image` slot takes only the task input its
+ * `fromTask` names, written as the file's name in the input folder. A binding for a slot the
  * recipe doesn't have fails: an agent's typo must not be ignored while the default runs.
  * When any hard check fails, no graph is returned.
  */
@@ -191,6 +213,36 @@ export function compileRecipe(recipe: Recipe, task: TaskSpec, bindings: Bindings
   for (const slot of recipe.slots) {
     const id = `contract.slot.${slot.id}`;
     const nodeId = slot.target.node;
+    if (slot.valueType === "input_image") {
+      // An input file comes from the task only, so the plan's approval names every file the
+      // graph reads (GAPS Q33); a binding would put another file in the graph.
+      if (Object.hasOwn(bindings, slot.id)) {
+        checks.push(check(id, "fail", true, `slot ${slot.id} takes the task's ${slot.fromTask}; it can't be bound, revise the task's inputs instead`, nodeId));
+        continue;
+      }
+      const resolved = inputForSlot(slot, task);
+      if ("missing" in resolved) {
+        checks.push(
+          slot.required
+            ? check(id, "fail", true, `missing input: required slot ${slot.id} needs ${slot.fromTask}, and ${resolved.missing}`, nodeId)
+            : check(id, "not_applicable", false, `optional slot ${slot.id}: ${resolved.missing}; it keeps the recipe's value`, nodeId),
+        );
+        continue;
+      }
+      if ("problem" in resolved) {
+        checks.push(check(id, "fail", true, `slot ${slot.id}: ${resolved.problem}`, nodeId));
+        continue;
+      }
+      const node = graph[nodeId];
+      if (node === undefined || Array.isArray(node.inputs[slot.target.input])) {
+        checks.push(check(id, "fail", true, `slot ${slot.id} targets ${nodeId}.${slot.target.input}, which holds a link`, nodeId));
+        continue;
+      }
+      node.inputs[slot.target.input] = resolved.name;
+      values[slot.id] = resolved.name;
+      checks.push(check(id, "pass", true, `slot ${slot.id} = ${JSON.stringify(resolved.name)} (task ${slot.fromTask})`, nodeId));
+      continue;
+    }
     const fromTaskRaw = slot.fromTask !== undefined ? readTaskPath(task, slot.fromTask) : undefined;
     const divisor = slot.fromTaskDivisor;
     const taskPath = divisor === undefined ? slot.fromTask : `${slot.fromTask} / ${divisor}`;

@@ -22,6 +22,8 @@ import { requireFeasible } from "../services/architect/admission.js";
 import { ARCHITECT_RESIDENCY_ENV, architectEnabled } from "../services/architect/config.js";
 import { RunController } from "../services/architect/controller.js";
 import { ArchitectExecution } from "../services/architect/execution.js";
+import { FamilyObserver, loadFamilyRules } from "../services/architect/families.js";
+import { ensureBuiltInSources } from "../services/architect/sources.js";
 import { ResourceCoordinator } from "../services/architect/resources.js";
 import { registerArchitectRunTool, type RunToolContext } from "./architect-run.js";
 import { ArchitectPlanning, PlanningError, SHIPPED_SOURCE } from "../services/architect/planning.js";
@@ -70,15 +72,27 @@ export type PlanningFactory = () => ArchitectPlanning;
 function defaultPlanningFactory(service: ArchitectService, upstream: UpstreamFacade): PlanningFactory {
   let planning: ArchitectPlanning | undefined;
   return () => {
-    planning ??= new ArchitectPlanning({
-      store: ArchitectStore.open(),
+    if (planning) return planning;
+    const store = ArchitectStore.open();
+    const now = () => new Date();
+    // The built-in sources are written when the store opens (GAPS Q32); a failure is
+    // reported by capabilities, which writes them again.
+    ensureBuiltInSources(store, upstream.comfyuiBaseUrl());
+    const loaded = loadFamilyRules();
+    planning = new ArchitectPlanning({
+      store,
       service,
       upstream,
       dataDir: architectDataDir(),
       sources: [SHIPPED_SOURCE],
-      now: () => new Date(),
+      now,
       newId: () => randomUUID(),
       isPaidNode: (def) => upstream.isPaidNode(def),
+      families: new FamilyObserver({ store, locate: (folder, file) => upstream.locateModelFile(folder, file), rules: loaded.rules, now }),
+      familyRuleErrors: [
+        ...loaded.errors.map((e) => `family rule file ${e.file}: ${e.message}`),
+        ...(loaded.dirFound ? [] : ["the family rules folder architect/families/ wasn't found: model families stay unverified"]),
+      ],
     });
     return planning;
   };
@@ -159,6 +173,8 @@ function defaultRunContext(planning: PlanningFactory, upstream: UpstreamFacade):
       releasable: (baseUrl) => resources.releasable(baseUrl),
       acquisitionIo,
       acquirer,
+      // The task's input images, read from the target's input folder and hashed into the plan (GAPS Q33).
+      readInputFile: (name) => upstream.readInputFile(name),
     });
     ctx = { execution, store, now, newId };
     processRunContext = ctx;
@@ -201,11 +217,13 @@ export function registerArchitectTools(
       "fields are absent; an unanswered folder is listed in `unanswered`: treat both as " +
       'unknown, never as empty. action:"capabilities" lists the recipe catalog: each recipe\'s ' +
       "operations, evidence tier and model slots, and how many of those slots the target's " +
-      "installed files could fill. No downloads, installs or executions.",
+      "installed files could fill; and the source registry: each source's adapter, root, " +
+      "allowed operations, trust and state (unavailable is not empty). No downloads, installs " +
+      "or executions.",
     {
       action: z
         .enum(["environment", "capabilities"])
-        .describe('"environment": the target\'s versions, hardware, node classes and model files. "capabilities": the recipe catalog and its fit.'),
+        .describe('"environment": the target\'s versions, hardware, node classes and model files. "capabilities": the recipe catalog and its fit, and the source registry.'),
     },
     async ({ action }) => {
       if (action === "environment") return reply(await service.inspectEnvironmentEnvelope());
@@ -214,8 +232,12 @@ export function registerArchitectTools(
         const warnings = [
           ...caps.catalog.errors.map((e) => `recipe file ${e.file}: ${e.message}`),
           ...caps.catalog.missingSources.map((s) => `recipe source ${s} not found: its recipes are unknown`),
+          ...caps.sourceErrors,
+          ...caps.sources.filter((s) => s.state === "unavailable").map((s) => `source ${s.id} is unavailable: ${s.unavailableReason ?? "no reason recorded"}; its contents are unknown, not empty`),
         ];
-        return reply(okEnvelope(`${caps.recipes.length} recipe(s) in the catalog; environment ${caps.environmentId}.`, caps, warnings));
+        return reply(
+          okEnvelope(`${caps.recipes.length} recipe(s) in the catalog, ${caps.sources.length} source(s); environment ${caps.environmentId}.`, caps, warnings),
+        );
       } catch (err) {
         return reply(errorEnvelope(err));
       }
@@ -270,6 +292,7 @@ export function registerArchitectTools(
             const warnings = [
               ...r.readiness.reasons.map((x) => `environment: ${x}`),
               ...(r.truncated ? [`enumeration stopped at ${r.expanded} candidates`] : []),
+              ...(r.familiesUnobserved ?? []).map((u) => `model family of ${u.folder}/${u.file} not read: ${u.reason}`),
               ...p.catalogWarnings(),
             ];
             if (feasible === 0 && acquirable.length > 0) {
