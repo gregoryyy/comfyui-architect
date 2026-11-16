@@ -1,6 +1,6 @@
 # Gaps
 
-Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-15 22:17.
+Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-16 03:19.
 
 How this file works:
 - Answers are recorded with date, time and author: `**Answer** (2026-11-15 13:30, Gregor Heinrich): …`. Corrections of assumptions record the same in the **Correction** column. Short answers are fine.
@@ -209,6 +209,76 @@ With `ARCHITECT_MANAGE_RESIDENCY=1` (off by default), milestone 3 unloads every 
 
 - **Proposed:** keep the switch off by default; when on, unload only the configured local planner model, and block (`RESOURCE_BUSY`) on any other resident model. Until answered, the milestone 3 behaviour stays and is recorded as a deviation in ARCH.
 - **Answer:** 2026-11-15 22:36, Gregor Heinrich: "for a render, check the memory demand and what's already occupied by other models, one configuration option is to unload other models as needed for the run and after rendering load them back. if possible ask the user before unloading." Implemented as follows. With `ARCHITECT_MANAGE_RESIDENCY` off (the default), a model resident in the pool blocks the render, as before. With `1`, `prepare` reads which Ollama models hold the pool and how much memory each holds, and the action plan names the ones to unload as an effect (`release_residency`) that the hash covers. The approval is the question to the user: the dialog and the terminal show each model and its size, and say it is loaded back after the render. The controller unloads only the models the user approved, verifies, and loads them back once the render has finished, with the keep-alive they had; a model loaded after the approval isn't unloaded and blocks the render until the plan is prepared and approved again. Memory demand is `unknown` until resource profiles exist (spec §11.2), so "as needed" means every resident model in the pool for now; with an estimate, only as many as the render needs are named. Reloading is best effort: a failure is recorded on the run and doesn't change its outcome.
+
+### Q24. Which families, variants and downloads make up the certified set? — blocking for TODO 5
+
+Spec §2.2 asks for 12 to 20 recipe variants across 2 to 3 families, covering text to image, editing, inpainting, reference-guided generation and upscaling. Installed now: Z-Image Turbo and FLUX.1-schnell (Q12, Q13), neither of which edits from an instruction or takes reference images. ComfyUI's own templates show what each family needs ([research/acquisition-sources.md](research/acquisition-sources.md)). The volume holding the model roots has 206 GB free.
+
+- **Proposed:** 15 variants in three families, plus two upscalers. About 20 GB of downloads.
+  - **Z-Image Turbo** (installed): text to image, image to image, inpainting, union ControlNet (about 3 GB more) and the 2K upscale.
+  - **FLUX.1-schnell** (installed): text to image as checkpoint and with separate encoders, image to image, inpainting.
+  - **FLUX.2 Klein 4B distilled** (about 12.5 GB): edit from an instruction, edit with reference images, and edit inside a mask.
+  - **Upscalers**: one 4× model (under 100 MB) for 2× and 4×, and SeedVR2 3B (about 4 GB).
+- **Alternative** for editing: Qwen-Image-Edit 2511 in int8 (about 31 GB, Apache 2.0). Its int8 weights aren't known to run on Apple's GPU.
+- **What happens either way:** each family's licence is read from its model card into the manifest before you approve. A family that turns out not to run on this machine is reported as unsupported here, never replaced without your choice.
+- **Answer** (2026-11-16 03:19, Gregor Heinrich): as proposed.
+- **Resolved** (2026-11-16 03:19, Opus 5.5 for Gregor Heinrich): the certified set is the proposed 15 variants (TODO 5.1, 5.4); [ARCH](ARCH.md#decision-log).
+
+### Q25. Which sources may an acquisition use, and within which limits? — blocking for TODO 4
+
+Upstream downloads any URL. It never pins a revision, checks no hash and keeps no host list. About 305 of its pack URLs point at a third-party mirror ([research/acquisition-sources.md](research/acquisition-sources.md)). Spec §14.4 asks for approved sources, size bounds and recorded hashes.
+
+- **Proposed:**
+  - **Source:** Hugging Face only, each file pinned to a commit and checked against the sha256 Hugging Face reports. Redirects may go only to Hugging Face's own hosts.
+  - **What stays out:** CivitAI and third-party mirrors, until you add one as a source.
+  - **Format:** `.safetensors` only. A pickle format (`.ckpt`, `.pth`, `.bin`) needs its source added by you.
+  - **Token:** only for gated repositories, read from `HF_TOKEN` when you set it.
+  - **Limits:** one approval covers at most 40 GB, and at least 50 GB of disk stays free.
+- **Answer** (2026-11-16 03:19, Gregor Heinrich): as proposed.
+- **Resolved** (2026-11-16 03:19, Opus 5.5 for Gregor Heinrich): Hugging Face only, pinned and hash-checked, `.safetensors` only, 40 GB per approval, 50 GB kept free (TODO 4.1); [ARCH](ARCH.md#decision-log).
+
+### Q26. Does phase 3 install custom nodes? — blocking for TODO 4
+
+Installing a custom node runs third-party code and can change ComfyUI's Python packages (spec §14.4, SEC T3). The templates checked for the operations in Q24 use core nodes only.
+
+- **Proposed:** no installs in phase 3. Certified recipes use core nodes only. A recipe that needs a custom node stays blocked, and the blocker names the node. Installs come later as their own milestone, with a separate approval and pinned commits.
+- **Answer** (2026-11-16 03:19, Gregor Heinrich): as proposed.
+- **Resolved** (2026-11-16 03:19, Opus 5.5 for Gregor Heinrich): no custom-node installs in phase 3; certified recipes use core nodes only (TODO 4.1); [ARCH](ARCH.md#decision-log).
+
+### Q27. Where do recipes come from, and what makes one certified? — blocking for TODO 5
+
+The tiers are `certified`, `curated`, `proposed` and `fixture` ([ARCH](ARCH.md#decision-log)). The spec doesn't say what moves a recipe from `curated` to `certified`.
+
+- **Proposed:**
+  - **Sources:** recipes are imported read-only from ComfyUI's template index on the target and from upstream's packs. Imports start as `proposed`, and your review makes them `curated`.
+  - **What certifies a recipe:** it must be `curated`, and the following must hold on the test matrix (Q28):
+    - it has a pinned dependency fixture;
+    - its graph-contract tests pass (AT-03);
+    - its UI export round trip passes (AT-11);
+    - it has one live render whose checks pass.
+  - **Who certifies:** no agent marks a recipe `certified` on its own judgement.
+- **Answer** (2026-11-16 03:19, Gregor Heinrich): as proposed.
+- **Resolved** (2026-11-16 03:19, Opus 5.5 for Gregor Heinrich): imports from the template index and upstream's packs start as `proposed`; certification as proposed (TODO 5.1, 5.2); [ARCH](ARCH.md#decision-log).
+
+### Q28. What is the test matrix? — blocking for TODO 6
+
+Spec §19.2 asks for resource fixtures with an Apple unified-memory profile and a dedicated-GPU profile. Claims about real devices are only made for hardware that was tested.
+
+- **Proposed:**
+  - **Device:** the reference Mac (Apple M5 Pro, 48 GB, ComfyUI Desktop 0.44.0) is the only real device.
+  - **Dedicated GPU:** a dedicated-GPU profile exists in fixtures only, and no claim is made about such a device.
+  - **Cloud:** no RunPod or other paid machine.
+  - **Task fixtures:** the agent writes the 30 task fixtures, and you review them before the suite counts.
+- **Answer** (2026-11-16 03:19, Gregor Heinrich): as proposed.
+- **Resolved** (2026-11-16 03:19, Opus 5.5 for Gregor Heinrich): the reference Mac is the only real device; the dedicated GPU in fixtures only; no paid machines; fixtures reviewed by the owner (TODO 6.5, 6.6); [ARCH](ARCH.md#decision-log).
+
+### Q29. Which optional visual evaluators come in phase 3?
+
+Spec §13.2 makes visual evaluators optional plugins whose verdicts stay advisory unless the user accepts one for a criterion. Ollama on this machine has `glm-ocr` (2.7 GB) and no general vision model.
+
+- **Proposed:** one optional evaluator, an OCR check through `glm-ocr` for tasks that ask for text in the image. An uncertain reading is `unknown`, never `pass`. A vision-model rubric waits until you choose a vision model.
+- **Answer** (2026-11-16 03:19, Gregor Heinrich): as proposed.
+- **Resolved** (2026-11-16 03:19, Opus 5.5 for Gregor Heinrich): one optional OCR evaluator through `glm-ocr`, advisory (TODO 6.4); [ARCH](ARCH.md#decision-log).
 
 ## Assumptions
 

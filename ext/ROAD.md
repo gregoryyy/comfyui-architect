@@ -1,6 +1,6 @@
 # Roadmap
 
-Phases with a goal and a measured gate each, and ideas that aren't scheduled. The phases are the spec's (§20); a phase becomes TODO milestones when it starts. Status: 2026-11-15 18:49.
+Phases with a goal and a measured gate each, and ideas that aren't scheduled. The phases are the spec's (§20); a phase becomes TODO milestones when it starts. Status: 2026-11-16 02:33.
 
 ## 0. Reproducible fork and seam audit (done except the first CI run)
 
@@ -14,15 +14,15 @@ Phases with a goal and a measured gate each, and ideas that aren't scheduled. Th
 
 **Gate:** three curated recipes compile and validate; a task fixture produces up to three candidates with recorded rejection reasons; malformed proposals never pass validation (AT-01); deliberate conflicts are blocked with the right reason (AT-02).
 
-## 2. Managed execution and evidence (first usable MVP) (in review)
+## 2. Managed execution and evidence (first usable MVP) (done)
 
-**Goal:** an approved candidate executes locally, survives reconnect and restart, records its outcome, and can't bypass its effect restrictions. Action plans, trusted approval capture, resource leases, the durable run controller, artifact checks and user review.
+**Goal:** an approved candidate executes locally, survives reconnect and restart, records its outcome, and can't bypass its effect restrictions. Action plans, trusted approval capture, resource leases, the durable run controller, artifact checks and user review. TODO milestone 3.
 
 **Gate:** no unapproved effect succeeds on any route (AT-05); lost submissions never cause duplicate renders (AT-06); cancellation and recovery never touch unrelated jobs or canvases (AT-07); every run has full lineage and separate verdicts (AT-08); reasoning and rendering are serialized when memory requires it (AT-10).
 
-## 3. Broader recipes and dependency acquisition
+## 3. Broader recipes and dependency acquisition (planned)
 
-**Goal:** the certified recipe set (12–20 variants, 2–3 families), configured template sources, Hugging Face manifests, staged and approved dependencies, semantic compatibility rules, bounded repair, protected-region evaluation and optional visual evaluators.
+**Goal:** the certified recipe set (12–20 variants, 2–3 families), configured template sources, Hugging Face manifests, staged and approved dependencies, semantic compatibility rules, bounded repair, protected-region evaluation and optional visual evaluators. TODO milestones 4 (approved acquisition), 5 (the certified recipe set and template sources) and 6 (repair, region checks and the acceptance suite); their decisions are GAPS Q24 to Q29.
 
 **Gate:** the reference acceptance suite passes on a documented test matrix (spec §19.2, AT-01 to AT-12, with AT-04's 90% as the proposed target); unsupported cases are reported as such.
 
