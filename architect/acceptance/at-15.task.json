@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "at-15",
+  "title": "RealESRGAN 2\u00d7",
+  "expect": {
+    "outcome": "feasible",
+    "recipes": [
+      "recipe-realesrgan.upscale-2x"
+    ]
+  },
+  "recipeIds": [
+    "recipe-realesrgan.upscale-2x"
+  ],
+  "live": "render",
+  "why": "1024 to 2048 by 4\u00d7 and a 0.5 rescale.",
+  "task": {
+    "intent": "The same image at a higher resolution.",
+    "media": {
+      "kind": "image",
+      "operation": "upscale",
+      "output": {
+        "width": 2048,
+        "height": 2048
+      }
+    },
+    "inputs": [
+      {
+        "assetId": "comfyui-input:architect-acceptance/scene-1024.png",
+        "role": "source_image"
+      }
+    ]
+  }
+}

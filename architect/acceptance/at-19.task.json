@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "at-19",
+  "title": "Z-Image Turbo, edge-guided generation, square",
+  "expect": {
+    "outcome": "feasible",
+    "recipes": [
+      "recipe-zimage-turbo.controlnet-union"
+    ]
+  },
+  "recipeIds": [
+    "recipe-zimage-turbo.controlnet-union"
+  ],
+  "live": "render",
+  "why": "The union ControlNet on a square reference.",
+  "task": {
+    "intent": "A garden in spring, following the reference's outlines.",
+    "media": {
+      "kind": "image",
+      "operation": "reference_guided",
+      "output": {
+        "width": 1024,
+        "height": 1024
+      }
+    },
+    "inputs": [
+      {
+        "assetId": "comfyui-input:architect-acceptance/scene-1024.png",
+        "role": "reference_image"
+      }
+    ]
+  }
+}

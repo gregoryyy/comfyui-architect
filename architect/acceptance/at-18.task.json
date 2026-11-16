@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "id": "at-18",
+  "title": "Z-Image Turbo, text in the image",
+  "expect": {
+    "outcome": "feasible",
+    "recipes": [
+      "recipe-zimage-turbo.t2i"
+    ]
+  },
+  "recipeIds": [
+    "recipe-zimage-turbo.t2i"
+  ],
+  "live": "render",
+  "why": "The OCR evaluator (TODO 6.4), accepted for the criterion through the approval (GAPS A11).",
+  "task": {
+    "intent": "A wooden shop sign that reads OPEN in large painted letters, plain background.",
+    "media": {
+      "kind": "image",
+      "operation": "text_to_image",
+      "output": {
+        "width": 1024,
+        "height": 1024
+      }
+    },
+    "acceptance": [
+      {
+        "id": "sign-text",
+        "kind": "text_in_image",
+        "required": true,
+        "text": "OPEN",
+        "match": "contains",
+        "caseSensitive": false,
+        "acceptEvaluator": true
+      }
+    ]
+  }
+}

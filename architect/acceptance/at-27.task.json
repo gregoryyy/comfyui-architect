@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "at-27",
+  "title": "Mask of the wrong size",
+  "expect": {
+    "outcome": "blocked",
+    "category": "unsupported_operation"
+  },
+  "live": "plan",
+  "why": "An inpaint mask must have the source's size (milestone 5, input images).",
+  "task": {
+    "intent": "A small wooden rowing boat.",
+    "media": {
+      "kind": "image",
+      "operation": "inpaint",
+      "output": {
+        "width": 1024,
+        "height": 1024
+      }
+    },
+    "inputs": [
+      {
+        "assetId": "comfyui-input:architect-acceptance/scene-1024.png",
+        "role": "source_image"
+      },
+      {
+        "assetId": "comfyui-input:architect-acceptance/mask-768.png",
+        "role": "mask"
+      }
+    ]
+  },
+  "recipeIds": [
+    "recipe-zimage-turbo.inpaint",
+    "recipe-flux1-schnell.ckpt-inpaint"
+  ]
+}

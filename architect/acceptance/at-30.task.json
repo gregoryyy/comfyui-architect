@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "id": "at-30",
+  "title": "Download needed, downloads forbidden",
+  "expect": {
+    "outcome": "blocked",
+    "category": "policy_conflicts"
+  },
+  "live": "fixture_only",
+  "why": "The fixture's target lacks the Klein model file, and the task forbids downloads, so the candidate isn't acquirable (GAPS Q25).",
+  "task": {
+    "intent": "Add a hot-air balloon in the sky.",
+    "media": {
+      "kind": "image",
+      "operation": "image_edit",
+      "output": {
+        "width": 1456,
+        "height": 816
+      }
+    },
+    "inputs": [
+      {
+        "assetId": "comfyui-input:architect-acceptance/scene-1456x816.png",
+        "role": "source_image"
+      }
+    ],
+    "constraints": {
+      "modelDownloads": "forbidden"
+    }
+  },
+  "recipeIds": [
+    "recipe-flux2-klein-4b.edit"
+  ],
+  "environment": {
+    "removeModels": [
+      "diffusion_models/flux-2-klein-4b.safetensors"
+    ]
+  }
+}

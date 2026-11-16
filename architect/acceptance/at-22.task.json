@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "at-22",
+  "title": "Four images per run",
+  "expect": {
+    "outcome": "blocked",
+    "category": "unsupported_operation"
+  },
+  "live": "plan",
+  "why": "Every recipe writes one image per run; a larger count isn't served silently.",
+  "task": {
+    "intent": "A red bicycle leaning against a white wall, soft morning light.",
+    "media": {
+      "kind": "image",
+      "operation": "text_to_image",
+      "output": {
+        "width": 1024,
+        "height": 1024,
+        "count": 4
+      }
+    }
+  }
+}

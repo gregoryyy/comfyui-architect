@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "id": "at-20",
+  "title": "FLUX.1-schnell checkpoint, explicit size criterion",
+  "expect": {
+    "outcome": "feasible",
+    "recipes": [
+      "recipe-flux1-schnell.ckpt-t2i"
+    ]
+  },
+  "recipeIds": [
+    "recipe-flux1-schnell.ckpt-t2i"
+  ],
+  "live": "render",
+  "why": "A task-level dimensions criterion on top of the built-in checks.",
+  "task": {
+    "intent": "A city skyline at night, wide shot.",
+    "media": {
+      "kind": "image",
+      "operation": "text_to_image",
+      "output": {
+        "width": 1344,
+        "height": 768
+      }
+    },
+    "acceptance": [
+      {
+        "id": "size",
+        "kind": "dimensions",
+        "required": true,
+        "expected": [
+          1344,
+          768
+        ]
+      }
+    ]
+  }
+}

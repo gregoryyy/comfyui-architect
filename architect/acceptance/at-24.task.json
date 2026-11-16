@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "at-24",
+  "title": "Size off the latent's step",
+  "expect": {
+    "outcome": "blocked",
+    "category": "unsupported_operation"
+  },
+  "live": "plan",
+  "why": "Z-Image Turbo needs sides that are multiples of 16; the size isn't rounded on the user's behalf (spec \u00a74.3).",
+  "task": {
+    "intent": "A red bicycle leaning against a white wall, soft morning light.",
+    "media": {
+      "kind": "image",
+      "operation": "text_to_image",
+      "output": {
+        "width": 1000,
+        "height": 1000
+      }
+    }
+  },
+  "recipeIds": [
+    "recipe-zimage-turbo.t2i",
+    "recipe-zimage-turbo.t2i-upscale2x"
+  ]
+}
