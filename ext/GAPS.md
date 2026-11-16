@@ -1,6 +1,6 @@
 # Gaps
 
-Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-16 02:33.
+Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-16 03:19.
 
 How this file works:
 - Answers are recorded with date, time and author: `**Answer** (2026-11-15 13:30, Gregor Heinrich): …`. Corrections of assumptions record the same in the **Correction** column. Short answers are fine.
@@ -221,6 +221,8 @@ Spec §2.2 asks for 12 to 20 recipe variants across 2 to 3 families, covering te
   - **Upscalers**: one 4× model (under 100 MB) for 2× and 4×, and SeedVR2 3B (about 4 GB).
 - **Alternative** for editing: Qwen-Image-Edit 2511 in int8 (about 31 GB, Apache 2.0). Its int8 weights aren't known to run on Apple's GPU.
 - **What happens either way:** each family's licence is read from its model card into the manifest before you approve. A family that turns out not to run on this machine is reported as unsupported here, never replaced without your choice.
+- **Answer** (2026-11-16 03:19, Gregor Heinrich): as proposed.
+- **Resolved** (2026-11-16 03:19, Opus 5.5 for Gregor Heinrich): the certified set is the proposed 15 variants (TODO 5.1, 5.4); [ARCH](ARCH.md#decision-log).
 
 ### Q25. Which sources may an acquisition use, and within which limits? — blocking for TODO 4
 
@@ -232,12 +234,16 @@ Upstream downloads any URL. It never pins a revision, checks no hash and keeps n
   - **Format:** `.safetensors` only. A pickle format (`.ckpt`, `.pth`, `.bin`) needs its source added by you.
   - **Token:** only for gated repositories, read from `HF_TOKEN` when you set it.
   - **Limits:** one approval covers at most 40 GB, and at least 50 GB of disk stays free.
+- **Answer** (2026-11-16 03:19, Gregor Heinrich): as proposed.
+- **Resolved** (2026-11-16 03:19, Opus 5.5 for Gregor Heinrich): Hugging Face only, pinned and hash-checked, `.safetensors` only, 40 GB per approval, 50 GB kept free (TODO 4.1); [ARCH](ARCH.md#decision-log).
 
 ### Q26. Does phase 3 install custom nodes? — blocking for TODO 4
 
 Installing a custom node runs third-party code and can change ComfyUI's Python packages (spec §14.4, SEC T3). The templates checked for the operations in Q24 use core nodes only.
 
 - **Proposed:** no installs in phase 3. Certified recipes use core nodes only. A recipe that needs a custom node stays blocked, and the blocker names the node. Installs come later as their own milestone, with a separate approval and pinned commits.
+- **Answer** (2026-11-16 03:19, Gregor Heinrich): as proposed.
+- **Resolved** (2026-11-16 03:19, Opus 5.5 for Gregor Heinrich): no custom-node installs in phase 3; certified recipes use core nodes only (TODO 4.1); [ARCH](ARCH.md#decision-log).
 
 ### Q27. Where do recipes come from, and what makes one certified? — blocking for TODO 5
 
@@ -251,6 +257,8 @@ The tiers are `certified`, `curated`, `proposed` and `fixture` ([ARCH](ARCH.md#d
     - its UI export round trip passes (AT-11);
     - it has one live render whose checks pass.
   - **Who certifies:** no agent marks a recipe `certified` on its own judgement.
+- **Answer** (2026-11-16 03:19, Gregor Heinrich): as proposed.
+- **Resolved** (2026-11-16 03:19, Opus 5.5 for Gregor Heinrich): imports from the template index and upstream's packs start as `proposed`; certification as proposed (TODO 5.1, 5.2); [ARCH](ARCH.md#decision-log).
 
 ### Q28. What is the test matrix? — blocking for TODO 6
 
@@ -261,12 +269,16 @@ Spec §19.2 asks for resource fixtures with an Apple unified-memory profile and 
   - **Dedicated GPU:** a dedicated-GPU profile exists in fixtures only, and no claim is made about such a device.
   - **Cloud:** no RunPod or other paid machine.
   - **Task fixtures:** the agent writes the 30 task fixtures, and you review them before the suite counts.
+- **Answer** (2026-11-16 03:19, Gregor Heinrich): as proposed.
+- **Resolved** (2026-11-16 03:19, Opus 5.5 for Gregor Heinrich): the reference Mac is the only real device; the dedicated GPU in fixtures only; no paid machines; fixtures reviewed by the owner (TODO 6.5, 6.6); [ARCH](ARCH.md#decision-log).
 
 ### Q29. Which optional visual evaluators come in phase 3?
 
 Spec §13.2 makes visual evaluators optional plugins whose verdicts stay advisory unless the user accepts one for a criterion. Ollama on this machine has `glm-ocr` (2.7 GB) and no general vision model.
 
 - **Proposed:** one optional evaluator, an OCR check through `glm-ocr` for tasks that ask for text in the image. An uncertain reading is `unknown`, never `pass`. A vision-model rubric waits until you choose a vision model.
+- **Answer** (2026-11-16 03:19, Gregor Heinrich): as proposed.
+- **Resolved** (2026-11-16 03:19, Opus 5.5 for Gregor Heinrich): one optional OCR evaluator through `glm-ocr`, advisory (TODO 6.4); [ARCH](ARCH.md#decision-log).
 
 ## Assumptions
 

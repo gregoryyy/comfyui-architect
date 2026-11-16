@@ -13,7 +13,7 @@ Agent: Opus 5.5, subagents: Explore (upstream's download, install, template and 
 - ROAD phase 3 becomes three milestones: 4, approved dependency acquisition; 5, the certified recipe set and template sources; 6, bounded repair, protected-region checks, optional visual evaluators and the reference acceptance suite.
 - [research/acquisition-sources.md](research/acquisition-sources.md) records what upstream offers. Its downloader takes any URL without pinning, hash check or host list, and its packs carry unpinned URLs. ComfyUI's template index on the reference target lists 142 local image templates, whose model lists name files on `resolve/main`. Hugging Face's API gives each file's commit, size and sha256.
 - The questions only the owner can settle are GAPS Q24 to Q29. Each has a proposal: the families and variants of the certified set, the download sources and limits, custom-node installs, recipe sources and certification, the test matrix, and the visual evaluators.
-- ARCH lists them as open decisions, with the redirect check for downloads (TODO 4.4), which may need a new seam in `download-cache.ts`.
+- The owner answered all six as proposed (2026-11-16 03:19). They are in ARCH's decision log and TODO 4.1, 5.1, 6.4 and 6.6. The redirect check for downloads (TODO 4.4) stays an open decision in ARCH, since it may need a new seam in `download-cache.ts`.
 
 ### Deviations
 
