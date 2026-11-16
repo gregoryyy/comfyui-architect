@@ -321,7 +321,8 @@ export class ArchitectExecution {
       run,
       ...(acquisitions.length > 0 ? { acquisitions } : {}),
       verdicts: verdictsOf(run, records, this.submitted(run.id)),
-      evaluations: records.map((r) => ({ criterion: r.criterionId, verdict: r.verdict, source: r.source, explanation: r.explanation })),
+      // An advisory verdict is shown as such: it doesn't count toward acceptance (GAPS A11).
+      evaluations: records.map((r) => ({ criterion: r.criterionId, verdict: r.verdict, source: r.source, ...(r.advisory ? { advisory: true } : {}), explanation: r.explanation })),
       recentEvents: events.slice(-5).map((e) => ({ seq: e.seq, at: e.at, kind: e.kind, ...(e.to ? { to: e.to } : {}), reason: e.reason })),
     };
   }

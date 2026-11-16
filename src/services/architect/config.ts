@@ -32,6 +32,18 @@ export const ARCHITECT_PANEL_RUNS_ENV = "ARCHITECT_PANEL_RUNS";
 export const ARCHITECT_RESIDENCY_ENV = "ARCHITECT_MANAGE_RESIDENCY";
 
 /**
+ * The Ollama tag the OCR evaluator uses when Ollama lists more than one `glm-ocr` tag
+ * (TODO 6.4). Unset with several tags, or naming none of them, the OCR verdict is `unknown`.
+ */
+export const ARCHITECT_OCR_MODEL_ENV = "ARCHITECT_OCR_MODEL";
+
+/** The OCR model tag the operator chose, if any (see ARCHITECT_OCR_MODEL_ENV). */
+export function ocrModelPreference(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const raw = env[ARCHITECT_OCR_MODEL_ENV]?.trim();
+  return raw === undefined || raw === "" ? undefined : raw;
+}
+
+/**
  * - `off`: upstream behaviour, no Architect tool on any route (spec AT-12).
  * - `assist`: Architect's tools next to upstream's; grants govern Architect's own runs.
  * - `managed`: as assist, and upstream's effectful tools are withheld on every route, so
@@ -79,6 +91,7 @@ export const ARCHITECT_ENV_KEYS = [
   "ARCHITECT_ENV_MAX_AGE_SECONDS",
   ARCHITECT_RESIDENCY_ENV,
   ARCHITECT_PANEL_RUNS_ENV,
+  ARCHITECT_OCR_MODEL_ENV,
 ] as const;
 
 /**

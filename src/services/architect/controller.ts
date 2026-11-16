@@ -32,6 +32,8 @@ import { z } from "zod";
 import type { ModelAcquirer } from "./acquisition.js";
 import { graphFingerprint } from "./compile.js";
 import { type DecodeResult, acceptanceFrom, evaluateOutputs, needsUserReview, type ProbedOutput } from "./evaluation.js";
+import type { FetchedOutput } from "./evaluators/contract.js";
+import type { PoolLease, VisualEvaluation } from "./evaluators/registry.js";
 import { type MediaProbe, probeMedia } from "./media-probe.js";
 import { type ResourceCoordinator, residencyRestored, unloadedForRun } from "./resources.js";
 import {
@@ -89,6 +91,11 @@ export interface RunControllerDeps {
    * Without it such a run fails in PREPARING; nothing is downloaded.
    */
   acquirer?: Pick<ModelAcquirer, "step" | "stop" | "forgetNodeSchemas">;
+  /**
+   * The visual evaluators (protected regions, OCR) run in EVALUATING (TODO 6.3, 6.4). Without
+   * it the criteria they judge are recorded as `unknown`.
+   */
+  visualEvaluation?: Pick<VisualEvaluation, "evaluate">;
   pollIntervalMs?: number;
   /** Absences from queue and history after which an OUTCOME_UNKNOWN run waits for the user. */
   maxConsecutiveAbsent?: number;
@@ -947,6 +954,7 @@ export class RunController {
     const unparsedOutputs = parsed.success ? parsed.data.unparsedOutputs : 0;
 
     const files: ProbedOutput[] = [];
+    const fetched: FetchedOutput[] = [];
     for (const ref of run.outputs) {
       let bytes: Buffer;
       try {
@@ -954,13 +962,45 @@ export class RunController {
       } catch (err) {
         const reason = `couldn't fetch the file: ${messageOf(err)}`;
         files.push({ ref, probe: { readable: false, fetched: false, reason }, decode: { state: "not_attempted", reason } });
+        fetched.push({ ref, reason });
         continue;
       }
       const probe = probeMedia(bytes);
       files.push({ ref, probe, decode: await this.decode(bytes, probe) });
+      fetched.push({ ref, bytes });
     }
     const stored = new Set(store.listEvaluations(run.id).map((e) => e.id));
-    for (const input of evaluateOutputs({ run, task, files, unparsedOutputs, at: now() })) {
+    let visualCriteria: ReadonlySet<string> | undefined;
+    if (this.deps.visualEvaluation) {
+      const over = this.budgetExceeded(run);
+      const visual = await this.deps.visualEvaluation.evaluate({
+        run,
+        task,
+        outputs: fetched,
+        actionPlan: store.getActionPlan(run.actionPlanId),
+        storedIds: stored,
+        lease: this.evaluationLease(run),
+        ...(over !== false ? { waitOver: over.reason } : {}),
+        at: now(),
+      });
+      for (const input of visual.records) if (!stored.has(input.id)) store.putEvaluation(input);
+      if (visual.waiting.length > 0) {
+        // Another run holds the pool; the next pass tries again, until the wall time is over.
+        if (!events.some((e) => e.kind === "note" && e.data?.waitingForPool === true)) {
+          store.appendRunEvent({
+            runId: run.id,
+            kind: "note",
+            principal: "controller",
+            reason: bounded(`the evaluation of ${visual.waiting.map((w) => w.criterionId).join(", ")} waits for the memory pool: ${visual.waiting[0].reason}`),
+            data: { waitingForPool: true },
+            at: now(),
+          });
+        }
+        return this.require(run.id);
+      }
+      visualCriteria = visual.criteria;
+    }
+    for (const input of evaluateOutputs({ run, task, files, unparsedOutputs, ...(visualCriteria ? { visualCriteria } : {}), at: now() })) {
       if (!stored.has(input.id)) store.putEvaluation(input);
     }
     const acceptance = acceptanceFrom(task, store.listEvaluations(run.id));
@@ -968,6 +1008,28 @@ export class RunController {
     return this.move(run, review ? "AWAITING_REVIEW" : "COMPLETED", review ? `automatic checks done (${acceptance}); waiting for the user's review` : `automatic checks done: ${acceptance}`, {
       patch: { acceptance },
     });
+  }
+
+  /**
+   * The run's pool lease for an evaluator that uses the pool (OCR on this machine's Ollama):
+   * EVALUATING holds no lease, so it is taken again, by the heartbeat that takes a free or
+   * expired lease, and released when the evaluator is done (ARCH 2026-11-16, visual
+   * evaluators).
+   */
+  private evaluationLease(run: RunRecord): PoolLease {
+    const { resources } = this.deps;
+    return {
+      take: () => {
+        const beat = resources.heartbeat(run);
+        return beat.held ? { held: true } : { held: false, reason: beat.reason };
+      },
+      extend: () => {
+        resources.heartbeat(run);
+      },
+      release: () => {
+        resources.release(run);
+      },
+    };
   }
 
   /**

@@ -266,6 +266,30 @@ export const AcceptanceCriterion = z.discriminatedUnion("kind", [
       sourceAssetId: z.string().min(1),
       maskAssetId: z.string().min(1),
       coordinateSpace: z.literal("source_pixels"),
+      /**
+       * The largest difference per channel, 0 to 255, a protected pixel may show; absent is 0,
+       * an exact match (ARCH 2026-11-16, protected regions).
+       */
+      tolerance: z.number().int().min(0).max(255).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      /**
+       * Text the output image must show (TODO 6.4). Read by an optional evaluator, whose
+       * verdict is advisory unless `acceptEvaluator` names it: the action plan then lists it as
+       * accepted, the approval says its verdict counts, and the user's approval is the
+       * acceptance spec §13.2 asks for (GAPS A11).
+       */
+      id: z.string().min(1),
+      kind: z.literal("text_in_image"),
+      required: z.boolean(),
+      text: z.string().min(1).max(500),
+      /** `contains`: the reading includes the text; `exact`: the reading is the text. */
+      match: z.enum(["contains", "exact"]).default("contains"),
+      caseSensitive: z.boolean().default(false),
+      /** The evaluator whose verdict counts for this criterion, e.g. `architect.ocr-glm`. */
+      acceptEvaluator: z.string().min(1).max(100).optional(),
     })
     .strict(),
   z
@@ -825,6 +849,17 @@ export const Effect = z.discriminatedUnion("kind", [
         .min(1)
         .refine((xs) => new Set(xs.map((x) => x.assetId)).size === xs.length, { message: "an input is listed twice" })
         .optional(),
+      /**
+       * Optional evaluators the task accepts for a criterion, so their verdicts count toward
+       * acceptance (spec §13.2; GAPS A11). The hash covers each evaluator's version, so a new
+       * version needs a new approval. Absent when the task accepts none, which keeps the hash
+       * of such a plan as it was.
+       */
+      acceptedEvaluators: z
+        .array(z.object({ criterionId: z.string().min(1), evaluatorId: z.string().min(1), evaluatorVersion: z.string().min(1) }).strict())
+        .min(1)
+        .refine((xs) => new Set(xs.map((x) => x.criterionId)).size === xs.length, { message: "a criterion is listed twice" })
+        .optional(),
     })
     .strict(),
   z
@@ -886,6 +921,7 @@ export const Effect = z.discriminatedUnion("kind", [
 export type Effect = z.infer<typeof Effect>;
 export type LocalRenderEffect = Extract<Effect, { kind: "local_render" }>;
 export type RenderInput = NonNullable<LocalRenderEffect["inputs"]>[number];
+export type AcceptedEvaluator = NonNullable<LocalRenderEffect["acceptedEvaluators"]>[number];
 export type ReleaseResidencyEffect = Extract<Effect, { kind: "release_residency" }>;
 export type AcquireModelsEffect = Extract<Effect, { kind: "acquire_models" }>;
 
@@ -1207,6 +1243,11 @@ export const EvaluationRecord = z
     verdict: Verdict,
     source: z.enum(["automatic", "user", "agent_reported"]),
     channel: ApprovalChannel.optional(),
+    /**
+     * An optional evaluator's verdict the action plan didn't accept for this criterion: shown,
+     * never counted toward acceptance (spec §13.2; ARCH 2026-11-16, visual evaluators).
+     */
+    advisory: z.boolean().default(false),
     measurement: z.object({ value: z.number(), unit: z.string().min(1) }).strict().optional(),
     explanation: z.string().min(1),
     /** Asset references the verdict rests on (spec §13.2 `evidenceAssetIds`). */
