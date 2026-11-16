@@ -1,6 +1,6 @@
 # Architecture
 
-The architecture to be built and the log of architectural decisions. The architecture itself is in [SPEC](design/SPEC.md); this file maps it, records what has been decided since, and lists the decisions still open (GAPS Q1: SEC, ARCH and EVAL only add what SPEC doesn't say). Security is in [SEC](SEC.md), evaluations in [EVAL](EVAL.md). Status: 2026-11-15 22:17.
+The architecture to be built and the log of architectural decisions. The architecture itself is in [SPEC](design/SPEC.md); this file maps it, records what has been decided since, and lists the decisions still open (GAPS Q1: SEC, ARCH and EVAL only add what SPEC doesn't say). Security is in [SEC](SEC.md), evaluations in [EVAL](EVAL.md). Status: 2026-11-16 02:33.
 
 ## Map
 
@@ -98,3 +98,10 @@ Newest first. Each entry: date, decision, reason, where it's recorded.
 | Decision | Needed by | Tracked |
 | --- | --- | --- |
 | The kind of workflow after images | ROAD phase 6 | GAPS Q10, decided after the MVP |
+| Download sources, limits and formats | TODO 4 | GAPS Q25 |
+| Custom-node installs in phase 3 | TODO 4 | GAPS Q26 |
+| Redirect checking for downloads: Architect checks each hop before handing upstream a URL, or an optional redirect check in `download-cache.ts` as a new seam | TODO 4.5 | TODO 4.4 |
+| The families and variants of the certified set | TODO 5 | GAPS Q24 |
+| What moves a recipe from `curated` to `certified` | TODO 5 | GAPS Q27 |
+| The test matrix | TODO 6 | GAPS Q28 |
+| Optional visual evaluators | TODO 6.4 | GAPS Q29 |

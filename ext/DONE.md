@@ -2,6 +2,28 @@
 
 The progress log, newest entry on top. Each entry: `## YYYY-MM-DD HH:MM — Title` (time from `date`), the TODO items and PR or commit, an `Agent:` line, then **Implementation notes**, **Deviations** and **Insights**. The plan is in [TODO](TODO.md).
 
+## 2026-11-16 02:33 — Plan for ROAD phase 3 (milestones 4 to 6)
+
+TODO items: milestones 4, 5 and 6 added. GAPS Q24 to Q29 opened. PR on branch `docs/phase-3-plan`.
+
+Agent: Opus 5.5, subagents: Explore (upstream's download, install, template and pack code).
+
+### Implementation notes
+
+- ROAD phase 3 becomes three milestones: 4, approved dependency acquisition; 5, the certified recipe set and template sources; 6, bounded repair, protected-region checks, optional visual evaluators and the reference acceptance suite.
+- [research/acquisition-sources.md](research/acquisition-sources.md) records what upstream offers. Its downloader takes any URL without pinning, hash check or host list, and its packs carry unpinned URLs. ComfyUI's template index on the reference target lists 142 local image templates, whose model lists name files on `resolve/main`. Hugging Face's API gives each file's commit, size and sha256.
+- The questions only the owner can settle are GAPS Q24 to Q29. Each has a proposal: the families and variants of the certified set, the download sources and limits, custom-node installs, recipe sources and certification, the test matrix, and the visual evaluators.
+- ARCH lists them as open decisions, with the redirect check for downloads (TODO 4.4), which may need a new seam in `download-cache.ts`.
+
+### Deviations
+
+None. No code changed.
+
+### Insights
+
+- Upstream's download path can move the bytes, but it can't produce the manifest spec §14.4 asks for. Pinning, hashing and the host check belong to Architect, in front of upstream's job.
+- The templates checked for text to image, editing, reference images and upscaling use core nodes only, so the certified set may need no custom-node install. Inpainting and control templates weren't checked.
+
 ## 2026-11-15 22:54 — Managed execution: approved local renders (milestone 3)
 
 TODO items: 3.3 to 3.9 (3.1 and 3.2 landed earlier on the branch). GAPS Q20, Q21, Q22 (answered 22:24), Q23 (answered 22:36). PR on branch `feat/milestone-3`.
