@@ -40,6 +40,7 @@ import {
   type DownloadJob,
   cancelDownloadJob,
   describeUnresolvedDownload,
+  downloadJobIdFor,
   getDownloadJob,
   startDownloadJob,
 } from "../download-jobs.js";
@@ -113,9 +114,12 @@ export interface UpstreamFacade {
    * Start a local download job (upstream's `startDownloadJob`) of `url` into
    * `<subfolder>/<filename>`, never through ComfyUI-Manager and with no auth override, so
    * upstream applies its own token rules. Returns the job's public id; a request already in
-   * flight returns that job's id.
+   * flight returns that job's id. `writesTo` is whether the job writes exactly to
+   * `expectedPath`: upstream keys a local job by the target path its own resolver gave it and
+   * the auth discriminator, empty without an auth override (`downloadJobIdFor` in
+   * download-jobs.ts), so the id shows where the bytes go without resolving the path again.
    */
-  startDownload(args: { url: string; subfolder: string; filename: string; modelRoot?: string }): Promise<{ jobId: string }>;
+  startDownload(args: { url: string; subfolder: string; filename: string; expectedPath: string; modelRoot?: string }): Promise<{ jobId: string; writesTo: boolean }>;
   /** A download job's state; see `DownloadStatus`. Never throws for a job it can't find. */
   downloadStatus(jobId: string): Promise<DownloadStatus>;
   /** Abort a download job this process owns (upstream's `cancelDownloadJob`). */
@@ -226,11 +230,12 @@ export function createUpstreamFacade(): UpstreamFacade {
       return { root: dirname(target.targetDir), path: target.targetPath };
     },
     downloadRoutesToManager: () => shouldDispatchDownloadToManager(),
-    startDownload: async ({ url, subfolder, filename, modelRoot }) => {
+    startDownload: async ({ url, subfolder, filename, expectedPath, modelRoot }) => {
       // dispatchToManagerOverride=false: the route is decided here, never left to upstream,
       // so a Manager dispatch (a server-side write nobody can hash first) can't happen.
       const entry = await startDownloadJob(url, subfolder, filename, undefined, undefined, false, modelRoot);
-      return { jobId: entry.job.id };
+      const writesTo = entry.job.viaManager !== true && entry.job.id === downloadJobIdFor(`${expectedPath}\n`);
+      return { jobId: entry.job.id, writesTo };
     },
     downloadStatus: async (jobId) => downloadStatusOf(jobId, getDownloadJob(jobId)),
     cancelDownload: async (jobId) => {

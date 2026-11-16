@@ -554,7 +554,28 @@ describe("a run that acquires model files", () => {
     const r = await h.controller.advance(h.run.id);
     expect(r.state).toBe("FAILED");
     expect(r.error?.message).toMatch(/would stage/);
-    expect(downloads.started).toEqual([]);
+    // Known only from the job upstream started: that job, the run's own, is stopped.
+    expect(downloads.cancelled).toEqual(["job-1"]);
+    expect(readdirSync(join(root, "checkpoints"))).toEqual([]);
+  });
+
+  it("resolves once per step: a step holds the run's turn for one resolve and one upstream start", async () => {
+    const h = harness();
+    await h.controller.advance(h.run.id);
+    expect(h.downloads.resolves).toBe(1);
+    expect(h.downloads.started).toHaveLength(1);
+    // A poll while a step runs doesn't stack a second one for the run.
+    h.downloads.resolveDelayMs = 50;
+    (h.downloads.jobs.get("job-1") as FakeJob).status = "error";
+    const first = h.controller.reconcile(h.run.id); // back to planned, no resolve
+    await first;
+    const stepping = h.controller.reconcile(h.run.id); // planned: starts a resolve
+    await new Promise((r) => setTimeout(r, 5));
+    expect(h.controller.busy(h.run.id)).toBe(true);
+    await h.controller.pollOnce();
+    await stepping;
+    expect(h.downloads.started).toHaveLength(2);
+    expect(h.downloads.resolves).toBe(2);
   });
 
   it("refuses the ComfyUI-Manager route and an HF_ENDPOINT elsewhere at download time too", async () => {
@@ -1060,6 +1081,8 @@ describe("prepare and start with downloads", () => {
     const r = await execution.prepare({ planId: s.planId });
     issueGrant(s.deps, { requestId: r.approvalRequest.id, channel: "terminal", issuer: "t", confirmHash: r.shortHash });
     const { run } = await execution.start({ actionPlanId: r.actionPlan.id });
+    // start returns before the download step; a reconcile waits its turn behind it.
+    await controller.reconcile(run.id);
     expect(run.state).toBe("PREPARING");
     const status = await execution.status({ runId: run.id });
     expect(status.acquisitions).toEqual([expect.objectContaining({ file: `checkpoints/${MISSING}`, state: "downloading", sizeBytes: BYTES.length })]);
@@ -1092,6 +1115,64 @@ describe("prepare and start with downloads", () => {
     // spec §15.5: no machine-specific path in the exported record or the lock.
     expect(recordText).not.toContain(s.root);
     expect(readFileSync(join(written.dir, "dependencies.lock.json"), "utf-8")).not.toContain(s.root);
+  });
+
+  it("start returns before a slow download step finishes; the poller then continues the run", async () => {
+    const s = await acquirable();
+    s.downloads.resolveDelayMs = 200; // upstream's resolver waiting on a hanging lsof
+    const ollama = new FakeOllama();
+    const resources = new ResourceCoordinator({ store: s.store, upstream: ollama.facade(), ownerId: "a", now: s.now, manageResidency: false, fetchImpl: ollama.fetch, probeTimeoutMs: 20 });
+    const controller = new RunController({
+      store: s.store,
+      upstream: {
+        submitPrompt: async (_g, promptId) => ({ kind: "accepted", promptId }),
+        queue: async () => ({ running: [], pending: [] }),
+        history: async () => undefined,
+        dequeue: async () => ({ removed: false, state: "absent", verified: true }),
+        interruptPrompt: async () => undefined,
+        outputFile: async () => {
+          throw new Error("none");
+        },
+        decodeImage: async () => ({ width: 1, height: 1 }),
+      },
+      resources,
+      now: s.now,
+      newUuid: () => "11111111-2222-4333-8444-555555555555",
+      graphFor: async (run) => {
+        const task = s.store.getTask(run.taskId, run.taskRevision);
+        if (!task) throw new Error("no task");
+        return s.planning.graphOfCandidate(run.candidateId, task).graph;
+      },
+      taskFor: () => {
+        throw new Error("not reached");
+      },
+      revalidate: (run) => requireFeasible(s.planning, run.planId, run.candidateId),
+      acquirer: new ModelAcquirer({ store: s.store, io: s.acquisitionIo, now: s.now, newId: s.newId }),
+    });
+    const execution = new ArchitectExecution({ ...s.deps, driver: controller, dataDir: s.dataDir, dependencyLock: (id, task) => s.planning.dependencyLock(id, task) });
+    const r = await execution.prepare({ planId: s.planId });
+    issueGrant(s.deps, { requestId: r.approvalRequest.id, channel: "terminal", issuer: "t", confirmHash: r.shortHash });
+    s.downloads.resolves = 0;
+    const t0 = Date.now();
+    const started = await execution.start({ actionPlanId: r.actionPlan.id });
+    const startMs = Date.now() - t0;
+    expect(started.run.state).toBe("PREPARING");
+    expect(s.downloads.started).toEqual([]); // the step is still in its resolve
+    expect(controller.busy(started.run.id)).toBe(true);
+    // status doesn't wait behind the step either.
+    const quick = await execution.status({ runId: started.run.id });
+    expect(quick.run.state).toBe("PREPARING");
+    // start's own rebuild resolved once (200 ms here); the step, scheduled, hadn't finished its resolve.
+    expect(s.downloads.resolves).toBeLessThanOrEqual(2);
+    expect(startMs).toBeLessThan(400);
+    await controller.reconcile(started.run.id); // waits for the scheduled step's turn
+    expect(s.downloads.started).toHaveLength(1);
+    s.downloads.finish("job-1");
+    s.install();
+    s.downloads.resolveDelayMs = 0;
+    await new Promise((r) => setTimeout(r, 0)); // the finished call's turn is released
+    await controller.pollOnce();
+    expect(s.store.getRun(started.run.id)?.state).toBe("QUEUED");
   });
 
   it("fails the run when ComfyUI doesn't offer the placed file on the fresh snapshot", async () => {
@@ -1127,6 +1208,8 @@ describe("prepare and start with downloads", () => {
     const r = await execution.prepare({ planId: s.planId });
     issueGrant(s.deps, { requestId: r.approvalRequest.id, channel: "terminal", issuer: "t", confirmHash: r.shortHash });
     const { run } = await execution.start({ actionPlanId: r.actionPlan.id });
+    // start returns before the download step; a reconcile waits its turn behind it.
+    await controller.reconcile(run.id);
     s.downloads.finish("job-1");
     // Placed on disk, but the target's listing never shows it.
     const after = await controller.reconcile(run.id);

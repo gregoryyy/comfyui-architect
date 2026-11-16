@@ -45,6 +45,13 @@ export interface RunDriver {
   reconcile(runId: string): Promise<RunRecord>;
   /** Cancel the run's own prompt only (spec §14.5). */
   cancel(runId: string, principal: RunPrincipal): Promise<RunRecord>;
+  /**
+   * Start driving a run without waiting for it; failures go where the controller reports
+   * polling errors, and its poller continues the run. Used for runs that download first.
+   */
+  schedule?(runId: string): void;
+  /** Whether a call on the run is in progress in this process (a download step, a submission). */
+  busy?(runId: string): boolean;
 }
 
 /** A dialog the client shows the user; undefined when there is none on this route. */
@@ -283,6 +290,15 @@ export class ArchitectExecution {
       principal: "agent",
       reason: `started under grant ${grant.id} (${grant.channel}, ${grant.issuer})`,
     });
+    // A run that downloads first is handed to the controller without waiting: resolving a
+    // download's destination calls upstream's live-server probes, which can take many
+    // seconds each, and the client's request would time out. The poller continues it; status
+    // shows its downloads. A run without downloads is advanced to submission as before.
+    if (actionPlan.effects.some((e) => e.kind === "acquire_models")) {
+      if (driver.schedule) driver.schedule(created.run.id);
+      else void driver.advance(created.run.id).catch(() => undefined); // the poller retries; the controller records its errors
+      return { run: created.run, resumed: false, grant: { id: grant.id, channel: grant.channel } };
+    }
     const run = await driver.advance(created.run.id);
     return { run, resumed: false, grant: { id: grant.id, channel: grant.channel } };
   }
@@ -291,7 +307,9 @@ export class ArchitectExecution {
   async status(request: { runId: string }) {
     const { store, driver } = this.deps;
     const before = this.requireRun(request.runId);
-    const run = FINAL_RUN_STATES.includes(before.state) ? before : await driver.reconcile(before.id);
+    // A step already running on this run (a download being started) isn't waited for: the
+    // stored record is current as far as it goes, and the next status sees the step's result.
+    const run = FINAL_RUN_STATES.includes(before.state) || driver.busy?.(before.id) ? before : await driver.reconcile(before.id);
     const records = store.listEvaluations(run.id);
     const events = store.listRunEvents(run.id);
     const acquisitions = this.deps.acquirer

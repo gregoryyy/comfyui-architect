@@ -2,6 +2,7 @@
 // proves the prompt wasn't queued, and what a full decode of an output image says; and the
 // download functions over upstream's job registry (TODO 4.5.1).
 
+import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConnectionError, WorkflowExecutionError } from "../../utils/errors.js";
@@ -31,6 +32,7 @@ const dl = vi.hoisted(() => ({
   progressIds: [] as string[],
   cancel: {} as Record<string, unknown>,
   identityCalls: [] as unknown[][],
+  startedId: "job-abc",
   fetchCalls: [] as unknown[][],
 }));
 
@@ -68,7 +70,7 @@ vi.mock("../../services/download-jobs.js", async (importOriginal) => {
     ...actual,
     startDownloadJob: async (...args: unknown[]) => {
       dl.startCalls.push(args);
-      return { job: { id: "job-abc" } };
+      return { job: { id: dl.startedId } };
     },
     getDownloadJob: () => dl.job,
     describeUnresolvedDownload: () => dl.unresolved,
@@ -213,8 +215,15 @@ describe("the download functions (TODO 4.5.1)", () => {
 
   it("starts a job never through the Manager and with no auth override", async () => {
     dl.startCalls = [];
-    const r = await createUpstreamFacade().startDownload({ url: "https://huggingface.co/a/b/resolve/c/x.safetensors", subfolder: "upscale_models", filename: "x.safetensors.architect-run-1" });
-    expect(r).toEqual({ jobId: "job-abc" });
+    const expectedPath = "/models/upscale_models/x.safetensors.architect-run-1";
+    // Upstream's id for a local job without an auth override: its target path and an empty discriminator.
+    dl.startedId = createHash("sha256").update(`${expectedPath}\n`).digest("hex").slice(0, 16);
+    const facade = createUpstreamFacade();
+    const args = { url: "https://huggingface.co/a/b/resolve/c/x.safetensors", subfolder: "upscale_models", filename: "x.safetensors.architect-run-1", expectedPath };
+    expect(await facade.startDownload(args)).toEqual({ jobId: dl.startedId, writesTo: true });
+    // A job keyed by another path writes elsewhere.
+    expect((await facade.startDownload({ ...args, expectedPath: "/elsewhere/x.safetensors.architect-run-1" })).writesTo).toBe(false);
+    dl.startCalls = dl.startCalls.slice(0, 1);
     expect(dl.startCalls).toEqual([
       ["https://huggingface.co/a/b/resolve/c/x.safetensors", "upscale_models", "x.safetensors.architect-run-1", undefined, undefined, false, undefined],
     ]);

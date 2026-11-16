@@ -288,15 +288,18 @@ async function acquireEffectFor(
       throw acquisitionRefusal(`upstream would write ${f.folder}/${f.file} to ${dest.path}, not into a ${f.folder} folder under a model root`);
     }
     // The download is staged next to the destination under a name no loader lists; it has
-    // to resolve into the same folder, or the controller would refuse it later.
-    let staged: { root: string; path: string };
-    try {
-      staged = await io.facade.resolveModelDestination(f.folder, stagedNameOf(f.file, "run-check"));
-    } catch (err) {
-      throw acquisitionRefusal(`upstream can't resolve a staged name next to ${f.folder}/${f.file}: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    if (dirname(staged.path) !== dirname(dest.path)) {
-      throw acquisitionRefusal(`upstream would stage ${f.folder}/${f.file} in ${dirname(staged.path)}, not next to its destination ${dest.path}`);
+    // to resolve into the same folder, or the controller would refuse it later. Checked at
+    // prepare only: each resolve can take seconds, and start's rebuild resolves once.
+    if (options.checkDisk) {
+      let staged: { root: string; path: string };
+      try {
+        staged = await io.facade.resolveModelDestination(f.folder, stagedNameOf(f.file, "run-check"));
+      } catch (err) {
+        throw acquisitionRefusal(`upstream can't resolve a staged name next to ${f.folder}/${f.file}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (dirname(staged.path) !== dirname(dest.path)) {
+        throw acquisitionRefusal(`upstream would stage ${f.folder}/${f.file} in ${dirname(staged.path)}, not next to its destination ${dest.path}`);
+      }
     }
     try {
       await io.fs.lstat(dest.path);

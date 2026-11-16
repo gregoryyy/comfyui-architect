@@ -88,7 +88,7 @@ async function session(flagOn) {
     }
     check(architect.includes("architect_inspect"), `${label} architect_inspect listed`);
     check(prompts.includes("architect") && prompts.includes("architect_skill"), `${label} prompts: ${prompts.join(", ") || "none"}`);
-    const res = await client.callTool({ name: "architect_inspect", arguments: { action: "environment" } });
+    const res = await client.callTool({ name: "architect_inspect", arguments: { action: "environment" } }, undefined, CALL_TIMEOUT);
     const text = res.content?.[0]?.type === "text" ? res.content[0].text : "";
     let envelope;
     try {
@@ -109,8 +109,12 @@ async function session(flagOn) {
   }
 }
 
+// The SDK's default request timeout is 60 s. On a slow target (upstream's live-server
+// probes can take many seconds each) a call may need longer; the smoke waits up to 10 min.
+const CALL_TIMEOUT = { timeout: 600_000 };
+
 async function callPlan(client, args) {
-  const res = await client.callTool({ name: "architect_plan", arguments: args });
+  const res = await client.callTool({ name: "architect_plan", arguments: args }, undefined, CALL_TIMEOUT);
   return JSON.parse(res.content?.[0]?.type === "text" ? res.content[0].text : "{}");
 }
 
@@ -154,15 +158,24 @@ async function planTask(client, label) {
   check(selected.status === "ok", `${label} select: ${selected.summary}`);
   const exported = await callPlan(client, { action: "export", planId });
   check(exported.status === "ok" && exported.artifacts?.length === 5, `${label} export: ${exported.summary}`);
-  if (run) await runTask(client, label, planId, acquiring);
+  if (run) {
+    // A thrown call (a timeout, a closed connection) is reported as a failed check, with the
+    // run id when there is one, so the run can be followed or cancelled by hand.
+    const progress = { runId: undefined };
+    try {
+      await runTask(client, label, planId, acquiring, progress);
+    } catch (err) {
+      check(false, `${label} run steps threw: ${err instanceof Error ? err.message : String(err)}${progress.runId ? `; run ${progress.runId}` : "; no run was created"}`);
+    }
+  }
 }
 
 async function callRun(client, args) {
-  const res = await client.callTool({ name: "architect_run", arguments: args });
+  const res = await client.callTool({ name: "architect_run", arguments: args }, undefined, CALL_TIMEOUT);
   return JSON.parse(res.content?.[0]?.type === "text" ? res.content[0].text : "{}");
 }
 
-async function runTask(client, label, planId, acquiring) {
+async function runTask(client, label, planId, acquiring, progress) {
   const prepared = await callRun(client, { action: "prepare", planId });
   console.log(`${label} run prepare: ${prepared.status}: ${prepared.summary}`);
   const actionPlanId = prepared.data?.actionPlan?.id;
@@ -199,6 +212,8 @@ async function runTask(client, label, planId, acquiring) {
   console.log(`${label} run start: ${started.status}: ${started.summary}`);
   const runId = started.data?.run?.id;
   if (!runId) return check(false, `${label} start created a run`);
+  progress.runId = runId;
+  console.log(`${label} run id: ${runId}`);
   const again = await callRun(client, { action: "start", actionPlanId });
   check(again.data?.run?.id === runId && again.data?.resumed === true, `${label} a second start returns the same run`);
   let status;

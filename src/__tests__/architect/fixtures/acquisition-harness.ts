@@ -98,14 +98,24 @@ export class FakeDownloads implements AcquisitionFacade {
 
   constructor(public root: string) {}
 
-  resolveModelDestination = async (subfolder: string, file: string) => this.resolveTo?.(subfolder, file) ?? { root: this.root, path: join(this.root, subfolder, file) };
+  resolveModelDestination = async (subfolder: string, file: string) => {
+    this.resolves += 1;
+    if (this.resolveDelayMs > 0) await new Promise((r) => setTimeout(r, this.resolveDelayMs));
+    return this.resolveTo?.(subfolder, file) ?? { root: this.root, path: join(this.root, subfolder, file) };
+  };
   downloadRoutesToManager = async () => this.manager;
-  startDownload = async (args: { url: string; subfolder: string; filename: string }) => {
+  /** How long each resolve takes, as upstream's live-server probe can on a slow machine. */
+  resolveDelayMs = 0;
+  resolves = 0;
+  startDownload = async (args: { url: string; subfolder: string; filename: string; expectedPath: string }) => {
     if (this.startFails) throw new Error("upstream refused the request");
-    this.started.push(args);
+    const { expectedPath, ...request } = args;
+    this.started.push(request);
     const jobId = `job-${++this.n}`;
-    this.jobs.set(jobId, { status: "downloading", target: join(this.root, args.subfolder, args.filename), url: args.url });
-    return { jobId };
+    // Upstream resolves the target itself, as the resolver below would.
+    const target = this.resolveTo?.(args.subfolder, args.filename).path ?? join(this.root, args.subfolder, args.filename);
+    this.jobs.set(jobId, { status: "downloading", target, url: args.url });
+    return { jobId, writesTo: target === expectedPath };
   };
   downloadStatus = async (jobId: string): Promise<DownloadStatus> => {
     const j = this.jobs.get(jobId);

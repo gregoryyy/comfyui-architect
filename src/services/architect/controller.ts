@@ -278,6 +278,20 @@ export class RunController {
     return this.exclusive(runId, () => this.advanceNow(runId));
   }
 
+  /**
+   * Advance a run in the background (a run that downloads first, TODO 4.5): the caller
+   * returns at once, a failure is reported like a polling error, and the poller continues
+   * the run. Nothing stacks: the poller skips a run while this call holds its turn.
+   */
+  schedule(runId: string): void {
+    void this.advance(runId).catch((err: unknown) => this.reportError(err, runId));
+  }
+
+  /** Whether a call on the run is in progress in this process. */
+  busy(runId: string): boolean {
+    return this.locks.has(runId);
+  }
+
   /** One observation of the target; the run moves only when the observation settles something. */
   reconcile(runId: string): Promise<RunRecord> {
     return this.exclusive(runId, () => this.reconcileNow(runId));

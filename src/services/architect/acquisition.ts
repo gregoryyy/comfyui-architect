@@ -652,15 +652,10 @@ export class ModelAcquirer {
   async step(run: RunRecord, effect: AcquireModelsEffect): Promise<AcquisitionProgress> {
     const { store } = this.deps;
     let records = store.createAcquisitions({ runId: run.id, now: this.deps.now(), newId: () => this.deps.newId() });
-    for (const rec of records) {
-      if (FINAL_ACQUISITION_STATES.includes(rec.state)) {
-        if (rec.state === "placed") continue;
-        break;
-      }
-      await this.advanceOne(run, effect, rec);
-      const now = store.getAcquisition(rec.id);
-      if (now?.state !== "placed") break;
-    }
+    // One file moves per step, so a step holds the run's turn for at most one resolve and
+    // one upstream start; the next file waits for the next poll.
+    const next = records.find((r) => r.state !== "placed");
+    if (next && !FINAL_ACQUISITION_STATES.includes(next.state)) await this.advanceOne(run, effect, next);
     records = store.listAcquisitions(run.id);
     const failed = records.find((r) => r.state === "failed" || r.state === "cancelled");
     if (failed) {
@@ -763,22 +758,19 @@ export class ModelAcquirer {
     const shortfall = await diskShortfall(io, this.deps.store, [rec], effect.minFreeBytes, { exceptRunId: run.id });
     if (shortfall) return void fail(`${shortfall}; nothing was downloaded`);
 
-    // The staged name is resolved by the same upstream call as the destination, so both land
-    // in the folder upstream resolves for the category, wherever its extra model paths put
-    // it. The destination must still be the approved one.
+    // One resolve per step: upstream's resolver can take seconds (its live-server probes),
+    // and the run's turn is held meanwhile. The staged path is the destination's folder plus
+    // the staged name; that upstream's job writes exactly there is checked from the job it
+    // starts, below. The destination must still be the approved one.
     const stagedName = stagedNameOf(rec.file, run.id);
     let stagedPath: string;
     try {
       const dest = await io.facade.resolveModelDestination(rec.folder, rec.file);
-      const staged = await io.facade.resolveModelDestination(rec.folder, stagedName);
       const approved = join(rec.destinationRoot, rec.folder, rec.file);
       if (resolve(dest.path) !== resolve(approved)) {
         return void fail(`upstream now resolves ${rec.folder}/${rec.file} to ${dest.path}, not to the approved ${approved}`);
       }
-      if (dirname(resolve(staged.path)) !== dirname(resolve(dest.path)) || basename(staged.path) !== stagedName) {
-        return void fail(`upstream would stage ${rec.file} at ${staged.path}, not next to its destination ${dest.path}`);
-      }
-      stagedPath = resolve(staged.path);
+      stagedPath = join(dirname(dest.path), stagedName);
     } catch (err) {
       return void fail(`upstream can't resolve where ${rec.folder}/${rec.file} would go: ${messageOf(err)}`);
     }
@@ -803,11 +795,24 @@ export class ModelAcquirer {
       return;
     }
     let jobId: string;
+    let writesTo: boolean;
     try {
-      ({ jobId } = await io.facade.startDownload({ url, subfolder: rec.folder, filename: stagedName }));
+      ({ jobId, writesTo } = await io.facade.startDownload({ url, subfolder: rec.folder, filename: stagedName, expectedPath: stagedPath }));
     } catch (err) {
       this.note(run, rec, `download attempt ${attempt}: upstream didn't start the download: ${messageOf(err)}`, { attempt });
       return;
+    }
+    if (!writesTo) {
+      // Fail closed: the job writes somewhere else than next to the destination. It is
+      // stopped (it is this run's own, just started) and nothing it writes is placed.
+      let stopped: { cancelled: boolean; message: string };
+      try {
+        stopped = await io.facade.cancelDownload(jobId);
+      } catch (err) {
+        stopped = { cancelled: false, message: messageOf(err) };
+      }
+      this.note(run, rec, `download job ${jobId}: ${stopped.message}`, { attempt, jobId, cancelled: stopped.cancelled });
+      return void fail(`upstream would stage ${rec.file} somewhere other than ${stagedPath}, next to its destination; its job ${jobId} was stopped`);
     }
     this.note(
       run,
