@@ -181,11 +181,12 @@ describe("shipped recipes", () => {
     expect(shipped("recipe-flux1-schnell.ckpt-t2i").certification).toBe("proposed");
     // Reviewed at revision 3; revision 4 added pinned sources, so it waits for a new review.
     expect(shipped("recipe-zimage-turbo.t2i")).toMatchObject({ revision: 5, certification: "proposed" });
-    expect(shipped("recipe-flux1-schnell.t2i").certification).toBe("curated");
+    // Reviewed at revision 3; revision 4 pinned its encoders (GAPS Q35), so it waits for a new review.
+    expect(shipped("recipe-flux1-schnell.t2i")).toMatchObject({ revision: 4, certification: "proposed" });
     expect(shipped("recipe-zimage-turbo.t2i-upscale2x").certification).toBe("proposed");
     // The img2img recipe changed in revision 5 (an input_image slot) after its review.
     expect(shipped("recipe-zimage-turbo.img2img")).toMatchObject({ revision: 5, certification: "proposed" });
-    for (const id of SHIPPED_IDS.filter((i) => i !== "recipe-flux1-schnell.t2i")) {
+    for (const id of SHIPPED_IDS) {
       expect(shipped(id).certification, id).toBe("proposed");
     }
   });
@@ -193,8 +194,9 @@ describe("shipped recipes", () => {
   it("refuses, when loading shipped recipes, a curated one without a review of its revision; other sources aren't held to it", () => {
     const dir = mkdtempSync(join(tmpdir(), "architect-tier-"));
     try {
-      const r = shipped("recipe-flux1-schnell.t2i");
-      // Its review carries no revision, which counts as GAPS Q12's review of revision 3.
+      // Revision 3 as the owner reviewed it (GAPS Q12): its review carries no revision, which
+      // counts as a review of revision 3.
+      const r = { ...shipped("recipe-flux1-schnell.t2i"), revision: 3, certification: "curated" as const };
       expect(r.evidence.find((e) => e.kind === "maintainer_review")?.revision).toBeUndefined();
       writeFileSync(join(dir, "a.recipe.json"), JSON.stringify({ ...r, revision: 4 }));
       writeFileSync(join(dir, "b.recipe.json"), JSON.stringify({ ...shipped("recipe-zimage-turbo.t2i"), certification: "curated" }));
@@ -444,8 +446,8 @@ describe("pinned model sources and the 2x upscale recipe (TODO 4.3)", () => {
 
   it("pins each source of a recipe that pins any to a model slot's folder and default file", () => {
     const pinning = SHIPPED_IDS.filter((id) => (shipped(id).modelSources ?? []).length > 0);
-    // Every recipe but the two FLUX.1-schnell ones of milestone 2, written before pins.
-    expect(pinning.length).toBe(SHIPPED_IDS.length - 2);
+    // Every shipped recipe pins its files (GAPS Q35 added the last two).
+    expect(pinning.length).toBe(SHIPPED_IDS.length);
     for (const id of pinning) {
       const r = shipped(id);
       const defaults = r.slots.filter((s) => s.valueType === "model_file").map((s) => `${s.modelFolder}/${String(s.default)}`);

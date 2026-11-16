@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "recipe-flux1-schnell.t2i",
-  "revision": 3,
+  "revision": 4,
   "title": "FLUX.1-schnell: text to image",
   "description": "Text to image with FLUX.1-schnell from separate components: diffusion model, T5-XXL and CLIP-L text encoders through DualCLIPLoader, and the FLUX.1 VAE. Schnell is timestep-distilled: 4 steps at CFG 1.0, no negative prompt (the negative input is the zeroed positive conditioning) and no guidance embedding, so the graph has no FluxGuidance node. Width and height should be multiples of 8, about one megapixel. The text-encoder defaults are the files upstream's skill names: the files this recipe expects, whether or not a target has them.",
   "kind": "image",
@@ -260,7 +260,7 @@
       "SaveImage"
     ]
   },
-  "certification": "curated",
+  "certification": "proposed",
   "evidence": [
     {
       "kind": "upstream_pack",
@@ -285,6 +285,60 @@
       "source": "Owner review, GAPS Q12 and PR #7 (2026-11-15 18:49)",
       "observedAt": "2026-11-15T18:49:40+01:00",
       "note": "The owner accepted the recipe as curated. Not yet run on a recorded matrix, so not certified (AT-03)."
+    }
+  ],
+  "modelSources": [
+    {
+      "folder": "diffusion_models",
+      "file": "flux1-schnell-fp8.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Flux-1-Schnell",
+        "revision": "d31e04067066d92c55ece2b01748dcc337725d7a",
+        "path": "flux1-schnell-fp8.safetensors",
+        "sha256": "ead426278b49030e9da5df862994f25ce94ab2ee4df38b556ddddb3db093bf72",
+        "sizeBytes": 17236328572,
+        "license": "apache-2.0"
+      }
+    },
+    {
+      "folder": "text_encoders",
+      "file": "t5xxl_fp8_e4m3fn.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "comfyanonymous/flux_text_encoders",
+        "revision": "6af2a98e3f615bdfa612fbd85da93d1ed5f69ef5",
+        "path": "t5xxl_fp8_e4m3fn.safetensors",
+        "sha256": "7d330da4816157540d6bb7838bf63a0f02f573fc48ca4d8de34bb0cbfd514f09",
+        "sizeBytes": 4893934904,
+        "license": "apache-2.0"
+      }
+    },
+    {
+      "folder": "text_encoders",
+      "file": "clip_l.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "comfyanonymous/flux_text_encoders",
+        "revision": "6af2a98e3f615bdfa612fbd85da93d1ed5f69ef5",
+        "path": "clip_l.safetensors",
+        "sha256": "660c6f5b1abae9dc498ac2d21e1347d2abdb0cf6c0c0c8576cd796491d9a6cdd",
+        "sizeBytes": 246144152,
+        "license": "apache-2.0"
+      }
+    },
+    {
+      "folder": "vae",
+      "file": "ae.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Z-Image-Turbo",
+        "revision": "6fc90a3b1b653e935a0d175e260736de25b84df5",
+        "path": "split_files/vae/ae.safetensors",
+        "sha256": "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38",
+        "sizeBytes": 335304388,
+        "license": "apache-2.0"
+      }
     }
   ]
 }

@@ -1,6 +1,6 @@
 # Gaps
 
-Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-16 08:51.
+Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-16 12:43.
 
 How this file works:
 - Answers are recorded with date, time and author: `**Answer** (2026-11-15 13:30, Gregor Heinrich): …`. Corrections of assumptions record the same in the **Correction** column. Short answers are fine.
@@ -322,6 +322,14 @@ Milestone 5's live checks download the files of Q24 (about 20 GB) and render eac
 - **Answer** (2026-11-16 08:51, Gregor Heinrich): as proposed.
 - **Resolved** (2026-11-16 08:51, Opus 5.5 for Gregor Heinrich): TODO 5.6.
 - **Go-ahead** (2026-11-16 09:44, Gregor Heinrich): "go ahead with the download list", for the five files shown: `diffusion_models/flux-2-klein-4b.safetensors` (Comfy-Org/Flux-2-Klein-4B@5b3abca5, 7.75 GB), `vae/flux2-vae.safetensors` (same, 0.34 GB), `model_patches/Z-Image-Turbo-Fun-Controlnet-Union.safetensors` (alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union@01c794d5, 3.10 GB), `diffusion_models/seedvr2_3b_fp16.safetensors` (Comfy-Org/SeedVR2@df488797, 6.78 GB), `vae/seedvr2_ema_vae_fp16.safetensors` (same, 0.50 GB), 18.47 GB, all Apache-2.0, and one mask image `architect-smoke-mask.png` placed in ComfyUI's input folder by the smoke. A dry-run list that differs goes back to the owner.
+
+### Q35. Should the separate-components FLUX.1-schnell recipe get its encoders?
+
+`recipe-flux1-schnell.t2i`, the one `curated` recipe, needs T5-XXL and CLIP-L encoders that aren't installed and weren't pinned, so milestone 5's live check couldn't render it. Pinning them changes the recipe, so it becomes revision 4 and `proposed` until the owner reviews it again.
+
+- **Proposed:** pin and download `text_encoders/t5xxl_fp8_e4m3fn.safetensors` (4.89 GB) and `text_encoders/clip_l.safetensors` (0.25 GB) from `comfyanonymous/flux_text_encoders` (Apache-2.0), approved by the smoke as in Q34, and render the recipe once. The alternative is to keep revision 3 `curated` and unrendered.
+- **Answer** (2026-11-16 12:43, Gregor Heinrich): as proposed; the owner reviews revision 4 with the other recipes.
+- **Resolved** (2026-11-16 12:43, Opus 5.5 for Gregor Heinrich): `recipe-flux1-schnell.t2i` r4 pins all four files; TODO 5.6.
 
 ## Assumptions
 
