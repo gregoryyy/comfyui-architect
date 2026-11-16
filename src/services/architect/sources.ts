@@ -5,7 +5,7 @@
 // recipe-pinned files are downloaded (GAPS Q25); `comfyui-templates`, the template index the
 // target ComfyUI serves; and `upstream-packs`, the packs upstream ships in the repository.
 // This file only registers them. Listing and importing templates is the adapters' work
-// (TODO 5.2, part B), which records each refresh's outcome with `recordSourceRefresh`.
+// (templates.ts), which records each refresh's outcome with `recordSourceRefresh`.
 
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";

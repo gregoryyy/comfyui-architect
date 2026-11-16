@@ -259,7 +259,8 @@ export function registerArchitectTools(
       "or acquirable candidate and authorizes nothing (acquirable: only model files with a pinned " +
       "source are missing; architect_run downloads them once the user approves); " +
       'action:"export" with `planId` writes the selected ' +
-      "candidate's graph, task, plan, validation and dependency lock to files. Every check is " +
+      "candidate's API graph, task, plan, validation and dependency lock to files, and its UI " +
+      "graph (workflow.ui.json) when that loads back to the same API graph. Every check is " +
       "pass, fail, unknown or not_applicable: unknown is not pass. Don't invent node names, " +
       "model files, URLs or measurements; report blockers instead.",
     {
@@ -334,8 +335,9 @@ export function registerArchitectTools(
             return reply(okEnvelope(`Plan ${r.id}: candidate ${r.selectedCandidateId} selected. Nothing was run.`, { plan: r }));
           }
           case "export": {
-            const r = p.export({ planId: need(args.planId, "planId", "export") });
-            return reply(okEnvelope(`Exported ${r.files.length} files to ${r.dir}.`, r, [], r.files));
+            const r = await p.export({ planId: need(args.planId, "planId", "export") });
+            const warnings = r.uiGraph.exported ? [] : [`workflow.ui.json not written: ${r.uiGraph.reason}`];
+            return reply(okEnvelope(`Exported ${r.files.length} files to ${r.dir}.`, r, warnings, r.files));
           }
         }
       } catch (err) {

@@ -31,6 +31,7 @@ import {
 import type { ArchitectService } from "./service.js";
 import type { ArchitectStore } from "./store.js";
 import type { UpstreamFacade } from "./upstream.js";
+import { exportUiGraph } from "./ui-graph.js";
 import { type FamilyEvidence, overallVerdict, validateGraph } from "./validate.js";
 
 /** A recipe source the catalog loads: the shipped folder, and in tests a fixture folder. */
@@ -526,8 +527,13 @@ export class ArchitectPlanning {
     };
   }
 
-  /** Write the selected candidate's files under `artifacts/<task-id>/<plan-id>/` (spec §15.1). */
-  export(request: { planId: string }) {
+  /**
+   * Write the selected candidate's files under `artifacts/<task-id>/<plan-id>/` (spec §15.1).
+   * `workflow.ui.json` is written only when the UI graph made from the API graph loads back
+   * to the same graph (spec §10.4, AT-11); without readable node schemas, or when it
+   * doesn't round-trip, the other files are still written and `uiGraph` says why it isn't.
+   */
+  async export(request: { planId: string }) {
     const { plan, task } = this.requirePlan(request.planId);
     if (plan.state !== "SELECTED" || !plan.selectedCandidateId) {
       throw new PlanningError("MISSING_INPUT", `plan ${plan.id} has no selected candidate`, "Call select first.");
@@ -546,10 +552,15 @@ export class ArchitectPlanning {
       throw new PlanningError("GRAPH_CONFLICT", `refusing to export through a symbolic link under ${root}`, "Remove the link and export again.");
     }
     const lock = this.lockFor(candidate, recipe, graph, fingerprint, task);
+    const objectInfo = await this.objectInfo();
+    const ui = objectInfo
+      ? exportUiGraph(graph, objectInfo)
+      : { ok: false as const, reason: "the target's node schemas couldn't be read, so no UI graph was made", differences: [] };
     const files: Record<string, unknown> = {
       "task.json": task,
       "plan.json": { plan, candidate },
       "workflow.api.json": graph,
+      ...(ui.ok ? { "workflow.ui.json": ui.workflow } : {}),
       "validation.json": candidate.validation,
       "dependencies.lock.json": lock,
     };
@@ -559,7 +570,14 @@ export class ArchitectPlanning {
       writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
       written.push(path);
     }
-    return { dir, files: written, graphFingerprint: fingerprint, uiGraph: "not exported: the UI graph comes with a certified recipe's UI template (ARCH, 2026-11-15)" };
+    return {
+      dir,
+      files: written,
+      graphFingerprint: fingerprint,
+      uiGraph: ui.ok
+        ? { exported: true as const, file: join(dir, "workflow.ui.json"), warnings: ui.warnings }
+        : { exported: false as const, reason: ui.reason },
+    };
   }
 }
 

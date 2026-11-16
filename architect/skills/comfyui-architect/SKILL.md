@@ -25,7 +25,7 @@ For a quick one-off generation with a graph the user already has, the normal too
 4. **`architect_plan`**, action `get`: read a plan and its candidates again, with the compiled graph on request.
 5. **`architect_plan`**, action `validate`: check a candidate again against a fresh snapshot, for example after the user installed something.
 6. **`architect_plan`**, action `select`: record the user's choice of a `feasible` or `acquirable` candidate. Selecting authorizes nothing.
-7. **`architect_plan`**, action `export`: write the selected candidate's graph, task, plan, validation report and dependency lock to the Architect data directory, and return their paths.
+7. **`architect_plan`**, action `export`: write the selected candidate's API graph, task, plan, validation report and dependency lock to the Architect data directory, and return their paths. It also writes the UI graph (`workflow.ui.json`, loadable on the canvas) when converting it back gives the same API graph; otherwise a warning says why it is missing.
 
 To render the selected candidate:
 

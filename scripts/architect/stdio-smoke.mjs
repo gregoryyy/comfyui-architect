@@ -157,7 +157,7 @@ async function planTask(client, label) {
   const selected = await callPlan(client, { action: "select", planId, candidateId: best.id });
   check(selected.status === "ok", `${label} select: ${selected.summary}`);
   const exported = await callPlan(client, { action: "export", planId });
-  check(exported.status === "ok" && exported.artifacts?.length === 5, `${label} export: ${exported.summary}`);
+  check(exported.status === "ok" && exported.artifacts?.length === 6, `${label} export: ${exported.summary}`);
   if (run) {
     // A thrown call (a timeout, a closed connection) is reported as a failed check, with the
     // run id when there is one, so the run can be followed or cancelled by hand.

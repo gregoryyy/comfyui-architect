@@ -19,7 +19,8 @@ import {
   interrupt,
   resetObjectInfoCache,
 } from "../../comfyui/client.js";
-import type { ComfyUINodeDef, ObjectInfo, SystemStats } from "../../comfyui/types.js";
+import type { ComfyUINodeDef, ObjectInfo, SystemStats, WorkflowJSON } from "../../comfyui/types.js";
+import { comfyuiFetch } from "../../comfyui/fetch.js";
 import { isApiNode, isExternalServiceNode } from "../api-nodes.js";
 import { resolveOllamaHost, warmOllama } from "../ollama-vram.js";
 import { type CancelQueuedResult, cancelQueuedJob } from "../queue-manager.js";
@@ -47,6 +48,17 @@ import {
   startDownloadJob,
 } from "../download-jobs.js";
 import { readDownloadProgress } from "../download-progress.js";
+import { loadManifestFile, resolvePackManifestFile } from "../manifest.js";
+import {
+  NON_EXECUTING_NODE_TYPES,
+  WIRING_VIRTUAL_TYPES,
+  convertApiToUi,
+  convertUiToApi,
+  isApiFormat,
+  isUiFormat,
+  looksLikeAssetFilename,
+} from "../workflow-converter.js";
+import { enumeratePacks, resolvePackWorkflowFile } from "../../tools/skills-access.js";
 import { downloadFetch } from "../download-proxy.js";
 import type { InstalledModels } from "./schemas.js";
 
@@ -162,6 +174,119 @@ export interface UpstreamFacade {
   downloadFetch(url: string, init: RequestInit): Promise<Response>;
   /** The Hugging Face token upstream would send (HF_TOKEN, HUGGINGFACE_TOKEN or its env file). */
   huggingfaceToken(): string | undefined;
+  /**
+   * A GET on the configured ComfyUI target with upstream's auth headers (`comfyuiFetch`).
+   * Refuses a URL outside the target's base URL, so those headers never go to a host the
+   * configuration didn't name.
+   */
+  fetchFromTarget(url: string): Promise<Response>;
+  /**
+   * The packs upstream ships, by upstream's own enumeration (`enumeratePacks`, what
+   * `list_packs` lists). Empty also when the packs folder is missing: the caller checks the
+   * folder before it reads an empty list as "no packs".
+   */
+  listPacks(): UpstreamPack[];
+  /**
+   * The workflow file of a pack, resolved as `list_packs` resolves it
+   * (`resolvePackWorkflowFile`: name-guarded, inside the packs folder); undefined when the
+   * pack or its workflow doesn't exist.
+   */
+  packWorkflowFile(name: string): string | undefined;
+  /**
+   * The model entries of a pack's manifest, parsed by upstream's manifest schema
+   * (`loadManifestFile`); undefined when the pack has no manifest. Throws when the manifest
+   * doesn't parse.
+   */
+  packManifestModels(name: string): Promise<PackManifestModel[] | undefined>;
+}
+
+/** A pack as upstream's enumeration reports it, reduced to what Architect reads. */
+export interface UpstreamPack {
+  name: string;
+  family?: string;
+  kind?: string;
+  displayName?: string;
+  description: string;
+  hasWorkflow: boolean;
+}
+
+/** One model entry of a pack manifest: a URL and where upstream would place the file. */
+export interface PackManifestModel {
+  url: string;
+  /** `local_path` as the manifest writes it (`<folder>/<file>`), or `model_type` and `filename`. */
+  localPath?: string;
+  modelType?: string;
+  filename?: string;
+}
+
+// enumeratePacks returns loosely typed rows: pack.yaml values pass through as written, so
+// a field other than name and has_workflow is read only when it is a string.
+const PackRow = z
+  .object({
+    name: z.string().min(1),
+    family: z.unknown(),
+    kind: z.unknown(),
+    display_name: z.unknown(),
+    description: z.unknown(),
+    has_workflow: z.boolean(),
+  })
+  .passthrough();
+
+const stringOrUndefined = (v: unknown): string | undefined => (typeof v === "string" && v.trim().length > 0 ? v : undefined);
+
+/** Node types the frontend keeps and the executable graph never holds (upstream's lists). */
+export const FRONTEND_NOTE_NODE_TYPES: ReadonlySet<string> = new Set(["Note", "MarkdownNote"]);
+/**
+ * Virtual node types upstream's converter resolves into links or widget values: Reroute,
+ * PrimitiveNode and the Get/Set bus nodes (`NON_EXECUTING_NODE_TYPES`, `WIRING_VIRTUAL_TYPES`).
+ */
+export const RESOLVED_VIRTUAL_NODE_TYPES: ReadonlySet<string> = new Set(
+  [...NON_EXECUTING_NODE_TYPES, ...WIRING_VIRTUAL_TYPES].filter((t) => !FRONTEND_NOTE_NODE_TYPES.has(t)),
+);
+
+/** What converting a UI workflow to an API graph gave, as upstream's `convertUiToApi` reports it. */
+export interface UiConversion {
+  graph: WorkflowJSON;
+  warnings: string[];
+  /** Nodes dropped because their class isn't in object_info, by their id after expansion. */
+  missingNodeTypes: { nodeId: string; classType: string }[];
+}
+
+/** Whether a parsed workflow is in the UI (canvas) format: `nodes` and `links` arrays. */
+export function isUiWorkflow(value: unknown): boolean {
+  return isUiFormat(value);
+}
+
+/** Whether a parsed workflow is in the API format: every value a node with a `class_type`. */
+export function isApiWorkflow(value: unknown): boolean {
+  return isApiFormat(value);
+}
+
+/**
+ * Convert a UI workflow to an API graph with upstream's converter, which expands subgraphs
+ * (`definitions.subgraphs`), resolves Reroute, PrimitiveNode and Get/Set wiring, drops
+ * muted and bypassed nodes as ComfyUI's queue does, and maps widget values to input names
+ * by object_info. Throws when `ui` isn't a UI workflow.
+ */
+export function uiToApi(ui: unknown, objectInfo: ObjectInfo): UiConversion {
+  if (!isUiFormat(ui)) throw new Error("not a UI-format workflow (no nodes and links arrays)");
+  const r = convertUiToApi(ui, objectInfo);
+  return { graph: r.workflow, warnings: r.warnings, missingNodeTypes: r.missingNodeTypes.map((m) => ({ nodeId: m.nodeId, classType: m.classType })) };
+}
+
+/**
+ * Convert an API graph to a UI workflow with a generated layout (upstream's
+ * `convertApiToUi`): widget order from object_info's input order, `_meta.title` as the
+ * node title.
+ */
+export function apiToUi(graph: WorkflowJSON, objectInfo: ObjectInfo): { workflow: Record<string, unknown>; warnings: string[] } {
+  const r = convertApiToUi(graph, objectInfo);
+  return { workflow: { ...r.workflow }, warnings: r.warnings };
+}
+
+/** Whether a value has a model or asset file extension, by upstream's converter's rule. */
+export function looksLikeModelFile(value: unknown): boolean {
+  return looksLikeAssetFilename(value);
 }
 
 /**
@@ -301,6 +426,41 @@ export function createUpstreamFacade(): UpstreamFacade {
     },
     downloadFetch: (url, init) => downloadFetch(url, init),
     huggingfaceToken: () => config.huggingfaceToken?.trim() || undefined,
+    fetchFromTarget: (url) => {
+      const base = getComfyUIBaseUrl().replace(/\/+$/, "");
+      if (!url.startsWith(`${base}/`) || new URL(url).origin !== new URL(base).origin) {
+        return Promise.reject(new Error(`${url} is not on the configured ComfyUI target ${base}`));
+      }
+      return comfyuiFetch(url);
+    },
+    listPacks: () =>
+      enumeratePacks().map((row) => {
+        // Throws rather than skipping a row: a pack left out would read as not shipped.
+        const p = PackRow.parse(row);
+        const family = stringOrUndefined(p.family);
+        const kind = stringOrUndefined(p.kind);
+        const displayName = stringOrUndefined(p.display_name);
+        return {
+          name: p.name,
+          ...(family ? { family } : {}),
+          ...(kind ? { kind } : {}),
+          ...(displayName ? { displayName } : {}),
+          description: stringOrUndefined(p.description) ?? "",
+          hasWorkflow: p.has_workflow,
+        };
+      }),
+    packWorkflowFile: (name) => resolvePackWorkflowFile(name) ?? undefined,
+    packManifestModels: async (name) => {
+      const file = resolvePackManifestFile(name);
+      if (file === null) return undefined;
+      const manifest = await loadManifestFile(file);
+      return manifest.models.map((m) => ({
+        url: m.url,
+        ...(m.local_path ? { localPath: m.local_path } : {}),
+        ...(m.model_type ? { modelType: m.model_type } : {}),
+        ...(m.filename ? { filename: m.filename } : {}),
+      }));
+    },
   };
 }
 

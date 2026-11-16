@@ -80,10 +80,13 @@ describe("ArchitectPlanning, prepare to export", () => {
     const selected = planning.select({ planId: prepared.plan.id, candidateId: best.id });
     expect(selected.state).toBe("SELECTED");
 
-    const exported = planning.export({ planId: prepared.plan.id });
+    const exported = await planning.export({ planId: prepared.plan.id });
     expect(exported.dir).toBe(join(dataDir, "artifacts", prepared.task.id, prepared.plan.id));
     const names = exported.files.map((f) => f.split("/").pop()).sort();
-    expect(names).toEqual(["dependencies.lock.json", "plan.json", "task.json", "validation.json", "workflow.api.json"]);
+    expect(names).toEqual(["dependencies.lock.json", "plan.json", "task.json", "validation.json", "workflow.api.json", "workflow.ui.json"]);
+    expect(exported.uiGraph).toMatchObject({ exported: true, file: join(exported.dir, "workflow.ui.json") });
+    const ui = JSON.parse(readFileSync(join(exported.dir, "workflow.ui.json"), "utf-8"));
+    expect(Array.isArray(ui.nodes) && Array.isArray(ui.links)).toBe(true);
     const graph = JSON.parse(readFileSync(join(exported.dir, "workflow.api.json"), "utf-8"));
     expect(Object.values(graph).map((n) => (n as { class_type: string }).class_type)).toContain("SaveImage");
     const lock = JSON.parse(readFileSync(join(exported.dir, "dependencies.lock.json"), "utf-8"));
@@ -120,7 +123,7 @@ describe("ArchitectPlanning, prepare to export", () => {
     const blocked = proposed.candidates.find((c) => c.status === "blocked");
     expect(blocked).toBeDefined();
     expect(() => planning.select({ planId: prepared.plan.id, candidateId: blocked?.id ?? "" })).toThrow(/blocked/);
-    expect(() => planning.export({ planId: prepared.plan.id })).toThrow(/no selected candidate/);
+    await expect(planning.export({ planId: prepared.plan.id })).rejects.toThrow(/no selected candidate/);
   });
 
   it("keeps candidates diagnostic when the node schemas can't be read, so none can be selected", async () => {
@@ -141,7 +144,7 @@ describe("ArchitectPlanning, prepare to export", () => {
     const stored = store.getCandidate(id);
     if (!stored) throw new Error("candidate not stored");
     store.putCandidate({ ...stored, graphFingerprint: "0".repeat(64) });
-    expect(() => planning.export({ planId: prepared.plan.id })).toThrow(/no longer compiles/);
+    await expect(planning.export({ planId: prepared.plan.id })).rejects.toThrow(/no longer compiles/);
   });
 
   it("withdraws the selection when a recheck finds the candidate no longer feasible, and won't export it", async () => {
@@ -155,7 +158,7 @@ describe("ArchitectPlanning, prepare to export", () => {
     expect(rechecked.candidate.status).toBe("blocked");
     expect(rechecked.selectionWithdrawn).toBe(true);
     expect(rechecked.planState).not.toBe("SELECTED");
-    expect(() => planning.export({ planId: prepared.plan.id })).toThrow(/no selected candidate/);
+    await expect(planning.export({ planId: prepared.plan.id })).rejects.toThrow(/no selected candidate/);
     expect(() => planning.select({ planId: prepared.plan.id, candidateId: best.id })).toThrow(/blocked/);
   });
 
@@ -181,8 +184,37 @@ describe("ArchitectPlanning, prepare to export", () => {
     dirs.push(elsewhere);
     mkdirSync(join(dataDir, "artifacts"), { recursive: true });
     symlinkSync(elsewhere, join(dataDir, "artifacts", prepared.task.id));
-    expect(() => planning.export({ planId: prepared.plan.id })).toThrow(/symbolic link/);
+    await expect(planning.export({ planId: prepared.plan.id })).rejects.toThrow(/symbolic link/);
     expect(existsSync(join(elsewhere, prepared.plan.id, "workflow.api.json"))).toBe(false);
+  });
+
+  it("exports without workflow.ui.json, and says why, when the node schemas can't be read at export", async () => {
+    let fail = false;
+    const info = fixtureObjectInfo();
+    const { planning } = setup({ objectInfo: async () => (fail ? Promise.reject(new Error("connect ECONNREFUSED")) : info) });
+    const prepared = await planning.prepare({ task: TASK });
+    const best = (await planning.propose({ planId: prepared.plan.id })).candidates[0];
+    planning.select({ planId: prepared.plan.id, candidateId: best.id });
+    fail = true;
+    const exported = await planning.export({ planId: prepared.plan.id });
+    expect(exported.files.map((f) => f.split("/").pop())).not.toContain("workflow.ui.json");
+    expect(exported.files).toHaveLength(5);
+    expect(exported.uiGraph).toEqual({ exported: false, reason: expect.stringContaining("node schemas couldn't be read") });
+    expect(existsSync(join(exported.dir, "workflow.ui.json"))).toBe(false);
+  });
+
+  it("exports without workflow.ui.json when the UI graph doesn't load back to the same graph", async () => {
+    const info = fixtureObjectInfo();
+    const { planning } = setup({ objectInfo: async () => info });
+    const prepared = await planning.prepare({ task: TASK });
+    const best = (await planning.propose({ planId: prepared.plan.id })).candidates[0];
+    planning.select({ planId: prepared.plan.id, candidateId: best.id });
+    // A sampler the schema no longer offers comes back substituted by upstream's converter.
+    info.KSampler.input.required = { ...info.KSampler.input.required, sampler_name: [["other_sampler"]] };
+    const exported = await planning.export({ planId: prepared.plan.id });
+    expect(exported.uiGraph).toEqual({ exported: false, reason: expect.stringContaining("sampler_name") });
+    expect(existsSync(join(exported.dir, "workflow.ui.json"))).toBe(false);
+    expect(existsSync(join(exported.dir, "workflow.api.json"))).toBe(true);
   });
 
   it("plans only with the recipes the catalog holds now, and warns about files it couldn't load", async () => {
@@ -275,7 +307,7 @@ describe("acquirable candidates through select, validate, export and admission (
     const rechecked = await planning.validate({ planId, candidateId: candidate.id });
     expect(rechecked.candidate.status).toBe("acquirable");
     expect(rechecked.planState).toBe("SELECTED");
-    const exported = planning.export({ planId });
+    const exported = await planning.export({ planId });
     const lock = JSON.parse(readFileSync(join(exported.dir, "dependencies.lock.json"), "utf-8"));
     expect(lock.acquire).toEqual({ files: [{ slot: "checkpoint", folder: "checkpoints", file: MISSING, source: SOURCE }], totalBytes: SOURCE.sizeBytes });
     expect(lock.models).toEqual([expect.objectContaining({ slot: "checkpoint", file: MISSING })]);
@@ -370,7 +402,8 @@ describe("the architect_plan tool", () => {
     expect(best.status).toBe("feasible");
     expect((await call(c, { action: "select", planId, candidateId: best.id })).envelope.summary).toContain("Nothing was run");
     const exported = await call(c, { action: "export", planId });
-    expect(exported.envelope.artifacts).toHaveLength(5);
+    expect(exported.envelope.artifacts).toHaveLength(6);
+    expect(exported.envelope.status).toBe("ok");
     for (const f of exported.envelope.artifacts) expect(existsSync(f)).toBe(true);
   });
 

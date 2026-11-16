@@ -78,14 +78,17 @@ src/services/architect/       the Architect domain: config (modes, forwarded var
                               acquisition-policy (which missing files a candidate may acquire), acquisition (the
                               redirect preflight, staging, sha256 check and placement of approved downloads),
                               evaluation and media-probe (output checks), families (safetensors headers, family rules,
-                              the observation cache), sources (the built-in source registry), cli (the terminal approval
-                              channel), panel
+                              the observation cache), sources (the built-in source registry), templates (listing and
+                              importing templates of the index and the packs, the conversion report), ui-graph (the UI
+                              export and its round trip, AT-11), cli (the terminal approval channel), panel
 src/tools/architect.ts        the architect_* MCP tools (architect_inspect, architect_plan) and the MCP prompts;
                               architect-run.ts registers architect_run and its approval dialogs
-src/__tests__/architect/      Architect tests; fixtures/ holds fixture recipes and node schemas
+src/__tests__/architect/      Architect tests; fixtures/ holds fixture recipes and node schemas, fixtures/templates/ a
+                              trimmed template index and template
 scripts/architect/            Architect scripts: stdio-smoke.mjs, what an MCP client sees with the flag off and on;
                               --plan plans, --run renders on the target, --acquire downloads a pinned file first;
-                              pin-source.mjs, the maintainer tool that pins a recipe's model source
+                              pin-source.mjs, the maintainer tool that pins a recipe's model source; import-template.mjs,
+                              the maintainer tool that imports a template as a draft recipe with its conversion report
 dev/research/                 research notes; index in its README
 architect/recipes/            shipped recipes, *.recipe.json
 architect/families/           shipped model-family rules, <id>.json: tensor names and shapes, with provenance
