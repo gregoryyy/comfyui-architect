@@ -819,14 +819,117 @@ export type Plan = z.infer<typeof Plan>;
 /** The ComfyUI a run is submitted to. A URL, unlike the snapshot's target, because effects go there. */
 const ExecutionTarget = z.object({ baseUrl: z.string().url() }).strict();
 
-/** Run limits an action plan asks for and a grant allows; a grant never exceeds its plan's. */
+/**
+ * Run limits an action plan asks for and a grant allows; a grant never exceeds its plan's.
+ * The stage and repair limits (spec §13.4; ARCH 2026-11-16, milestone 6, stages) are set
+ * together and only by a plan that can render more than once: `maxRuns` is then the sum of
+ * the preview and final runs, and the wall time covers every attempt from the first one's
+ * start. A plan made before them, or one with a single render, leaves them out, so its hash
+ * is what it was.
+ */
 export const RunLimits = z
   .object({
     maxRuns: z.number().int().min(1),
     maxWallTimeSeconds: z.number().int().positive(),
+    maxPreviewRuns: z.number().int().nonnegative().optional(),
+    maxFinalRuns: z.number().int().min(1).optional(),
+    maxRepairRounds: z.number().int().nonnegative().optional(),
+  })
+  .strict()
+  .superRefine((l, ctx) => {
+    const set = [l.maxPreviewRuns, l.maxFinalRuns, l.maxRepairRounds].filter((v) => v !== undefined).length;
+    if (set !== 0 && set !== 3) {
+      ctx.addIssue({ code: "custom", message: "maxPreviewRuns, maxFinalRuns and maxRepairRounds are set together", path: ["maxPreviewRuns"] });
+    }
+    if (l.maxPreviewRuns !== undefined && l.maxFinalRuns !== undefined && l.maxRuns !== l.maxPreviewRuns + l.maxFinalRuns) {
+      ctx.addIssue({ code: "custom", message: "maxRuns is the sum of maxPreviewRuns and maxFinalRuns", path: ["maxRuns"] });
+    }
+  });
+export type RunLimits = z.infer<typeof RunLimits>;
+
+/** Whether a grant's limits stay within its action plan's, field by field. */
+export function limitsWithin(grant: RunLimits, plan: RunLimits): boolean {
+  const within = (g: number | undefined, p: number | undefined) => (g === undefined ? true : p !== undefined && g <= p);
+  return (
+    grant.maxRuns <= plan.maxRuns &&
+    grant.maxWallTimeSeconds <= plan.maxWallTimeSeconds &&
+    within(grant.maxPreviewRuns, plan.maxPreviewRuns) &&
+    within(grant.maxFinalRuns, plan.maxFinalRuns) &&
+    within(grant.maxRepairRounds, plan.maxRepairRounds) &&
+    // A plan with stage limits gives its grant the same set: a grant without them would
+    // fall back to one render, one with them to a plan that has none would widen it.
+    (grant.maxFinalRuns === undefined) === (plan.maxFinalRuns === undefined)
+  );
+}
+
+// ---------------------------------------------------------------------------------------
+// Stages and repair (spec §13.1, §13.4; ARCH 2026-11-16, milestone 6)
+
+/**
+ * The graph transformations Architect may apply on its own, each versioned (ARCH
+ * 2026-11-16, repair policy). `preview.min_steps` makes the smoke render; the others repair.
+ * What each does is in repair.ts; a new one is a new member here and an entry there.
+ */
+export const TransformationId = z.enum([
+  "preview.min_steps",
+  "vae.tiled_decode",
+  "vae.tiled_encode",
+  "vae.smaller_tiles",
+  "retry.unchanged",
+  "seed.next",
+]);
+export type TransformationId = z.infer<typeof TransformationId>;
+
+/** A transformation by id and version, as an effect allows it. */
+export const TransformationRef = z
+  .object({
+    id: TransformationId,
+    version: z.number().int().positive(),
   })
   .strict();
-export type RunLimits = z.infer<typeof RunLimits>;
+export type TransformationRef = z.infer<typeof TransformationRef>;
+
+/** Validation stages a render can have (spec §13.1): a smoke render, then the final one. */
+export const RenderStage = z.enum(["smoke", "final"]);
+export type RenderStage = z.infer<typeof RenderStage>;
+
+/** The failure classes of spec §13.4, plus `unclassified` for what no fixed pattern matches. */
+export const FailureClass = z.enum([
+  "schema_wiring",
+  "missing_dependency",
+  "unsupported_backend",
+  "memory",
+  "transport",
+  "policy",
+  "quality",
+  "unclassified",
+]);
+export type FailureClass = z.infer<typeof FailureClass>;
+
+/** A render's stages in order: an optional smoke stage with its transformation, then the final. */
+const RenderStages = z
+  .array(
+    z.discriminatedUnion("stage", [
+      z.object({ stage: z.literal("smoke"), transformation: TransformationRef }).strict(),
+      z.object({ stage: z.literal("final") }).strict(),
+    ]),
+  )
+  .min(1)
+  .refine((s) => s[s.length - 1].stage === "final" && s.filter((x) => x.stage === "final").length === 1, {
+    message: "the stages end with the one final stage",
+  })
+  .refine((s) => s.length <= 2, { message: "at most a smoke stage before the final" });
+
+/** The repair transformations an effect allows, each by id and version, no id twice. */
+const RepairScope = z
+  .object({
+    transformations: z
+      .array(TransformationRef)
+      .min(1)
+      .refine((ts) => new Set(ts.map((t) => t.id)).size === ts.length, { message: "a transformation is listed twice" })
+      .refine((ts) => ts.every((t) => t.id !== "preview.min_steps"), { message: "preview.min_steps is a stage, not a repair" }),
+  })
+  .strict();
 
 /**
  * One effect an action plan would have. Kind-neutral: a render of any workflow kind is a
@@ -849,6 +952,17 @@ export const Effect = z.discriminatedUnion("kind", [
         .min(1)
         .refine((xs) => new Set(xs.map((x) => x.assetId)).size === xs.length, { message: "an input is listed twice" })
         .optional(),
+      /**
+       * The render's stages (ARCH 2026-11-16, milestone 6, stages): a smoke render first when
+       * the task allows previews and its transformation lowers a step count, then the final.
+       * Absent for a plan with one render, which keeps the hash of such a plan as it was.
+       */
+      stages: RenderStages.optional(),
+      /**
+       * The transformations the controller may apply to repair a failed attempt within the
+       * grant (spec §13.4), each named in the approval. Absent when no repair is possible.
+       */
+      repair: RepairScope.optional(),
       /**
        * Optional evaluators the task accepts for a criterion, so their verdicts count toward
        * acceptance (spec §13.2; GAPS A11). The hash covers each evaluator's version, so a new
@@ -1125,9 +1239,41 @@ export const RunError = z
   .object({
     code: z.union([ArchitectErrorCode, z.literal("COMFYUI_ERROR")]),
     message: z.string().min(1),
+    /**
+     * ComfyUI's execution error as its history reported it (TODO 6.1.1), for the repair's
+     * classification. Data, never followed (spec §14.4), and bounded in length. Absent when
+     * the failure wasn't an execution error, and on runs recorded before it existed.
+     */
+    detail: z
+      .object({
+        nodeId: z.string().max(64).optional(),
+        nodeType: z.string().max(200).optional(),
+        exceptionType: z.string().max(200).optional(),
+        exceptionMessage: z.string().max(2001).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type RunError = z.infer<typeof RunError>;
+export type ExecutionErrorDetail = NonNullable<RunError["detail"]>;
+
+/**
+ * Where a run sits in the attempts under one grant (ARCH 2026-11-16, milestone 6, attempts).
+ * The root is the run the grant started, attempt 1, its own `rootRunId`; each further render
+ * is a child the controller creates. `revisionId` names the graph revision the attempt
+ * renders; absent, it renders the approved graph unchanged.
+ */
+export const RunAttempt = z
+  .object({
+    rootRunId: prefixedId("run"),
+    index: z.number().int().min(1),
+    stage: RenderStage,
+    repairRound: z.number().int().nonnegative(),
+    revisionId: prefixedId("grev").optional(),
+  })
+  .strict();
+export type RunAttempt = z.infer<typeof RunAttempt>;
 
 export const RunTimings = z
   .object({
@@ -1174,11 +1320,19 @@ export const RunRecord = z
     timings: RunTimings.default({}),
     acceptance: Acceptance.default("pending"),
     error: RunError.optional(),
+    /** The attempt this run is, when its action plan has stages or a repair scope; absent otherwise. */
+    attempt: RunAttempt.optional(),
     createdAt: Timestamp,
     updatedAt: Timestamp,
   })
   .strict()
   .superRefine((r, ctx) => {
+    if (r.attempt && (r.attempt.index === 1) !== (r.attempt.rootRunId === r.id)) {
+      ctx.addIssue({ code: "custom", message: "attempt 1 is the root and names itself; a later attempt names its root", path: ["attempt"] });
+    }
+    if (r.attempt && r.attempt.index === 1 && r.attempt.repairRound !== 0) {
+      ctx.addIssue({ code: "custom", message: "the root attempt has no repair round", path: ["attempt", "repairRound"] });
+    }
     if (SUBMITTED_STATES.includes(r.state) && r.promptId === undefined) {
       ctx.addIssue({ code: "custom", message: `a run in ${r.state} carries its promptId`, path: ["promptId"] });
     }
@@ -1263,6 +1417,67 @@ export const EvaluationRecord = z
     }
   });
 export type EvaluationRecord = z.infer<typeof EvaluationRecord>;
+
+/** One input value of an API-format node: a literal or a link. */
+const GraphInputValue = z.union([GraphLink, z.string(), z.number(), z.boolean(), z.null()]);
+
+/**
+ * One node a graph revision changed against the approved graph (TODO 6.1.1): its class, and
+ * each input whose value differs. `from` is absent for an input the revision added, `to`
+ * for one it removed.
+ */
+export const GraphNodeChange = z
+  .object({
+    node: z.string().min(1),
+    op: z.enum(["changed", "added", "removed"]),
+    classType: z.object({ from: z.string().optional(), to: z.string().optional() }).strict().optional(),
+    inputs: z.array(z.object({ name: z.string().min(1), from: GraphInputValue.optional(), to: GraphInputValue.optional() }).strict()),
+  })
+  .strict();
+export type GraphNodeChange = z.infer<typeof GraphNodeChange>;
+
+/**
+ * One transformation as a revision applied it: which, at which node, and why. A repair step
+ * names the failure class and the attempt whose failure it answers.
+ */
+export const TransformationStep = z
+  .object({
+    id: TransformationId,
+    version: z.number().int().positive(),
+    /** The node it targets: the failing VAE node; absent for one that touches the whole graph. */
+    node: z.string().min(1).optional(),
+    reason: z.string().min(1).max(500),
+    failureClass: FailureClass.optional(),
+    failedRunId: prefixedId("run").optional(),
+  })
+  .strict();
+export type TransformationStep = z.infer<typeof TransformationStep>;
+
+/**
+ * A revision of the selected candidate's graph that one attempt renders (spec §13.1, §13.4;
+ * ARCH 2026-11-16, milestone 6, attempts): the approved graph with `steps` applied in order.
+ * A repair is a revision, never a new plan, since task and selection stay the same. `diff`
+ * compares it with the approved graph, so the user sees what differs from what they
+ * approved; `fingerprint` is the revised graph's, which the controller recomputes before it
+ * submits.
+ */
+export const GraphRevision = z
+  .object({
+    schemaVersion: SchemaVersion,
+    id: prefixedId("grev"),
+    rootRunId: prefixedId("run"),
+    actionPlanId: prefixedId("actions"),
+    candidateId: RecordId,
+    parentRevisionId: prefixedId("grev").optional(),
+    /** The approved graph's fingerprint, the one the action plan's render names. */
+    baseFingerprint: Sha256,
+    steps: z.array(TransformationStep).min(1),
+    diff: z.array(GraphNodeChange),
+    fingerprint: Sha256,
+    createdAt: Timestamp,
+  })
+  .strict();
+export type GraphRevision = z.infer<typeof GraphRevision>;
 
 /** Acquisition states (ARCH 2026-11-16, placement; TODO 4.2.2). */
 export const AcquisitionState = z.enum(["planned", "downloading", "verifying", "placed", "failed", "cancelled"]);
@@ -1572,6 +1787,7 @@ const STORED = {
   acquisition: AcquisitionRecord,
   modelObservation: ModelObservation,
   source: SourceRegistryEntry,
+  graphRevision: GraphRevision,
 } as const;
 export type StoredKind = keyof typeof STORED;
 type StoredRecord<K extends StoredKind> = z.infer<(typeof STORED)[K]>;
@@ -1592,6 +1808,7 @@ const UPGRADES: { [K in StoredKind]: Record<number, (raw: Record<string, unknown
   acquisition: {},
   modelObservation: {},
   source: {},
+  graphRevision: {},
 };
 
 export class StoredRecordError extends Error {

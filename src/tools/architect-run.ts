@@ -145,12 +145,15 @@ export function registerArchitectRunTool(server: McpServer, context: () => RunTo
       "and an approval request; tell the user what will run. For an acquirable candidate the action plan also downloads its missing " +
       "model files first, each from the source its recipe pins (Hugging Face, a fixed commit), checked against its sha256 before it is " +
       "placed: tell the user each file, its size and where it goes. You never supply a URL or a file. " +
+      "An action plan may also name a smoke render (one sampler step, full size, nothing saved to the output folder) before the final " +
+      "render, and the repairs the controller applies on its own to a failed attempt within the same approval and limits: tell the user both. " +
       'action:"start" with `actionPlanId` starts the run when the user has approved: where the client supports it, the user is asked ' +
       "in a dialog; otherwise the reply says APPROVAL_REQUIRED and names a terminal command the user runs themselves. You can't " +
       "approve for the user, and you must not run that command. From the ComfyUI panel's agent, start is refused unless the operator allowed it: plan there, run from an external client. " +
       "Starting the same action plan again returns the same run, never a second render. " +
       'action:"status" with `runId` reconciles with ComfyUI and returns the state, the downloads\' progress (PREPARING while they run), outputs, checks and three separate verdicts: ' +
-      "execution, acceptance and the user's. OUTCOME_UNKNOWN means a submission's result was lost: never prepare and start the same plan " +
+      "execution, acceptance and the user's; for a plan with stages they are the final attempt's, and `attempts` lists each render with its stage, " +
+      "state, transformations and diff. A smoke render's result is never the final's. OUTCOME_UNKNOWN means a submission's result was lost: never prepare and start the same plan " +
       "again to retry; report it and keep calling status. " +
       'action:"cancel" with `runId` cancels this run\'s own job and downloads only. ' +
       'action:"evaluate" with `runId` asks the user for their verdict on the outputs; `reportedVerdict` records only what the user told ' +
@@ -186,6 +189,18 @@ export function registerArchitectRunTool(server: McpServer, context: () => RunTo
           }
           case "status": {
             const r = await x.status({ runId: need(args.runId, "runId", "status") });
+            if (r.chain && r.attempts) {
+              // Attempts under one grant: the summary names the attempt in flight and the
+              // result, the final attempt's; a smoke attempt's result is never the final's.
+              const current = r.attempts.at(-1);
+              const unknown = r.attempts.some((a) => a.state === "OUTCOME_UNKNOWN");
+              const status = unknown || r.verdicts.execution === "failed" || r.verdicts.execution === "not_run" ? "partial" : "ok";
+              const at = current ? `attempt ${current.index} (${current.stage}) is ${current.state}` : "no attempt";
+              const end = r.chain.state === "stopped" ? `; the attempts stopped (${r.chain.stopRule})` : "";
+              return envelope(status, `Run ${r.chain.rootRunId}: ${at}${end}; result: execution ${r.verdicts.execution}, acceptance ${r.verdicts.acceptance}.`, r, {
+                warnings: r.attempts.flatMap((a) => (a.error ? [`attempt ${a.index}: ${a.error.code} (${a.error.failureClass}): ${a.error.message}`] : [])),
+              });
+            }
             const status = r.run.state === "OUTCOME_UNKNOWN" || r.run.state === "FAILED" ? "partial" : "ok";
             return envelope(status, `Run ${r.run.id} is ${r.run.state}; acceptance ${r.run.acceptance}.`, r, status === "partial" && r.run.error ? { warnings: [`${r.run.error.code}: ${r.run.error.message}`] } : {});
           }

@@ -5,9 +5,11 @@
 
 import { graphFingerprint } from "../../../services/architect/compile.js";
 import type { FetchLike } from "../../../services/architect/resources.js";
+import { buildRevision, smokeStep } from "../../../services/architect/repair.js";
 import {
   type AcquireModelsEffect,
   type ApiGraph,
+  type LocalRenderEffect,
   type ReleaseResidencyEffect,
   type RenderInput,
   type RunRecord,
@@ -37,14 +39,42 @@ export interface SeedOptions {
   acquire?: AcquireModelsEffect;
   /** The input files the render's grant binds (TODO 5.7.2). */
   inputs?: RenderInput[];
+  /**
+   * Attempts under one grant (TODO 6.1, 6.2): the render's stages and repair scope and the
+   * stage limits, for `graph`. With a smoke stage the root renders the smoke revision.
+   */
+  chain?: {
+    graph: ApiGraph;
+    outputNodes: string[];
+    stages: NonNullable<LocalRenderEffect["stages"]>;
+    repair?: NonNullable<LocalRenderEffect["repair"]>;
+    limits: { maxPreviewRuns: number; maxFinalRuns: number; maxRepairRounds: number };
+  };
+}
+
+/** The approved graph's fingerprint for a seed: the chain's graph, else GRAPH. */
+export function seededFingerprint(opts: SeedOptions): string {
+  return opts.chain ? graphFingerprint(opts.chain.graph) : GRAPH_FINGERPRINT;
 }
 
 /** Seed everything up to a run in PREPARING and return it. */
 export function seedRun(store: ArchitectStore, opts: SeedOptions = {}): RunRecord {
-  const budgets = { maxRuns: 1, maxWallTimeSeconds: opts.maxWallTimeSeconds ?? 600 };
+  const wall = opts.maxWallTimeSeconds ?? 600;
+  const chain = opts.chain;
+  const fingerprint = seededFingerprint(opts);
+  const budgets = chain
+    ? { maxRuns: chain.limits.maxPreviewRuns + chain.limits.maxFinalRuns, maxWallTimeSeconds: wall, ...chain.limits }
+    : { maxRuns: 1, maxWallTimeSeconds: wall };
   const effects = [
     ...(opts.acquire ? [opts.acquire] : []),
-    { kind: "local_render" as const, graphFingerprint: GRAPH_FINGERPRINT, outputNodes: ["2"], ...(opts.inputs ? { inputs: opts.inputs } : {}) },
+    {
+      kind: "local_render" as const,
+      graphFingerprint: fingerprint,
+      outputNodes: chain?.outputNodes ?? ["2"],
+      ...(opts.inputs ? { inputs: opts.inputs } : {}),
+      ...(chain ? { stages: chain.stages } : {}),
+      ...(chain?.repair ? { repair: chain.repair } : {}),
+    },
     ...(opts.release ? [opts.release] : []),
   ];
   const binding = {
@@ -60,12 +90,35 @@ export function seedRun(store: ArchitectStore, opts: SeedOptions = {}): RunRecor
   store.putTaskRevision({ ...task, ...opts.task });
   store.putSnapshot(env);
   store.putPlan(plan);
-  store.putCandidate({ ...candidate, graphFingerprint: GRAPH_FINGERPRINT, roleMap: { image: "2" } });
+  store.putCandidate({ ...candidate, graphFingerprint: fingerprint, roleMap: { image: chain?.outputNodes[0] ?? "2" } });
   store.putActionPlan({ ...actionPlan, effects, budgets, hash });
   store.putApprovalRequest({ ...approvalRequest, actionPlanHash: hash });
   store.resolveApprovalRequest(approvalRequest.id, "granted", new Date("2026-11-15T12:01:00.000Z"));
   store.putGrant({ ...grant, actionPlanHash: hash, limits: budgets });
-  return store.createRunWithGrant({ run: { ...run, graphFingerprint: GRAPH_FINGERPRINT }, grantId: grant.id, now: RUN_CREATED }).run;
+  if (!chain) return store.createRunWithGrant({ run: { ...run, graphFingerprint: fingerprint }, grantId: grant.id, now: RUN_CREATED }).run;
+  const smoke = chain.stages.find((s) => s.stage === "smoke");
+  const revision = smoke
+    ? buildRevision({
+        id: "grev-smoke",
+        rootRunId: run.id,
+        actionPlanId: actionPlan.id,
+        candidateId: candidate.id,
+        approved: chain.graph,
+        approvedFingerprint: fingerprint,
+        steps: [smokeStep(smoke.transformation)],
+        at: RUN_CREATED,
+      }).revision
+    : undefined;
+  return store.createRunWithGrant({
+    run: {
+      ...run,
+      graphFingerprint: fingerprint,
+      attempt: { rootRunId: run.id, index: 1, stage: smoke ? "smoke" : "final", repairRound: 0, ...(revision ? { revisionId: revision.id } : {}) },
+    },
+    grantId: grant.id,
+    now: RUN_CREATED,
+    ...(revision ? { revision } : {}),
+  }).run;
 }
 
 /** The loopback Ollama host the fakes answer for. */
