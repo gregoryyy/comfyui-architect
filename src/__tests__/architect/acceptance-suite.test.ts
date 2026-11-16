@@ -48,25 +48,6 @@ const loaded = loadAcceptanceFixtures();
 const inputs: AcceptanceInputs = loaded.inputs ?? { schemaVersion: 1, folder: "architect-acceptance", files: [] };
 const shipped: Recipe[] = loadRecipeDir(SHIPPED_RECIPES_DIR, { shipped: true }).recipes.map((r) => r.recipe);
 
-/**
- * Fixtures whose expectation planning doesn't meet today, with the reason and what planning
- * does instead. Each runs twice: as `it.fails` against the fixture's expectation, so it flips
- * to a failure once planning meets it, and as `it` against the observed behaviour, so nothing
- * else about it can regress unseen. The fixtures keep their expectations: which side changes
- * is the orchestrator's decision.
- *
- * All five have one cause: planner.ts `addBlockers` files a failing contract check under
- * `unsupported_operation` only for `contract.operation*` and `contract.task.inputs.*`, and
- * every other failing contract check under `missing_dependencies`, though nothing can be
- * installed to resolve these.
- */
-const KNOWN_DISAGREEMENTS: Record<string, { reason: string; actual: BlockerCategory }> = {
-  "at-22": { reason: "contract.task.count fails and is filed under missing_dependencies", actual: "missing_dependencies" },
-  "at-23": { reason: "contract.task.format fails and is filed under missing_dependencies", actual: "missing_dependencies" },
-  "at-24": { reason: "contract.task.width and .height (the latent's step) fail and are filed under missing_dependencies", actual: "missing_dependencies" },
-  "at-27": { reason: "contract.mask_size fails and is filed under missing_dependencies", actual: "missing_dependencies" },
-  "at-28": { reason: "contract.protected_region.outside-mask fails and is filed under missing_dependencies", actual: "missing_dependencies" },
-};
 
 // ---------------------------------------------------------------------------------------
 // The reference target, as data
@@ -309,13 +290,7 @@ describe("the acceptance fixtures", () => {
 describe("the acceptance suite against the reference target (AT-01, AT-02)", () => {
   for (const f of loaded.fixtures) {
     const label = `${f.id} (${f.expect.outcome}${f.expect.outcome === "blocked" ? `: ${f.expect.category}` : ""}): ${f.title}`;
-    const known = KNOWN_DISAGREEMENTS[f.id];
-    if (known) {
-      it.fails(`${label} [known disagreement: ${known.reason}]`, () => checkFixture(f));
-      it(`${f.id} as planned today: blocked, with the reason under ${known.actual}`, () => checkFixture(f, known.actual));
-    } else {
-      it(label, () => checkFixture(f));
-    }
+    it(label, () => checkFixture(f));
   }
 });
 

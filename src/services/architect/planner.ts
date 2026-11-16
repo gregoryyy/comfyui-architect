@@ -211,9 +211,11 @@ function addBlockers(into: PlanBlockers, recipe: Recipe, checks: readonly CheckR
     if (c.verdict === "unknown") into.insufficient_evidence.push(line);
     else if (c.layer === "dependencies") into.missing_dependencies.push(line);
     else if (c.layer === "policy") into.policy_conflicts.push(line);
-    // A task input no slot takes, or an asset form Architect can't resolve, is unsupported
-    // by the recipe (GAPS Q16), not a dependency to install.
-    else if (c.layer === "contract" && (c.id.startsWith("contract.operation") || c.id.startsWith("contract.task.inputs."))) into.unsupported_operation.push(line);
+    // A contract failure says the recipe can't serve what the task asks for: an operation,
+    // an input no slot takes or an asset form Architect can't resolve (GAPS Q16), a count,
+    // format or size the outputs don't declare, a mask of another size, a protected region
+    // the graph doesn't guarantee. Nothing installable resolves it (spec §9.5).
+    else if (c.layer === "contract") into.unsupported_operation.push(line);
     else into.missing_dependencies.push(line);
   }
 }
