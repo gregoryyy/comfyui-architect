@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "at-29",
+  "title": "Local render on a remote target",
+  "expect": {
+    "outcome": "blocked",
+    "category": "policy_conflicts"
+  },
+  "live": "fixture_only",
+  "why": "The task renders locally only and the fixture's target isn't loopback (spec \u00a714).",
+  "task": {
+    "intent": "A red bicycle leaning against a white wall, soft morning light.",
+    "media": {
+      "kind": "image",
+      "operation": "text_to_image",
+      "output": {
+        "width": 1024,
+        "height": 1024
+      }
+    }
+  },
+  "recipeIds": [
+    "recipe-zimage-turbo.t2i"
+  ],
+  "environment": {
+    "targetBaseUrl": "http://192.168.1.20:8188"
+  }
+}

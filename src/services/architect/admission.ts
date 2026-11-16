@@ -15,6 +15,7 @@ import { type AcquisitionIo, diskShortfall, freeDiskBytesSync, hfEndpointRefusal
 import { MIN_FREE_DISK_BYTES, acquisitionPolicy, formatBytes } from "./acquisition-policy.js";
 import { ARCHITECT_PANEL_RUNS_ENV, onPanelRoute, panelRunsAllowed } from "./config.js";
 import { canonicalJson, sha256Hex } from "./hash.js";
+import { acceptedEvaluatorsFor, evaluatorApprovalLines } from "./evaluators/catalog.js";
 import type { ArchitectPlanning } from "./planning.js";
 import {
   type AcquireModelsEffect,
@@ -193,6 +194,7 @@ function binding(
 ) {
   const wallTime =
     ctx.task.budgets.maxWallTimeSeconds ?? DEFAULT_MAX_WALL_TIME_SECONDS + (acquire ? downloadAllowanceSeconds(acquire.totalBytes) : 0);
+  const accepted = acceptedEvaluatorsFor(ctx.task);
   return {
     planId: ctx.plan.id,
     taskId: ctx.task.id,
@@ -209,6 +211,8 @@ function binding(
         ...(inputs ? { inputs } : {}),
         ...(attempts ? { stages: attempts.stages } : {}),
         ...(attempts?.repair ? { repair: attempts.repair } : {}),
+        // The evaluators the task accepts, so the approval accepts them (GAPS A11).
+        ...(accepted ? { acceptedEvaluators: accepted } : {}),
       },
       ...(residency ? [residency] : []),
     ] satisfies Effect[],
@@ -606,6 +610,8 @@ export function describeActionPlan(store: ArchitectStore, actionPlan: ActionPlan
     ...(candidate ? [`Models: ${Object.entries(candidate.bindings).filter(([, v]) => typeof v === "string" && /\.(safetensors|ckpt|pt|pth|bin|gguf)$/i.test(String(v))).map(([k, v]) => `${k}=${String(v)}`).join(", ") || "none"}`] : []),
     // One line per entry: `printable` turns a newline inside a line into a visible mark.
     ...actionPlan.effects.flatMap((e) => describeEffect(e, freeDisk).split("\n")),
+    // Whether an optional evaluator's verdict counts: approving accepts it (spec §13.2; GAPS A11).
+    ...(task ? evaluatorApprovalLines(task, actionPlan.effects.find((e): e is Extract<Effect, { kind: "local_render" }> => e.kind === "local_render")?.acceptedEvaluators) : []),
     `Target: ${actionPlan.target.baseUrl}`,
     limitsLine(actionPlan) + wallTimeNote(task, actionPlan),
     `Memory and time: unknown; nothing has been measured for this recipe here, so this run is the bounded probe that measures it`,

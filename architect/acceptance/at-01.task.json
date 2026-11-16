@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "at-01",
+  "title": "Z-Image Turbo, text to image",
+  "expect": {
+    "outcome": "feasible",
+    "recipes": [
+      "recipe-zimage-turbo.t2i"
+    ]
+  },
+  "recipeIds": [
+    "recipe-zimage-turbo.t2i"
+  ],
+  "live": "render",
+  "why": "The base text-to-image recipe at its native size.",
+  "task": {
+    "intent": "A red bicycle leaning against a white wall, soft morning light.",
+    "media": {
+      "kind": "image",
+      "operation": "text_to_image",
+      "output": {
+        "width": 1024,
+        "height": 1024
+      }
+    }
+  }
+}

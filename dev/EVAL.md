@@ -48,6 +48,18 @@ No evaluation has run yet. Every number below is a proposed target.
 - **Measures:** schema-valid proposals per attempt (at most two repair attempts), correct tool choice, plan acceptance by the validator, latency per proposal.
 - **Success:** a model qualifies when its proposals pass validation without repair on most fixture tasks *(proposed; the threshold is set with the first measurements)*. Parameter count isn't a criterion.
 
+## Test matrix
+
+The matrix the acceptance suite runs on (GAPS Q28; TODO 6.6). Claims about real devices hold for this machine only.
+
+| Profile | Device | Runtime | Used for |
+| --- | --- | --- | --- |
+| Reference Mac (real) | Apple M5 Pro, 48 GB unified memory, one MPS device; macOS 27.2 | ComfyUI Desktop 0.44.0 (standalone, PyTorch 2.12.1, Python 3.13, frontend 1.58.5, templates 0.11.103), core nodes only; Ollama 0.40.16 with `glm-ocr:bf16`; the fork's server on Node 22 or newer | Live renders of the 20 feasible fixtures, live planning of the conflicts without an environment change, AT-04, AT-09 |
+| Apple unified memory (fixture) | The reference Mac's device snapshot as recorded | Node schemas of ComfyUI Desktop 0.44.0 (`object-info-desktop-0.44.0.json`) and the recorded model lists | CI: AT-01, AT-02, AT-10 (one pool, nothing counted twice) |
+| Dedicated GPU (fixture) | A CUDA device with its own VRAM next to system RAM, as data only | The same node schemas | CI: AT-10 (two pools); no claim about such a device |
+
+No paid or cloud machine is part of the matrix (RunPod and similar stay out). The models are the shipped recipes' pinned files as placed on the reference target after milestone 5 (23.6 GB downloaded, [DONE](DONE.md)).
+
 ## Limitations
 
 - **One reference machine** (Apple M5 Pro, 48 GB) until another is available; real-device claims are made for tested hardware only.

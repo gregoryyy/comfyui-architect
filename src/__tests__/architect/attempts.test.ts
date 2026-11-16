@@ -417,7 +417,7 @@ class FakeComfy {
   }
 }
 
-function chainHarness(opts: { chain?: SeedOptions["chain"]; task?: Record<string, unknown> } = {}) {
+function chainHarness(opts: { chain?: SeedOptions["chain"]; task?: Record<string, unknown>; visualEvaluation?: RunControllerDeps["visualEvaluation"] } = {}) {
   const store = openStore();
   const root = seedRun(store, { chain: opts.chain ?? CHAIN, ...(opts.task ? { task: opts.task } : {}) });
   const comfy = new FakeComfy();
@@ -436,6 +436,7 @@ function chainHarness(opts: { chain?: SeedOptions["chain"]; task?: Record<string
       if (!t) throw new Error("task missing");
       return t;
     },
+    ...(opts.visualEvaluation ? { visualEvaluation: opts.visualEvaluation } : {}),
   });
   const notUsed = () => {
     throw new Error("not used by status");
@@ -534,8 +535,15 @@ describe("the controller's attempts (TODO 6.1.3, 6.2.1)", () => {
     expect(status.attempts?.[2].graph).toMatchObject({ transformations: [{ id: "vae.tiled_decode", node: "6", failureClass: "memory" }] });
   });
 
-  it("evaluates a smoke on the built-in checks only and never reports it as the result", async () => {
-    const h = chainHarness({ task: { acceptance: [{ id: "looks-right", kind: "user_review", required: true, rubric: "A red bicycle?" }, { id: "size", kind: "dimensions", required: true, expected: [512, 512] }] } });
+  it("evaluates a smoke on the built-in checks only, runs no visual evaluator on it, and never reports it as the result", async () => {
+    const visualRuns: string[] = [];
+    const visualEvaluation: NonNullable<RunControllerDeps["visualEvaluation"]> = {
+      evaluate: async (input) => {
+        visualRuns.push(input.run.id);
+        throw new Error("a visual evaluator ran");
+      },
+    };
+    const h = chainHarness({ visualEvaluation, task: { acceptance: [{ id: "looks-right", kind: "user_review", required: true, rubric: "A red bicycle?" }, { id: "size", kind: "dimensions", required: true, expected: [512, 512] }] } });
     await h.controller.advance(h.root.id);
     const smoke = h.comfy.submitted[0];
     h.comfy.files.set("smoke.png", await png(1024, 1024));
@@ -547,6 +555,7 @@ describe("the controller's attempts (TODO 6.1.3, 6.2.1)", () => {
     expect(evals.get("size")).toBe("not_applicable");
     expect(evals.get("looks-right")).toBe("not_applicable");
     expect(evals.get("output_dimensions")).toBe("pass");
+    expect(visualRuns).toEqual([]);
     // The final is underway, and the result isn't the smoke's.
     const status = await h.execution.status({ runId: h.root.id });
     expect(status.verdicts.acceptance).toBe("pending");

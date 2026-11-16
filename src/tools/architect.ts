@@ -19,8 +19,9 @@ import { ARCHITECT_SCHEMA_VERSION } from "../fork-identity.js";
 import { ModelAcquirer, defaultAcquisitionIo } from "../services/architect/acquisition.js";
 import { formatBytes } from "../services/architect/acquisition-policy.js";
 import { requireFeasible, requireInputsUnchanged } from "../services/architect/admission.js";
-import { ARCHITECT_RESIDENCY_ENV, architectEnabled } from "../services/architect/config.js";
+import { ARCHITECT_RESIDENCY_ENV, architectEnabled, ocrModelPreference } from "../services/architect/config.js";
 import { RunController } from "../services/architect/controller.js";
+import { VisualEvaluation } from "../services/architect/evaluators/registry.js";
 import { ArchitectExecution } from "../services/architect/execution.js";
 import { FamilyObserver, loadFamilyRules } from "../services/architect/families.js";
 import { ensureBuiltInSources } from "../services/architect/sources.js";
@@ -172,6 +173,8 @@ function defaultRunContext(planning: PlanningFactory, upstream: UpstreamFacade):
         await requireFeasible(p, run.planId, run.candidateId, bytes);
       },
       acquirer,
+      // Protected regions and OCR after the render (TODO 6.3, 6.4): through the facade only.
+      visualEvaluation: new VisualEvaluation({ io: upstream, ocrModel: () => ocrModelPreference() }),
     });
     const execution = new ArchitectExecution({
       store,

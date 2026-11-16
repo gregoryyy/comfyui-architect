@@ -123,6 +123,28 @@ export interface UpstreamFacade {
    */
   decodeImage(bytes: Buffer): Promise<{ width: number; height: number; channels?: number }>;
   /**
+   * Decode an image to 8-bit RGB pixels with sharp: EXIF orientation applied and alpha
+   * dropped, as ComfyUI's image loaders read a file (PIL's `exif_transpose`, then
+   * `convert("RGB")`). Reports what the file carries that the decoded pixels can't show:
+   * an embedded ICC profile (sharp converts through it, PIL doesn't) and the sample depth.
+   * Throws when the data doesn't decode; throws ImageDecoderUnavailableError when sharp
+   * can't be loaded.
+   */
+  decodePixels(bytes: Buffer): Promise<DecodedPixels>;
+  /**
+   * The image as a PNG whose long side is at most `maxSide` pixels, orientation applied, for
+   * a model that reads images. Throws as `decodePixels` does.
+   */
+  imageForModel(bytes: Buffer, maxSide: number): Promise<{ png: Buffer; width: number; height: number }>;
+  /**
+   * A JSON request to an Ollama host (`GET` without a body, `POST` with one), the response
+   * read up to `OLLAMA_RESPONSE_MAX_BYTES`. Refuses a host that isn't loopback before
+   * anything is sent, since a request may carry an image that must not leave the machine.
+   * Throws on a refused host, a network failure, a timeout or an oversized body; any HTTP
+   * status is returned, with the body parsed when it is JSON.
+   */
+  ollamaJson(host: string, path: string, init: { body?: unknown; timeoutMs: number }): Promise<{ status: number; json: unknown }>;
+  /**
    * Whether a host is this machine: loopback, or an address of one of its interfaces
    * (upstream's `isOwnHostAddress`). False also for a name, which it doesn't resolve.
    */
@@ -325,10 +347,10 @@ export function presetWithholds(preset: string, toolName: string): boolean {
 export const MAX_INPUT_FILE_BYTES = MAX_PREVIEW_SOURCE_BYTES;
 
 /** A response body, refused past `maxBytes` (by its length header, then as it streams). */
-async function readBounded(res: Response, maxBytes: number, name: string): Promise<Buffer> {
+async function readBounded(res: Response, maxBytes: number, name: string, what = `input "${name}"`): Promise<Buffer> {
   const declared = Number(res.headers.get("content-length") ?? "");
-  if (Number.isFinite(declared) && declared > maxBytes) throw new Error(`input "${name}" is ${declared} bytes, over the ${maxBytes}-byte bound`);
-  if (!res.body) throw new Error(`ComfyUI /view sent no body for "${name}"`);
+  if (Number.isFinite(declared) && declared > maxBytes) throw new Error(`${what} is ${declared} bytes, over the ${maxBytes}-byte bound`);
+  if (!res.body) throw new Error(`${what} came without a body`);
   const chunks: Buffer[] = [];
   let total = 0;
   const reader = res.body.getReader();
@@ -338,7 +360,7 @@ async function readBounded(res: Response, maxBytes: number, name: string): Promi
     total += value.byteLength;
     if (total > maxBytes) {
       await reader.cancel();
-      throw new Error(`input "${name}" is over the ${maxBytes}-byte bound`);
+      throw new Error(`${what} is over the ${maxBytes}-byte bound`);
     }
     chunks.push(Buffer.from(value));
   }
@@ -350,6 +372,22 @@ export function splitInputName(name: string): { subfolder: string; filename: str
   const cut = name.lastIndexOf("/");
   return cut < 0 ? { subfolder: "", filename: name } : { subfolder: name.slice(0, cut), filename: name.slice(cut + 1) };
 }
+
+/** An image decoded to 8-bit RGB, row by row, three bytes a pixel (`decodePixels`). */
+export interface DecodedPixels {
+  width: number;
+  height: number;
+  data: Buffer;
+  /** Whether the file embeds an ICC profile, through which sharp converted the pixels. */
+  hasIccProfile: boolean;
+  /** Bits per sample in the file, when the decoder reports it (8 for palette and 1-bit files too). */
+  bitsPerSample?: number;
+  /** The decoder's sample format of the file (`uchar` for 8 bits, `ushort` for 16). */
+  sampleFormat?: string;
+}
+
+/** The largest Ollama response `ollamaJson` reads. */
+export const OLLAMA_RESPONSE_MAX_BYTES = 1_000_000;
 
 /** sharp couldn't be loaded, so no image was decoded: not a verdict on the image. */
 export class ImageDecoderUnavailableError extends Error {
@@ -423,6 +461,52 @@ export function createUpstreamFacade(): UpstreamFacade {
       // The decoded buffer is converted to sRGB; the file's own channel count is the header's.
       const meta = await loaded.sharp(bytes).metadata();
       return { width: info.width, height: info.height, ...(meta.channels !== undefined ? { channels: meta.channels } : {}) };
+    },
+    decodePixels: async (bytes) => {
+      const loaded = await tryLoadSharp();
+      if (!loaded.ok) throw new ImageDecoderUnavailableError(sharpUnavailableMessage("Image decoding", loaded.err));
+      const meta = await loaded.sharp(bytes).metadata();
+      const { data, info } = await loaded.sharp(bytes).autoOrient().removeAlpha().toColourspace("srgb").raw().toBuffer({ resolveWithObject: true });
+      if (info.channels !== 3) throw new Error(`the image decoded to ${info.channels} channels, not RGB`);
+      return {
+        width: info.width,
+        height: info.height,
+        data,
+        hasIccProfile: meta.icc !== undefined && meta.icc.length > 0,
+        ...(meta.bitsPerSample !== undefined ? { bitsPerSample: meta.bitsPerSample } : {}),
+        ...(meta.depth !== undefined ? { sampleFormat: meta.depth } : {}),
+      };
+    },
+    imageForModel: async (bytes, maxSide) => {
+      const loaded = await tryLoadSharp();
+      if (!loaded.ok) throw new ImageDecoderUnavailableError(sharpUnavailableMessage("Image scaling", loaded.err));
+      const { data, info } = await loaded
+        .sharp(bytes)
+        .autoOrient()
+        .resize({ width: maxSide, height: maxSide, fit: "inside", withoutEnlargement: true })
+        .png()
+        .toBuffer({ resolveWithObject: true });
+      return { png: data, width: info.width, height: info.height };
+    },
+    ollamaJson: async (host, path, init) => {
+      const base = host.replace(/\/+$/, "");
+      const hostname = new URL(base).hostname;
+      if (!isLoopbackHost(hostname)) throw new Error(`Ollama at ${hostname} isn't on this machine; nothing was sent to it`);
+      const url = `${base}${path.startsWith("/") ? path : `/${path}`}`;
+      const res = await fetch(url, {
+        method: init.body === undefined ? "GET" : "POST",
+        ...(init.body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(init.body) }),
+        redirect: "manual",
+        signal: AbortSignal.timeout(init.timeoutMs),
+      });
+      const raw = await readBounded(res, OLLAMA_RESPONSE_MAX_BYTES, path, `Ollama's answer to ${path}`);
+      let json: unknown;
+      try {
+        json = JSON.parse(raw.toString("utf8"));
+      } catch {
+        json = undefined;
+      }
+      return { status: res.status, json };
     },
     isOwnHostAddress: (host) => isOwnHostAddress(host),
     ollamaHost: () => resolveOllamaHost(),

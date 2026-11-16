@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "at-08",
+  "title": "FLUX.1-schnell checkpoint, text to image",
+  "expect": {
+    "outcome": "feasible",
+    "recipes": [
+      "recipe-flux1-schnell.ckpt-t2i"
+    ]
+  },
+  "recipeIds": [
+    "recipe-flux1-schnell.ckpt-t2i"
+  ],
+  "live": "render",
+  "why": "The all-in-one checkpoint at a landscape size.",
+  "task": {
+    "intent": "A bowl of lemons on a blue tablecloth, top-down.",
+    "media": {
+      "kind": "image",
+      "operation": "text_to_image",
+      "output": {
+        "width": 1024,
+        "height": 768
+      }
+    }
+  }
+}

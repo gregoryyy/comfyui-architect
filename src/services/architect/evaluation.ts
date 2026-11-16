@@ -85,6 +85,11 @@ export interface EvaluateOutputsInput {
   files: readonly ProbedOutput[];
   /** Output entries ComfyUI's history listed in a shape that couldn't be read. */
   unparsedOutputs?: number;
+  /**
+   * Task criteria a visual evaluator answers (evaluators/registry.ts), which get no record
+   * here. Without it, such criteria are recorded as `unknown`: nothing judged them.
+   */
+  visualCriteria?: ReadonlySet<string>;
   at: Date;
 }
 
@@ -92,10 +97,12 @@ type EvaluationInput = z.input<typeof EvaluationRecord>;
 
 /**
  * The evaluation's ID: a digest of run, evaluator and criterion, so evaluating a run again
- * after a restart finds the records it already stored instead of writing a second set.
+ * after a restart finds the records it already stored instead of writing a second set. The
+ * built-in evaluator is the default, so the IDs of records stored before visual evaluators
+ * existed stay the same.
  */
-export function evaluationId(runId: string, criterionId: string): string {
-  return `eval-${sha256Hex(canonicalJson([runId, OUTPUT_EVALUATOR_ID, criterionId])).slice(0, 32)}`;
+export function evaluationId(runId: string, criterionId: string, evaluatorId: string = OUTPUT_EVALUATOR_ID): string {
+  return `eval-${sha256Hex(canonicalJson([runId, evaluatorId, criterionId])).slice(0, 32)}`;
 }
 
 function refOf(o: RunOutput): string {
@@ -112,9 +119,9 @@ function combine(verdicts: readonly Verdict[]): Verdict {
 
 /**
  * The automatic checks of a run's outputs against its task. Kind-neutral entry point: an
- * image task gets the built-in criteria and its `dimensions` and `protected_region_exact`
- * criteria; a kind without an evaluator gets one `not_applicable` record saying so, never
- * an exception and never a pass.
+ * image task gets the built-in criteria and its `dimensions` criteria, and its protected
+ * regions and text unless a visual evaluator answers them (`visualCriteria`); a kind without
+ * an evaluator gets one `not_applicable` record saying so, never an exception and never a pass.
  */
 export function evaluateOutputs(input: EvaluateOutputsInput): EvaluationInput[] {
   const { run, task, at } = input;
@@ -216,7 +223,10 @@ function evaluateImage(
     for (const criterion of task.acceptance) out.push(record(criterion.id, "not_applicable", "smoke render: the task's criteria are checked on the final render", { evidence: [] }));
     return out;
   }
-  for (const criterion of task.acceptance) out.push(...taskCriterion(criterion, files, record));
+  for (const criterion of task.acceptance) {
+    if (input.visualCriteria?.has(criterion.id)) continue;
+    out.push(...taskCriterion(criterion, files, record));
+  }
   return out;
 }
 
@@ -258,8 +268,10 @@ function taskCriterion(criterion: AcceptanceCriterion, files: readonly ProbedOut
     case "dimensions":
       return [dimensionsCheck(criterion.id, files, criterion.expected, record)];
     case "protected_region_exact":
-      // A required criterion without a reliable evaluator stays pending (spec §7.3).
-      return [record(criterion.id, "unknown", "no evaluator for protected_region_exact exists in this milestone", { evidence: [] })];
+    case "text_in_image":
+      // Judged by a visual evaluator in the controller; when none ran, the criterion stays
+      // pending, never passed (spec §7.3).
+      return [record(criterion.id, "unknown", `no evaluator judged this ${criterion.kind} criterion`, { evidence: [] })];
     case "user_review":
       return [];
   }
@@ -272,7 +284,9 @@ function taskCriterion(criterion: AcceptanceCriterion, files: readonly ProbedOut
  * agent's opinion (ARCH milestone 3, evaluation). A required failure fails acceptance; a
  * required unknown or missing verdict leaves it pending; it passes only when something was
  * checked and every required criterion passed or didn't apply. The latest record of a
- * criterion decides.
+ * criterion decides. An advisory record, an optional evaluator's verdict the action plan
+ * didn't accept, counts for nothing (spec §13.2; GAPS A11), so a required criterion only
+ * such an evaluator judged stays pending.
  */
 export function acceptanceFrom(task: TaskSpec, records: readonly EvaluationRecord[]): Acceptance {
   const required: { id: string; userOnly: boolean }[] = [];
@@ -283,7 +297,7 @@ export function acceptanceFrom(task: TaskSpec, records: readonly EvaluationRecor
   const verdicts = required.map(({ id, userOnly }): Verdict | undefined => {
     let latest: EvaluationRecord | undefined;
     for (const r of records) {
-      if (r.criterionId !== id || r.source === "agent_reported" || (userOnly && r.source !== "user")) continue;
+      if (r.criterionId !== id || r.source === "agent_reported" || r.advisory || (userOnly && r.source !== "user")) continue;
       if (latest === undefined || r.createdAt >= latest.createdAt) latest = r;
     }
     return latest?.verdict;

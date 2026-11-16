@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "at-02",
+  "title": "Z-Image Turbo, text to image at half size and 2\u00d7 upscale",
+  "expect": {
+    "outcome": "feasible",
+    "recipes": [
+      "recipe-zimage-turbo.t2i-upscale2x"
+    ]
+  },
+  "recipeIds": [
+    "recipe-zimage-turbo.t2i-upscale2x"
+  ],
+  "live": "render",
+  "why": "Generated at 768\u00d7768 and upscaled; the delivered size is the task's (GAPS Q31).",
+  "task": {
+    "intent": "A lighthouse on a rocky coast at dusk.",
+    "media": {
+      "kind": "image",
+      "operation": "text_to_image",
+      "output": {
+        "width": 1536,
+        "height": 1536
+      }
+    }
+  }
+}

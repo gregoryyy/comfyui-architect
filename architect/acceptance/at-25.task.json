@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "at-25",
+  "title": "Missing input file",
+  "expect": {
+    "outcome": "blocked",
+    "category": "insufficient_evidence"
+  },
+  "live": "plan",
+  "why": "The named file isn't in the target's input folder, so its size and content are unknown.",
+  "task": {
+    "intent": "Turn the sky into a dramatic orange sunset.",
+    "media": {
+      "kind": "image",
+      "operation": "image_edit",
+      "output": {
+        "width": 1024,
+        "height": 1024
+      }
+    },
+    "inputs": [
+      {
+        "assetId": "comfyui-input:architect-acceptance/does-not-exist.png",
+        "role": "source_image"
+      }
+    ]
+  },
+  "recipeIds": [
+    "recipe-zimage-turbo.img2img"
+  ]
+}

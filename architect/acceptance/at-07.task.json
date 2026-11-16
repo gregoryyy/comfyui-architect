@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "at-07",
+  "title": "FLUX.1-schnell, separate components",
+  "expect": {
+    "outcome": "feasible",
+    "recipes": [
+      "recipe-flux1-schnell.t2i"
+    ]
+  },
+  "recipeIds": [
+    "recipe-flux1-schnell.t2i"
+  ],
+  "live": "render",
+  "why": "FLUX.1-schnell with the T5-XXL and CLIP-L encoders of GAPS Q35.",
+  "task": {
+    "intent": "A red bicycle leaning against a white wall, soft morning light.",
+    "media": {
+      "kind": "image",
+      "operation": "text_to_image",
+      "output": {
+        "width": 1024,
+        "height": 1024
+      }
+    }
+  }
+}

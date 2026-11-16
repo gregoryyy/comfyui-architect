@@ -358,7 +358,8 @@ export class ArchitectExecution {
       // A chain reports its result, the final attempt's; a smoke attempt never stands for it (spec §13.1).
       verdicts: chain ? chain.verdicts : verdictsOf(run, records, this.submitted(run.id)),
       ...(chain ? { chain: chain.summary, attempts: chain.attempts } : {}),
-      evaluations: records.map((r) => ({ criterion: r.criterionId, verdict: r.verdict, source: r.source, explanation: r.explanation })),
+      // An advisory verdict is shown as such: it doesn't count toward acceptance (GAPS A11).
+      evaluations: records.map((r) => ({ criterion: r.criterionId, verdict: r.verdict, source: r.source, ...(r.advisory ? { advisory: true } : {}), explanation: r.explanation })),
       recentEvents: events.slice(-5).map((e) => ({ seq: e.seq, at: e.at, kind: e.kind, ...(e.to ? { to: e.to } : {}), reason: e.reason })),
     };
   }

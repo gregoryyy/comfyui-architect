@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "id": "at-09",
+  "title": "FLUX.1-schnell checkpoint, image to image",
+  "expect": {
+    "outcome": "feasible",
+    "recipes": [
+      "recipe-flux1-schnell.ckpt-img2img"
+    ]
+  },
+  "recipeIds": [
+    "recipe-flux1-schnell.ckpt-img2img"
+  ],
+  "live": "render",
+  "why": "A prompt-guided edit with the checkpoint.",
+  "task": {
+    "intent": "Make it look like a watercolour painting.",
+    "media": {
+      "kind": "image",
+      "operation": "image_edit",
+      "output": {
+        "width": 1024,
+        "height": 1024
+      }
+    },
+    "inputs": [
+      {
+        "assetId": "comfyui-input:architect-acceptance/scene-1024.png",
+        "role": "source_image"
+      }
+    ]
+  },
+  "proposals": [
+    {
+      "recipeId": "recipe-flux1-schnell.ckpt-img2img",
+      "bindings": {
+        "denoise": 0.6
+      }
+    }
+  ]
+}

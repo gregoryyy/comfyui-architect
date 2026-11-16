@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "at-17",
+  "title": "Z-Image Turbo at 2048\u00d72048",
+  "expect": {
+    "outcome": "feasible",
+    "recipes": [
+      "recipe-zimage-turbo.t2i"
+    ]
+  },
+  "recipeIds": [
+    "recipe-zimage-turbo.t2i"
+  ],
+  "live": "render",
+  "why": "A size at which VAEDecode may exceed the Apple GPU's INT_MAX limit; the run may need the tiled-decode repair (TODO 6.1). First-attempt and repaired success are reported apart.",
+  "task": {
+    "intent": "A detailed map of an imaginary island, parchment texture.",
+    "media": {
+      "kind": "image",
+      "operation": "text_to_image",
+      "output": {
+        "width": 2048,
+        "height": 2048
+      }
+    }
+  }
+}

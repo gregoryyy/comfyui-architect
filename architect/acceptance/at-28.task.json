@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "id": "at-28",
+  "title": "Protected pixels on a stretched masked edit",
+  "expect": {
+    "outcome": "blocked",
+    "category": "unsupported_operation"
+  },
+  "live": "plan",
+  "why": "The masked edit scales the source to the task's size, so the pixels outside the mask can't stay the source's; a required protected region fails hard (TODO 6.3).",
+  "task": {
+    "intent": "Replace the masked area with a stone well.",
+    "media": {
+      "kind": "image",
+      "operation": "inpaint",
+      "output": {
+        "width": 1024,
+        "height": 768
+      }
+    },
+    "inputs": [
+      {
+        "assetId": "comfyui-input:architect-acceptance/scene-1024.png",
+        "role": "source_image"
+      },
+      {
+        "assetId": "comfyui-input:architect-acceptance/mask-1024.png",
+        "role": "mask"
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "outside-mask",
+        "kind": "protected_region_exact",
+        "required": true,
+        "sourceAssetId": "comfyui-input:architect-acceptance/scene-1024.png",
+        "maskAssetId": "comfyui-input:architect-acceptance/mask-1024.png",
+        "coordinateSpace": "source_pixels"
+      }
+    ]
+  },
+  "recipeIds": [
+    "recipe-flux2-klein-4b.masked-edit"
+  ]
+}

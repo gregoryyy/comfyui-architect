@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "at-26",
+  "title": "Input name escaping the input folder",
+  "expect": {
+    "outcome": "blocked",
+    "category": "unsupported_operation"
+  },
+  "live": "plan",
+  "why": "A path escape in an input name is refused, and nothing outside the input folder is read (GAPS Q33).",
+  "task": {
+    "intent": "Turn the sky into a dramatic orange sunset.",
+    "media": {
+      "kind": "image",
+      "operation": "image_edit",
+      "output": {
+        "width": 1024,
+        "height": 1024
+      }
+    },
+    "inputs": [
+      {
+        "assetId": "comfyui-input:../user/default/comfy.settings.json",
+        "role": "source_image"
+      }
+    ]
+  },
+  "recipeIds": [
+    "recipe-zimage-turbo.img2img"
+  ]
+}
