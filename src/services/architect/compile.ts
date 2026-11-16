@@ -94,14 +94,27 @@ function checkSlotValue(slot: RecipeSlot, value: unknown): { value: string | num
 function taskFieldChecks(recipe: Recipe, task: TaskSpec): CheckResult[] {
   const out: CheckResult[] = [];
   const consumed = new Set(recipe.slots.flatMap((s) => (s.fromTask !== undefined ? [s.fromTask] : [])));
+  // A slot with a divisor writes a fraction of the task's value; the recipe declares that its
+  // graph scales the result back, as an output declaration states the format it writes.
+  const divisors = new Map(
+    recipe.slots.flatMap((s) => (s.fromTask !== undefined && s.fromTaskDivisor !== undefined ? [[s.fromTask, s.fromTaskDivisor] as const] : [])),
+  );
   const primary = recipe.outputs[0];
   const media = task.media;
   if (media.kind !== "image") return out;
   for (const dim of ["width", "height"] as const) {
     const path = `media.output.${dim}`;
+    const divisor = divisors.get(path);
     out.push(
       consumed.has(path)
-        ? check(`contract.task.${dim}`, "pass", true, `the recipe sets the output ${dim} from the task (${media.output[dim]})`)
+        ? check(
+            `contract.task.${dim}`,
+            "pass",
+            true,
+            divisor === undefined
+              ? `the recipe sets the output ${dim} from the task (${media.output[dim]})`
+              : `the recipe sets the output ${dim} from the task (${media.output[dim]}): it generates at 1/${divisor} and its graph scales back`,
+          )
         : check(
             `contract.task.${dim}`,
             "unknown",
@@ -137,7 +150,8 @@ function taskFieldChecks(recipe: Recipe, task: TaskSpec): CheckResult[] {
 
 /**
  * Compile `recipe` for `task` with `bindings` (spec §10.2). Each slot takes, in order, its
- * explicit binding, the value at its `fromTask` path, its default. A binding for a slot the
+ * explicit binding, the value at its `fromTask` path (divided by `fromTaskDivisor` when the
+ * slot sets one), its default. A binding for a slot the
  * recipe doesn't have fails: an agent's typo must not be ignored while the default runs.
  * When any hard check fails, no graph is returned.
  */
@@ -177,19 +191,40 @@ export function compileRecipe(recipe: Recipe, task: TaskSpec, bindings: Bindings
   for (const slot of recipe.slots) {
     const id = `contract.slot.${slot.id}`;
     const nodeId = slot.target.node;
-    const fromTask = slot.fromTask !== undefined ? readTaskPath(task, slot.fromTask) : undefined;
+    const fromTaskRaw = slot.fromTask !== undefined ? readTaskPath(task, slot.fromTask) : undefined;
+    const divisor = slot.fromTaskDivisor;
+    const taskPath = divisor === undefined ? slot.fromTask : `${slot.fromTask} / ${divisor}`;
+    let fromTask: unknown = fromTaskRaw;
+    if (fromTaskRaw !== undefined && divisor !== undefined) {
+      // Rounding would write a size the task didn't ask for, and the scaled-back output would
+      // miss the task's size by a pixel: refuse instead (spec §4.3, nothing relaxed silently).
+      if (typeof fromTaskRaw !== "number" || !Number.isInteger(fromTaskRaw / divisor)) {
+        checks.push(
+          check(
+            id,
+            "fail",
+            true,
+            `slot ${slot.id}: the task's ${slot.fromTask} (${JSON.stringify(fromTaskRaw)}) isn't divisible by ${divisor}, ` +
+              `the factor this recipe generates at; choose a size divisible by ${divisor} or another recipe`,
+            nodeId,
+          ),
+        );
+        continue;
+      }
+      fromTask = fromTaskRaw / divisor;
+    }
     let value: unknown;
     let source: string;
     if (Object.hasOwn(bindings, slot.id) && fromTask !== undefined && bindings[slot.id] !== fromTask) {
       // A slot the task fills can't be overridden by a binding: a smaller size or another
       // prompt would relax the task silently (AGENTS, spec §4.3; GAPS Q15). A change goes
-      // through a new task revision.
+      // through a new task revision. With a divisor, the binding is held to the divided value.
       checks.push(
         check(
           id,
           "fail",
           true,
-          `slot ${slot.id}: binding ${JSON.stringify(bindings[slot.id])} differs from the task's ${slot.fromTask} ` +
+          `slot ${slot.id}: binding ${JSON.stringify(bindings[slot.id])} differs from the task's ${taskPath} ` +
             `(${JSON.stringify(fromTask)}); revise the task instead`,
           nodeId,
         ),
@@ -200,7 +235,7 @@ export function compileRecipe(recipe: Recipe, task: TaskSpec, bindings: Bindings
       source = "binding";
     } else if (fromTask !== undefined) {
       value = fromTask;
-      source = `task ${slot.fromTask}`;
+      source = `task ${taskPath}`;
     } else if (slot.default !== undefined) {
       value = slot.default;
       source = "default";

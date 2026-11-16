@@ -10,6 +10,7 @@
 //   gives another hash and the old grant no longer applies (APPROVAL_INVALIDATED).
 // - One grant starts one run: the store consumes it in the transaction that creates the run.
 
+import { formatBytes } from "./acquisition-policy.js";
 import { ARCHITECT_PANEL_RUNS_ENV, onPanelRoute, panelRunsAllowed } from "./config.js";
 import { canonicalJson } from "./hash.js";
 import type { ArchitectPlanning } from "./planning.js";
@@ -20,6 +21,7 @@ import {
   type ApprovalRequest,
   type ApiGraph,
   type Effect,
+  type PlanCandidate,
   type Recipe,
   type ReleaseResidencyEffect,
   type TaskSpec,
@@ -83,7 +85,7 @@ export function printable(text: string): string {
 
 export interface AdmissionDeps {
   store: ArchitectStore;
-  planning: Pick<ArchitectPlanning, "selectedForRun" | "validate">;
+  planning: Pick<ArchitectPlanning, "selectedForRun" | "validate" | "store">;
   /** The ComfyUI target this server is configured for. */
   baseUrl: () => string;
   now: () => Date;
@@ -152,20 +154,47 @@ export async function prepareActionPlan(deps: AdmissionDeps, planId: string): Pr
   return { actionPlan, request };
 }
 
-/** Validate the selected candidate again; refuse when the selection didn't survive. */
 /**
  * Validate a candidate against a fresh snapshot and require it feasible. Used at admission
  * and by the controller before submitting a run that waited for its resources (spec §15.3).
  */
-export async function requireFeasible(planning: Pick<AdmissionDeps["planning"], "validate">, planId: string, candidateId: string): Promise<void> {
+export async function requireFeasible(
+  planning: Pick<AdmissionDeps["planning"], "validate" | "store">,
+  planId: string,
+  candidateId: string,
+): Promise<void> {
+  await requireAdmissible(planning, planId, candidateId);
+}
+
+/**
+ * Validate a candidate against a fresh snapshot, require it feasible, and return it as that
+ * validation stored it. With `allowAcquirable`, an acquirable candidate passes too, its
+ * `acquisition` derived again by this validation; only the step that acquires the files
+ * before the render asks for that (TODO 4.5).
+ */
+export async function requireAdmissible(
+  planning: Pick<AdmissionDeps["planning"], "validate" | "store">,
+  planId: string,
+  candidateId: string,
+  options: { allowAcquirable?: boolean } = {},
+): Promise<PlanCandidate> {
   const checked = await planning.validate({ planId, candidateId });
-  if (checked.candidate.status !== "feasible") {
+  const status = checked.candidate.status;
+  if (status !== "feasible" && !(status === "acquirable" && options.allowAcquirable === true)) {
     throw new ApprovalError(
       "APPROVAL_INVALIDATED",
-      `candidate ${candidateId} is ${checked.candidate.status} against the current environment: ${checked.candidate.blocking.join("; ") || "see its validation"}`,
-      "Report the blockers to the user and plan again; never relax a requirement without their approval.",
+      `candidate ${candidateId} is ${status} against the current environment: ${checked.candidate.blocking.join("; ") || "see its validation"}`,
+      status === "acquirable"
+        ? "The candidate needs model files first; prepare a run that acquires them, with the user's approval."
+        : "Report the blockers to the user and plan again; never relax a requirement without their approval.",
     );
   }
+  const stored = planning.store.getCandidate(candidateId);
+  // validate just wrote it; a different status means another writer changed it meanwhile.
+  if (!stored || stored.status !== status) {
+    throw new ApprovalError("APPROVAL_INVALIDATED", `candidate ${candidateId} changed while it was validated`, "Call architect_run prepare again.");
+  }
+  return stored;
 }
 
 async function freshSelection(deps: AdmissionDeps, planId: string) {
@@ -237,6 +266,16 @@ function describeEffect(e: Effect): string {
         `Effect: unload from Ollama at ${e.host} before the render, and load back after it: ` +
         `${e.models.map((m) => `${m.name} (${gigabytes(m.sizeBytes)})`).join(", ")}`
       );
+    case "acquire_models":
+      return [
+        `Effect: download ${e.files.length} model file(s), ${formatBytes(e.totalBytes)} in total (at most ${formatBytes(e.maxBytes)}; ` +
+          `at least ${formatBytes(e.minFreeBytes)} of disk stays free), each checked against its sha256 before it is placed:`,
+        ...e.files.map(
+          (f) =>
+            `  ${f.destinationRoot}/${f.folder}/${f.file} (${formatBytes(f.source.sizeBytes)}) from ` +
+            `huggingface.co/${f.source.repo} commit ${f.source.revision} path ${f.source.path}`,
+        ),
+      ].join("\n");
   }
 }
 

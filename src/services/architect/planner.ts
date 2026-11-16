@@ -4,11 +4,24 @@
 // Bounded by construction: at most 20 recipes retrieved, 24 concrete candidates expanded
 // and 3 presented (spec §9.2). Hard constraints apply before ranking; a candidate whose
 // hard checks fail is blocked whatever its tier, and one with a hard unknown is kept only
-// as a diagnostic candidate (spec §9.2 step 4, §9.3).
+// as a diagnostic candidate (spec §9.2 step 4, §9.3). A candidate blocked only by model
+// files its recipe pins a source for is `acquirable` (ARCH 2026-11-16, candidates): ranked
+// after feasible ones and before diagnostic ones, since the user's approval of a download
+// resolves it, while a diagnostic candidate's unknowns have no such remedy.
 
+import { deriveAcquisition, formatBytes, type AcquisitionRefusal } from "./acquisition-policy.js";
 import { retrieveRecipes } from "./catalog.js";
 import { compileRecipe } from "./compile.js";
-import type { CheckResult, EnvironmentSnapshot, PlanBlockers, PlanCandidate, Recipe, TaskSpec } from "./schemas.js";
+import type {
+  CandidateAcquisition,
+  CheckResult,
+  EnvironmentSnapshot,
+  PlanBlockers,
+  PlanCandidate,
+  Recipe,
+  TaskSpec,
+  ValidationReport,
+} from "./schemas.js";
 import type { ComfyUINodeDef, ObjectInfo } from "../../comfyui/types.js";
 import { validateGraph } from "./validate.js";
 
@@ -117,11 +130,40 @@ function modelValues(recipe: Recipe, values: Record<string, string | number>): R
   return out;
 }
 
-const STATUS_ORDER = { feasible: 0, diagnostic: 1, blocked: 2 } as const;
+/** Candidate statuses in ranking order; the loop that groups candidates walks it too. */
+export const STATUS_ORDER = { feasible: 0, acquirable: 1, diagnostic: 2, blocked: 3 } as const satisfies Record<PlanCandidate["status"], number>;
 const TIER_ORDER = { certified: 0, curated: 1, proposed: 2, fixture: 3 } as const;
 
-function statusFor(overall: "pass" | "fail" | "unknown"): PlanCandidate["status"] {
-  return overall === "pass" ? "feasible" : overall === "unknown" ? "diagnostic" : "blocked";
+/** A candidate's status from its checks, and for a failing one whether it can be acquired. */
+export interface CandidateStatusResult {
+  status: PlanCandidate["status"];
+  acquisition?: CandidateAcquisition;
+  /** Why a candidate that only lacks model files can't acquire them; empty otherwise. */
+  refusals: AcquisitionRefusal[];
+}
+
+/**
+ * The status planning and revalidation both give a candidate: feasible when its hard checks
+ * pass, diagnostic when one is unknown, acquirable when `deriveAcquisition` accepts its
+ * missing files, else blocked.
+ */
+export function candidateStatus(input: {
+  recipe: Recipe;
+  task: Pick<TaskSpec, "constraints" | "budgets">;
+  report: ValidationReport;
+  bindings: PlanCandidate["bindings"];
+  snapshot: Pick<EnvironmentSnapshot, "installedModels"> | undefined;
+}): CandidateStatusResult {
+  const { report } = input;
+  if (report.overall === "pass") return { status: "feasible", refusals: [] };
+  if (report.overall === "unknown") return { status: "diagnostic", refusals: [] };
+  const acq = deriveAcquisition({
+    recipe: input.recipe,
+    task: input.task,
+    candidate: { validation: report, bindings: input.bindings },
+    snapshot: input.snapshot,
+  });
+  return acq.acquirable ? { status: "acquirable", acquisition: acq.acquisition, refusals: [] } : { status: "blocked", refusals: acq.refusals };
 }
 
 /** Sort blocking checks into the groups spec §9.5 asks for. */
@@ -177,7 +219,20 @@ export function planCandidates(input: PlanningInput): PlanningOutput {
     for (const bindings of expansion.sets) {
       const compiled = compileRecipe(recipe, task, bindings);
       const report = validateGraph({ graph: compiled.graph, recipe, task, bindings, objectInfo, snapshot, ...(input.isPaidNode ? { isPaidNode: input.isPaidNode } : {}) });
-      addBlockers(blockers, recipe, report.report.checks);
+      // The model files the graph actually binds, defaults included, so the candidate,
+      // the agent and the export's lock name every file (compiling these again gives the
+      // same graph).
+      const bound = { ...modelValues(recipe, compiled.values), ...bindings };
+      const verdict = candidateStatus({ recipe, task, report: report.report, bindings: bound, snapshot });
+      // An acquirable candidate's failing checks are the files the approval would fetch, not
+      // blockers; a refused acquisition adds why next to the checks it leaves failing.
+      if (verdict.status !== "acquirable") addBlockers(blockers, recipe, report.report.checks);
+      for (const r of verdict.refusals) blockers[r.group].push(`${recipe.id}: ${r.message}`);
+      const acquisitionNote = verdict.acquisition
+        ? `; acquirable: ${verdict.acquisition.files.length} file(s), ${formatBytes(verdict.acquisition.totalBytes)} to download`
+        : verdict.refusals.length > 0
+          ? `; not acquirable: ${verdict.refusals.map((r) => r.message).join("; ")}`
+          : "";
       built.push({
         schemaVersion: 1,
         id: `cand-${newId()}`,
@@ -187,10 +242,7 @@ export function planCandidates(input: PlanningInput): PlanningOutput {
         recipeId: recipe.id,
         recipeRevision: recipe.revision,
         environmentId: snapshot.id,
-        // The model files the graph actually binds, defaults included, so the candidate,
-        // the agent and the export's lock name every file (compiling these again gives the
-        // same graph).
-        bindings: { ...modelValues(recipe, compiled.values), ...bindings },
+        bindings: bound,
         transforms: [],
         ...(compiled.fingerprint ? { graphFingerprint: compiled.fingerprint } : {}),
         roleMap: compiled.roleMap,
@@ -202,9 +254,10 @@ export function planCandidates(input: PlanningInput): PlanningOutput {
           explanation:
             `${recipe.certification} recipe ${recipe.id} r${recipe.revision}; ` +
             `${report.dependencyDelta.missingModels.length} missing model(s), ` +
-            `${report.dependencyDelta.missingNodeClasses.length} missing node class(es)`,
+            `${report.dependencyDelta.missingNodeClasses.length} missing node class(es)${acquisitionNote}`,
         },
-        status: statusFor(report.report.overall),
+        status: verdict.status,
+        ...(verdict.acquisition ? { acquisition: verdict.acquisition } : {}),
         createdAt: now().toISOString(),
       });
     }

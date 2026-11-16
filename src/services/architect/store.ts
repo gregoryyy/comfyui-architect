@@ -25,10 +25,14 @@ import { canonicalJson } from "./hash.js";
 import { MIGRATIONS, SCHEMA_MIGRATIONS_SQL } from "./migrations.js";
 import {
   Acceptance,
+  type AcquireModelsEffect,
+  AcquisitionRecord,
+  AcquisitionState,
   ActionPlan,
   ApprovalGrant,
   ApprovalRequest,
   type ApprovalRequestState,
+  ArchitectErrorCode,
   EnvironmentSnapshot,
   EvaluationRecord,
   Plan,
@@ -47,6 +51,7 @@ import {
   StoredRecordError,
   TaskSpec,
   type WorkflowKind,
+  canAcquisitionTransition,
   canTransition,
   parseStored,
 } from "./schemas.js";
@@ -87,6 +92,17 @@ export class IllegalTransitionError extends Error {
   ) {
     super(`a run can't move from ${from} to ${to}`);
     this.name = "IllegalTransitionError";
+  }
+}
+
+/** An acquisition transition the table in schemas.ts doesn't allow: a bug in the caller. */
+export class IllegalAcquisitionTransitionError extends Error {
+  constructor(
+    readonly from: AcquisitionState,
+    readonly to: AcquisitionState,
+  ) {
+    super(`an acquisition can't move from ${from} to ${to}`);
+    this.name = "IllegalAcquisitionTransitionError";
   }
 }
 
@@ -145,6 +161,7 @@ const CatalogSourceRow = z.object({
 });
 const RecordIdentity = z.object({ id: z.string(), revision: z.number().optional() });
 const EventRow = z.object({ run_id: z.string(), seq: z.number().int(), payload: z.string() });
+const AcquisitionRow = z.object({ id: z.string(), run_id: z.string(), payload: z.string() });
 const MaxSeqRow = z.object({ seq: z.number().int().nullable() });
 const LeaseRow = z.object({
   pool: z.string(),
@@ -172,6 +189,24 @@ export const RunPatch = z
   })
   .strict();
 export type RunPatch = z.input<typeof RunPatch>;
+
+/**
+ * What a transition may change on an acquisition besides its state. Source, destination and
+ * identity are fixed at creation. `null` clears a field: the job id of a download lost with
+ * the process (downloading → planned), the staged path of a staged file that vanished
+ * (verifying → downloading), and the error when there is none any more.
+ */
+export const AcquisitionPatch = z
+  .object({
+    jobId: z.string().min(1).nullable().optional(),
+    stagedPath: z.string().min(1).nullable().optional(),
+    placedPath: z.string().min(1).optional(),
+    observedSha256: z.string().nullable().optional(),
+    observedBytes: z.number().int().nonnegative().nullable().optional(),
+    error: z.object({ code: ArchitectErrorCode, message: z.string().min(1) }).strict().nullable().optional(),
+  })
+  .strict();
+export type AcquisitionPatch = z.input<typeof AcquisitionPatch>;
 
 /** The outcome of `acquireLease`: the pool's lease now held, or who holds it. */
 export type LeaseAcquisition =
@@ -213,6 +248,16 @@ function readEvent(row: z.infer<typeof EventRow>): RunEvent {
   return event;
 }
 const ContentHash = z.string().min(1);
+
+/** Parse an acquisition's payload; besides its id, its run must match its row. */
+function readAcquisition(value: unknown): AcquisitionRecord {
+  const row = AcquisitionRow.parse(value);
+  const record = readStored("acquisition", row.payload, { id: row.id });
+  if (record.runId !== row.run_id) {
+    throw new StoredRecordError("acquisition", `payload of row ${row.id} names run ${record.runId}, the row ${row.run_id}`);
+  }
+  return record;
+}
 
 function parseRow<T>(schema: z.ZodType<T>, value: unknown): T | undefined {
   return value === undefined ? undefined : schema.parse(value);
@@ -400,6 +445,15 @@ function prepareStatements(db: Database.Database) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     evaluationsForRun: db.prepare("SELECT id, payload FROM evaluations WHERE run_id = ? ORDER BY created_at, id"),
+
+    acquisition: db.prepare("SELECT id, run_id, payload FROM acquisitions WHERE id = ?"),
+    // rowid order is creation order, which is the order of the action plan's manifest.
+    acquisitionsForRun: db.prepare("SELECT id, run_id, payload FROM acquisitions WHERE run_id = ? ORDER BY rowid"),
+    insertAcquisition: db.prepare(
+      `INSERT INTO acquisitions (id, run_id, state, folder, file, sha256, created_at, updated_at, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    updateAcquisition: db.prepare("UPDATE acquisitions SET state = ?, updated_at = ?, payload = ? WHERE id = ? AND state = ?"),
 
     lease: db.prepare(
       "SELECT pool, owner_id, run_id, acquired_at, heartbeat_at, expires_at FROM resource_leases WHERE pool = ?",
@@ -1288,6 +1342,116 @@ export class ArchitectStore {
     return this.stmts.evaluationsForRun.all(runId).map((value) => {
       const row = IdPayloadRow.parse(value);
       return readStored("evaluation", row.payload, { id: row.id });
+    });
+  }
+
+  // -------------------------------------------------------------------------------------
+  // Acquisitions (TODO 4.2.2, 4.5; ARCH 2026-11-16, placement)
+
+  /**
+   * Create one `planned` acquisition per file of the run's `acquire_models` effect, in one
+   * transaction that takes the write lock first. The files come from the run's action plan,
+   * the one the grant bound, never from the caller, so a run acquires exactly what the user
+   * approved. Calling it again for the same run returns the records already there when they
+   * cover the same files (a restart in PREPARING); any other existing set is a
+   * StoreConflictError, as are a missing run or action plan, an action plan without the
+   * effect, and a run no longer in PREPARING.
+   */
+  createAcquisitions(args: { runId: string; now: Date; newId: () => string }): AcquisitionRecord[] {
+    const at = args.now.toISOString();
+    return this.immediate(() => {
+      const run = this.getRun(args.runId);
+      if (!run) throw new StoreConflictError(`run ${args.runId} is not stored`);
+      const actionPlan = this.getActionPlan(run.actionPlanId);
+      if (!actionPlan) throw new StoreConflictError(`action plan ${run.actionPlanId} is not stored`);
+      const effect = actionPlan.effects.find((e): e is AcquireModelsEffect => e.kind === "acquire_models");
+      if (!effect) throw new StoreConflictError(`action plan ${actionPlan.id} acquires no model files`);
+      const key = (f: { folder: string; file: string; source: unknown; destinationRoot: string }) =>
+        canonicalJson({ folder: f.folder, file: f.file, source: f.source, destinationRoot: f.destinationRoot });
+      const existing = this.listAcquisitions(run.id);
+      if (existing.length > 0) {
+        const want = effect.files.map(key).sort();
+        const have = existing.map(key).sort();
+        if (want.length === have.length && want.every((k, i) => k === have[i])) return existing;
+        throw new StoreConflictError(`run ${run.id} already has acquisitions for other files than its action plan names`);
+      }
+      if (run.state !== "PREPARING") {
+        throw new StoreConflictError(`run ${run.id} is ${run.state}; acquisitions are created in PREPARING`);
+      }
+      return effect.files.map((f) => {
+        const record = AcquisitionRecord.parse({
+          schemaVersion: ARCHITECT_SCHEMA_VERSION,
+          id: `acq-${args.newId()}`,
+          runId: run.id,
+          actionPlanId: actionPlan.id,
+          folder: f.folder,
+          file: f.file,
+          source: f.source,
+          destinationRoot: f.destinationRoot,
+          state: "planned",
+          createdAt: at,
+          updatedAt: at,
+        });
+        this.stmts.insertAcquisition.run(
+          record.id,
+          record.runId,
+          record.state,
+          record.folder,
+          record.file,
+          record.source.sha256,
+          utc(record.createdAt),
+          utc(record.updatedAt),
+          canonicalJson(record),
+        );
+        return record;
+      });
+    });
+  }
+
+  /** An acquisition by id; undefined when not stored. */
+  getAcquisition(id: string): AcquisitionRecord | undefined {
+    const row = this.stmts.acquisition.get(id);
+    return row === undefined ? undefined : readAcquisition(row);
+  }
+
+  /** A run's acquisitions in manifest order; empty when it has none. */
+  listAcquisitions(runId: string): AcquisitionRecord[] {
+    return this.stmts.acquisitionsForRun.all(runId).map(readAcquisition);
+  }
+
+  /**
+   * Move an acquisition from `from` to `to`, compare and set like `transitionRun`: the table
+   * must allow the edge (else IllegalAcquisitionTransitionError) and the stored state must
+   * still be `from` (else StoreConflictError). The new state is written before this returns,
+   * so nothing is reported that isn't stored. The record schema refuses a `placed` record
+   * whose observed sha256 or size isn't the pinned one, and a `failed` one without an error.
+   */
+  transitionAcquisition(args: {
+    id: string;
+    from: AcquisitionState;
+    to: AcquisitionState;
+    patch?: AcquisitionPatch;
+    at: Date;
+  }): AcquisitionRecord {
+    const from = AcquisitionState.parse(args.from);
+    const to = AcquisitionState.parse(args.to);
+    if (!canAcquisitionTransition(from, to)) throw new IllegalAcquisitionTransitionError(from, to);
+    const patch = AcquisitionPatch.parse(args.patch ?? {});
+    const at = args.at.toISOString();
+    return this.immediate(() => {
+      const current = this.getAcquisition(args.id);
+      if (!current) throw new StoreConflictError(`acquisition ${args.id} is not stored`);
+      if (current.state !== from) throw new StoreConflictError(`acquisition ${current.id} is ${current.state}, not ${from}`);
+      const next: Record<string, unknown> = { ...current, state: to, updatedAt: at };
+      for (const [field, value] of Object.entries(patch)) {
+        if (value === undefined) continue;
+        if (value === null) delete next[field];
+        else next[field] = value;
+      }
+      const record = AcquisitionRecord.parse(next);
+      const result = this.stmts.updateAcquisition.run(record.state, utc(at), canonicalJson(record), record.id, from);
+      if (result.changes !== 1) throw new StoreConflictError(`acquisition ${current.id} changed while it was transitioned`);
+      return record;
     });
   }
 

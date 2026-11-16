@@ -10,8 +10,8 @@
 // Relational columns carry identity, status, target and time, so they can be indexed and
 // constrained; the full record is JSON in `payload`, versioned by its own `schemaVersion`
 // and read back through `parseStored` (spec §15.2). Milestone 2 creates the planning
-// tables, milestone 3 the execution tables; the other spec §15.2 tables arrive with the
-// milestones that write them.
+// tables, milestone 3 the execution tables, milestone 4 the acquisitions; the other spec
+// §15.2 tables arrive with the milestones that write them.
 
 /** One schema step: applied once, in order, inside its own transaction. */
 export interface Migration {
@@ -234,6 +234,30 @@ CREATE INDEX evaluations_run_id ON evaluations(run_id);
 -- spec §15.4: a run is submitted at most once. The store's claimSubmission checks this in
 -- an IMMEDIATE transaction; the index keeps a second attempt out even if a writer skipped it.
 CREATE UNIQUE INDEX run_events_one_submit_attempt ON run_events(run_id) WHERE kind = 'submit_attempt';
+`,
+  },
+  {
+    // Milestone 4 (TODO 4.2.2; ARCH 2026-11-16, placement): one row per model file a run
+    // acquires. As in migration 2, the state column has no CHECK; the Zod enum and the
+    // transition table are the authority. The unique index keeps a run from staging or
+    // placing one destination twice, and as its first column is run_id it also serves the
+    // per-run reads, so no separate run_id index is created.
+    version: 4,
+    name: "acquisitions",
+    sql: `
+CREATE TABLE acquisitions (
+  id         TEXT PRIMARY KEY,
+  run_id     TEXT NOT NULL REFERENCES runs(id),
+  state      TEXT NOT NULL,
+  folder     TEXT NOT NULL,
+  file       TEXT NOT NULL,
+  sha256     TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  payload    TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX acquisitions_run_folder_file ON acquisitions(run_id, folder, file);
 `,
   },
 ];

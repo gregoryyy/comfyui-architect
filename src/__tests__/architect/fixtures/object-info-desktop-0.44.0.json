@@ -454,6 +454,116 @@
     "essentials_category": null,
     "has_intermediate_output": false
   },
+  "ImageScaleBy": {
+    "input": {
+      "required": {
+        "image": [
+          "IMAGE"
+        ],
+        "upscale_method": [
+          [
+            "nearest-exact",
+            "bilinear",
+            "area",
+            "bicubic",
+            "lanczos"
+          ]
+        ],
+        "scale_by": [
+          "FLOAT",
+          {
+            "default": 1,
+            "min": 0.01,
+            "max": 8,
+            "step": 0.01
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "image",
+        "upscale_method",
+        "scale_by"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "IMAGE"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_name": [
+      "IMAGE"
+    ],
+    "name": "ImageScaleBy",
+    "display_name": "Upscale Image By",
+    "description": "",
+    "python_module": "nodes",
+    "category": "image/upscaling",
+    "output_node": false,
+    "has_intermediate_output": false,
+    "search_aliases": [],
+    "essentials_category": "Image Tools"
+  },
+  "ImageUpscaleWithModel": {
+    "input": {
+      "required": {
+        "upscale_model": [
+          "UPSCALE_MODEL",
+          {}
+        ],
+        "image": [
+          "IMAGE",
+          {}
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "upscale_model",
+        "image"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "IMAGE"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_name": [
+      "IMAGE"
+    ],
+    "output_tooltips": [
+      null
+    ],
+    "output_matchtypes": null,
+    "name": "ImageUpscaleWithModel",
+    "display_name": "Upscale Image (using Model)",
+    "description": "",
+    "python_module": "comfy_extras.nodes_upscale_model",
+    "category": "image/upscaling",
+    "output_node": false,
+    "deprecated": false,
+    "experimental": false,
+    "dev_only": false,
+    "api_node": false,
+    "price_badge": null,
+    "search_aliases": [
+      "upscale",
+      "upscaler",
+      "upsc",
+      "enlarge image",
+      "super resolution",
+      "hires",
+      "superres",
+      "increase resolution"
+    ],
+    "essentials_category": null,
+    "has_intermediate_output": false
+  },
   "KSampler": {
     "input": {
       "required": {
@@ -807,6 +917,52 @@
     "output_node": false,
     "has_intermediate_output": false,
     "search_aliases": []
+  },
+  "UpscaleModelLoader": {
+    "input": {
+      "required": {
+        "model_name": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": []
+          }
+        ]
+      }
+    },
+    "input_order": {
+      "required": [
+        "model_name"
+      ]
+    },
+    "is_input_list": false,
+    "output": [
+      "UPSCALE_MODEL"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_name": [
+      "UPSCALE_MODEL"
+    ],
+    "output_tooltips": [
+      null
+    ],
+    "output_matchtypes": null,
+    "name": "UpscaleModelLoader",
+    "display_name": "Load Upscale Model",
+    "description": "",
+    "python_module": "comfy_extras.nodes_upscale_model",
+    "category": "model/loaders",
+    "output_node": false,
+    "deprecated": false,
+    "experimental": false,
+    "dev_only": false,
+    "api_node": false,
+    "price_badge": null,
+    "search_aliases": null,
+    "essentials_category": null,
+    "has_intermediate_output": false
   },
   "VAEDecode": {
     "input": {
