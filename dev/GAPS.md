@@ -321,6 +321,7 @@ Milestone 5's live checks download the files of Q24 (about 20 GB) and render eac
 - **Proposed:** before the live runs the exact file list, sources and sizes are shown to the owner; on the owner's go-ahead the e2e runner approves through the terminal channel's code, as in milestones 3 and 4. The alternatives are the owner approving each request in the terminal, or no live downloads in this milestone.
 - **Answer** (2026-11-16 08:51, Gregor Heinrich): as proposed.
 - **Resolved** (2026-11-16 08:51, Opus 5.5 for Gregor Heinrich): TODO 5.6.
+- **Go-ahead** (2026-11-16 09:44, Gregor Heinrich): "go ahead with the download list", for the five files shown: `diffusion_models/flux-2-klein-4b.safetensors` (Comfy-Org/Flux-2-Klein-4B@5b3abca5, 7.75 GB), `vae/flux2-vae.safetensors` (same, 0.34 GB), `model_patches/Z-Image-Turbo-Fun-Controlnet-Union.safetensors` (alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union@01c794d5, 3.10 GB), `diffusion_models/seedvr2_3b_fp16.safetensors` (Comfy-Org/SeedVR2@df488797, 6.78 GB), `vae/seedvr2_ema_vae_fp16.safetensors` (same, 0.50 GB), 18.47 GB, all Apache-2.0, and one mask image `architect-smoke-mask.png` placed in ComfyUI's input folder by the smoke. A dry-run list that differs goes back to the owner.
 
 ## Assumptions
 
