@@ -16,6 +16,7 @@ import { planningReadiness } from "./environment.js";
 import { canonicalJson, sha256Hex } from "./hash.js";
 import { MAX_PRESENTED_CANDIDATES, missingTaskFields, planCandidates, type ProposedBinding } from "./planner.js";
 import {
+  type ApiGraph,
   type EnvironmentSnapshot,
   type Plan,
   type PlanCandidate,
@@ -86,6 +87,11 @@ export class ArchitectPlanning {
   private current: Recipe[] = [];
 
   constructor(private readonly deps: PlanningDeps) {}
+
+  /** The store planning writes to; execution shares it, so both see one database connection. */
+  get store(): ArchitectStore {
+    return this.deps.store;
+  }
 
   /** Load every recipe source into the store. Runs once per instance unless forced. */
   syncCatalog(force = false): CatalogSyncResult {
@@ -356,27 +362,43 @@ export class ArchitectPlanning {
     return store.putPlan({ ...plan, state: "SELECTED", selectedCandidateId: candidate.id, updatedAt: now().toISOString() });
   }
 
-  /** Write the selected candidate's files under `artifacts/<task-id>/<plan-id>/` (spec §15.1). */
-  export(request: { planId: string }) {
-    const { plan, task } = this.requirePlan(request.planId);
+  /**
+   * The selected candidate of a plan and its graph, compiled again and checked against the
+   * validated fingerprint, for execution (TODO 3.3). The same checks export makes, so a run
+   * never starts from a candidate that export would refuse.
+   */
+  selectedForRun(planId: string) {
+    const { plan, task } = this.requirePlan(planId);
     if (plan.state !== "SELECTED" || !plan.selectedCandidateId) {
-      throw new PlanningError("MISSING_INPUT", `plan ${plan.id} has no selected candidate`, "Call select first.");
+      throw new PlanningError("MISSING_INPUT", `plan ${plan.id} has no selected candidate`, "Ask the user to choose a candidate, then call select.");
     }
     const candidate = this.requireCandidate(plan, plan.selectedCandidateId);
     requireFeasible(candidate);
     const { recipe, graph, fingerprint } = this.compiledGraph(candidate, task);
+    return { plan, task, candidate, recipe, graph, fingerprint };
+  }
+
+  /** A candidate's graph, compiled again; refuses one that no longer matches its fingerprint. */
+  graphOfCandidate(candidateId: string, task: TaskSpec) {
+    const candidate = this.deps.store.getCandidate(candidateId);
+    if (!candidate) throw new PlanningError("GRAPH_CONFLICT", `candidate ${candidateId} is not stored`, "Prepare a new run.");
+    return this.compiledGraph(candidate, task);
+  }
+
+  /**
+   * The dependency lock of a candidate's compiled graph: recipe, model files, node classes,
+   * environment and fork. Export writes it, and a run's record carries it (spec §15.1, FR-11).
+   */
+  dependencyLock(candidateId: string, task: TaskSpec) {
+    const candidate = this.deps.store.getCandidate(candidateId);
+    if (!candidate) throw new PlanningError("GRAPH_CONFLICT", `candidate ${candidateId} is not stored`, "Prepare a new run.");
+    const { recipe, graph, fingerprint } = this.compiledGraph(candidate, task);
+    return this.lockFor(candidate, recipe, graph, fingerprint);
+  }
+
+  private lockFor(candidate: PlanCandidate, recipe: Recipe, graph: ApiGraph, fingerprint: string) {
     const env = this.deps.store.getSnapshot(candidate.environmentId);
-    const root = resolve(this.deps.dataDir, "artifacts");
-    const dir = resolve(root, task.id, plan.id);
-    // IDs are generated here, but a stored ID is still data: never write outside artifacts/.
-    if (!dir.startsWith(root + sep)) throw new PlanningError("GRAPH_CONFLICT", `refusing to export outside ${root}`, "Report this plan ID.");
-    mkdirSync(dir, { recursive: true });
-    // A symlink anywhere under artifacts/ could point the write elsewhere (SEC T9).
-    const real = realpathSync(dir);
-    if (real !== resolve(realpathSync(this.deps.dataDir), "artifacts", task.id, plan.id)) {
-      throw new PlanningError("GRAPH_CONFLICT", `refusing to export through a symbolic link under ${root}`, "Remove the link and export again.");
-    }
-    const lock = {
+    return {
       schemaVersion: 1,
       graphFingerprint: fingerprint,
       recipe: { id: recipe.id, revision: recipe.revision, certification: recipe.certification, contentHash: sha256Hex(canonicalJson(recipe)) },
@@ -389,6 +411,28 @@ export class ArchitectPlanning {
         : { id: candidate.environmentId },
       fork: { product: FORK_IDENTITY.product, version: FORK_IDENTITY.version, upstream: UPSTREAM_BASELINE.commit },
     };
+  }
+
+  /** Write the selected candidate's files under `artifacts/<task-id>/<plan-id>/` (spec §15.1). */
+  export(request: { planId: string }) {
+    const { plan, task } = this.requirePlan(request.planId);
+    if (plan.state !== "SELECTED" || !plan.selectedCandidateId) {
+      throw new PlanningError("MISSING_INPUT", `plan ${plan.id} has no selected candidate`, "Call select first.");
+    }
+    const candidate = this.requireCandidate(plan, plan.selectedCandidateId);
+    requireFeasible(candidate);
+    const { recipe, graph, fingerprint } = this.compiledGraph(candidate, task);
+    const root = resolve(this.deps.dataDir, "artifacts");
+    const dir = resolve(root, task.id, plan.id);
+    // IDs are generated here, but a stored ID is still data: never write outside artifacts/.
+    if (!dir.startsWith(root + sep)) throw new PlanningError("GRAPH_CONFLICT", `refusing to export outside ${root}`, "Report this plan ID.");
+    mkdirSync(dir, { recursive: true });
+    // A symlink anywhere under artifacts/ could point the write elsewhere (SEC T9).
+    const real = realpathSync(dir);
+    if (real !== resolve(realpathSync(this.deps.dataDir), "artifacts", task.id, plan.id)) {
+      throw new PlanningError("GRAPH_CONFLICT", `refusing to export through a symbolic link under ${root}`, "Remove the link and export again.");
+    }
+    const lock = this.lockFor(candidate, recipe, graph, fingerprint);
     const files: Record<string, unknown> = {
       "task.json": task,
       "plan.json": { plan, candidate },

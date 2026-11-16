@@ -11,6 +11,7 @@
 
 import { z } from "zod";
 import { ARCHITECT_SCHEMA_VERSION } from "../../fork-identity.js";
+import { canonicalJson, sha256Hex } from "./hash.js";
 
 // ---------------------------------------------------------------------------------------
 // Shared vocabulary
@@ -39,6 +40,8 @@ export const ArchitectErrorCode = z.enum([
   "BUDGET_EXCEEDED",
   "GRAPH_CONFLICT",
   "OUTCOME_UNKNOWN",
+  /** ComfyUI accepted the job and reported it failed, or refused it with an answer (spec §15.4). */
+  "EXECUTION_FAILED",
   /** An error the service didn't anticipate; spec §16.4's list isn't exhaustive ("include"). */
   "INTERNAL_ERROR",
 ]);
@@ -49,6 +52,12 @@ const SchemaVersion = z.literal(ARCHITECT_SCHEMA_VERSION);
 const Timestamp = z.string().datetime({ offset: true });
 /** Record identifiers: a short prefix, a dash, then letters, digits, dashes or dots. */
 const RecordId = z.string().regex(/^[a-z][a-z0-9]*-[A-Za-z0-9.-]+$/, "expected <prefix>-<id>");
+/** A record identifier with a fixed prefix, so an id of one kind can't stand in for another. */
+function prefixedId(prefix: string) {
+  return RecordId.refine((id) => id.startsWith(`${prefix}-`), { message: `expected ${prefix}-<id>` });
+}
+/** A sha256 digest as `sha256Hex` writes it. */
+const Sha256 = z.string().regex(/^[0-9a-f]{64}$/, "expected 64 lowercase hex digits");
 
 // ---------------------------------------------------------------------------------------
 // Environment (spec §7.1, §8.3)
@@ -485,6 +494,413 @@ export const Plan = z
 export type Plan = z.infer<typeof Plan>;
 
 // ---------------------------------------------------------------------------------------
+// Execution: action plans, approval, runs (spec §7.1, §14.2, §15.3, §15.4; ARCH milestone 3)
+
+/** The ComfyUI a run is submitted to. A URL, unlike the snapshot's target, because effects go there. */
+const ExecutionTarget = z.object({ baseUrl: z.string().url() }).strict();
+
+/** Run limits an action plan asks for and a grant allows; a grant never exceeds its plan's. */
+export const RunLimits = z
+  .object({
+    maxRuns: z.number().int().min(1),
+    maxWallTimeSeconds: z.number().int().positive(),
+  })
+  .strict();
+export type RunLimits = z.infer<typeof RunLimits>;
+
+/**
+ * One effect an action plan would have. Kind-neutral: a render of any workflow kind is a
+ * `local_render` of a compiled graph. Downloads and installs add members in their milestone.
+ */
+export const Effect = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("local_render"),
+      /** The compiled graph's fingerprint (spec §10.5), so the grant names the exact graph. */
+      graphFingerprint: Sha256,
+      outputNodes: z.array(z.string().min(1)).min(1),
+    })
+    .strict(),
+  z
+    .object({
+      /**
+       * Unload these models from a local Ollama before the render and load them back after
+       * it (spec §11.3; GAPS Q23). Listed only with ARCHITECT_MANAGE_RESIDENCY=1, from what
+       * Ollama held in the pool when the plan was prepared, so the user approves each one.
+       * A model not listed here is never unloaded.
+       */
+      kind: z.literal("release_residency"),
+      host: z.string().url(),
+      models: z
+        .array(
+          z
+            .object({
+              name: z.string().min(1),
+              /** Memory Ollama reported for it (`size_vram`), in bytes. */
+              sizeBytes: z.number().int().min(0),
+            })
+            .strict(),
+        )
+        .min(1),
+      reload: z.literal(true),
+    })
+    .strict(),
+]);
+export type Effect = z.infer<typeof Effect>;
+export type ReleaseResidencyEffect = Extract<Effect, { kind: "release_residency" }>;
+
+const ActionPlanObject = z
+  .object({
+    schemaVersion: SchemaVersion,
+    id: prefixedId("actions"),
+    planId: RecordId,
+    taskId: RecordId,
+    taskRevision: z.number().int().min(1),
+    candidateId: RecordId,
+    environmentId: RecordId,
+    target: ExecutionTarget,
+    effects: z.array(Effect).min(1),
+    budgets: RunLimits,
+    createdAt: Timestamp,
+    expiresAt: Timestamp,
+    /** `actionPlanHash` of this plan; what an approval request and a grant bind to. */
+    hash: Sha256,
+  })
+  .strict();
+
+/** The fields an action plan's hash covers. */
+export type ActionPlanBinding = Pick<
+  z.infer<typeof ActionPlanObject>,
+  "planId" | "taskId" | "taskRevision" | "candidateId" | "target" | "effects" | "budgets"
+>;
+
+/**
+ * The hash a grant binds (spec §14.2): sha256 over canonical JSON of what runs where within
+ * which limits. Left out on purpose: the action plan's own id and timestamps, so rebuilding
+ * the same plan at start yields the same hash; `expiresAt`, which request and grant enforce
+ * separately; and `environmentId`, because start validates again against a fresh snapshot
+ * (ARCH milestone 3, action plans).
+ */
+export function actionPlanHash(p: ActionPlanBinding): string {
+  return sha256Hex(
+    canonicalJson({
+      planId: p.planId,
+      taskId: p.taskId,
+      taskRevision: p.taskRevision,
+      candidateId: p.candidateId,
+      target: p.target,
+      effects: p.effects,
+      budgets: p.budgets,
+    }),
+  );
+}
+
+/** What `architect_run prepare` asks the user to approve (spec §7.1, `ActionPlan`). */
+export const ActionPlan = ActionPlanObject.superRefine((p, ctx) => {
+  // A stored hash that doesn't cover the stored content would let an edited plan run
+  // under a grant issued for the original.
+  if (p.hash !== actionPlanHash(p)) {
+    ctx.addIssue({ code: "custom", message: "hash does not match the action plan's content", path: ["hash"] });
+  }
+  if (Date.parse(p.expiresAt) <= Date.parse(p.createdAt)) {
+    ctx.addIssue({ code: "custom", message: "expiresAt must be after createdAt", path: ["expiresAt"] });
+  }
+});
+export type ActionPlan = z.infer<typeof ActionPlan>;
+
+/** How a grant or a user's verdict reached the service: never through a model-callable tool (spec §14.2). */
+export const ApprovalChannel = z.enum(["elicitation", "terminal"]);
+export type ApprovalChannel = z.infer<typeof ApprovalChannel>;
+
+/** A request for the user's approval of one action plan, by hash. */
+export const ApprovalRequest = z
+  .object({
+    schemaVersion: SchemaVersion,
+    id: prefixedId("approval"),
+    actionPlanId: prefixedId("actions"),
+    actionPlanHash: Sha256,
+    state: z.enum(["pending", "granted", "declined", "expired"]),
+    createdAt: Timestamp,
+    expiresAt: Timestamp,
+    resolvedAt: Timestamp.optional(),
+  })
+  .strict()
+  .superRefine((r, ctx) => {
+    if ((r.state === "pending") !== (r.resolvedAt === undefined)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "resolvedAt is set exactly when the request is resolved",
+        path: ["resolvedAt"],
+      });
+    }
+    if (Date.parse(r.expiresAt) <= Date.parse(r.createdAt)) {
+      ctx.addIssue({ code: "custom", message: "expiresAt must be after createdAt", path: ["expiresAt"] });
+    }
+  });
+export type ApprovalRequest = z.infer<typeof ApprovalRequest>;
+export type ApprovalRequestState = ApprovalRequest["state"];
+
+/**
+ * The user's approval of one action plan (spec §7.1, §14.2, `ApprovalGrant`). It binds the
+ * plan's hash, target and limits, and starts at most one run: consuming it is part of the
+ * transaction that creates the run (ARCH milestone 3).
+ */
+export const ApprovalGrant = z
+  .object({
+    schemaVersion: SchemaVersion,
+    id: prefixedId("grant"),
+    approvalRequestId: prefixedId("approval"),
+    actionPlanId: prefixedId("actions"),
+    actionPlanHash: Sha256,
+    target: ExecutionTarget,
+    limits: RunLimits,
+    channel: ApprovalChannel,
+    /** Who approved, as the channel identified them (the terminal user, the MCP client). */
+    issuer: z.string().min(1),
+    issuedAt: Timestamp,
+    expiresAt: Timestamp,
+    consumedAt: Timestamp.optional(),
+    consumedByRunId: prefixedId("run").optional(),
+  })
+  .strict()
+  .superRefine((g, ctx) => {
+    if ((g.consumedAt === undefined) !== (g.consumedByRunId === undefined)) {
+      ctx.addIssue({ code: "custom", message: "consumedAt and consumedByRunId are set together", path: ["consumedAt"] });
+    }
+    if (Date.parse(g.expiresAt) <= Date.parse(g.issuedAt)) {
+      ctx.addIssue({ code: "custom", message: "expiresAt must be after issuedAt", path: ["expiresAt"] });
+    }
+  });
+export type ApprovalGrant = z.infer<typeof ApprovalGrant>;
+
+/** Execution states (spec §15.3). */
+export const RunState = z.enum([
+  "AWAITING_APPROVAL",
+  "PREPARING",
+  "WAITING_FOR_RESOURCE",
+  "VALIDATING",
+  "QUEUED",
+  "RUNNING",
+  "EVALUATING",
+  "AWAITING_REVIEW",
+  "COMPLETED",
+  "FAILED",
+  "CANCELLED",
+  "OUTCOME_UNKNOWN",
+]);
+export type RunState = z.infer<typeof RunState>;
+
+/** States a run never leaves. `OUTCOME_UNKNOWN` is not one: it is reconciled (spec §15.4). */
+export const FINAL_RUN_STATES: readonly RunState[] = ["COMPLETED", "FAILED", "CANCELLED"];
+
+/**
+ * The run state machine of spec §15.3 as data: the states each state may move to. Two
+ * edges the spec's prose doesn't spell out: VALIDATING may become OUTCOME_UNKNOWN, because
+ * submission is the last step of VALIDATING and its response can be lost; QUEUED may become
+ * EVALUATING, because ComfyUI can finish a job between two polls. OUTCOME_UNKNOWN resolves to
+ * whatever reconciliation against queue and history finds, never back to a resubmission.
+ */
+export const RUN_TRANSITIONS: Readonly<Record<RunState, readonly RunState[]>> = {
+  AWAITING_APPROVAL: ["PREPARING", "CANCELLED"],
+  PREPARING: ["WAITING_FOR_RESOURCE", "VALIDATING", "FAILED", "CANCELLED"],
+  WAITING_FOR_RESOURCE: ["VALIDATING", "FAILED", "CANCELLED"],
+  VALIDATING: ["QUEUED", "FAILED", "CANCELLED", "OUTCOME_UNKNOWN"],
+  QUEUED: ["RUNNING", "EVALUATING", "FAILED", "CANCELLED", "OUTCOME_UNKNOWN"],
+  RUNNING: ["EVALUATING", "FAILED", "CANCELLED", "OUTCOME_UNKNOWN"],
+  OUTCOME_UNKNOWN: ["QUEUED", "RUNNING", "EVALUATING", "FAILED", "CANCELLED"],
+  EVALUATING: ["AWAITING_REVIEW", "COMPLETED", "FAILED"],
+  AWAITING_REVIEW: ["COMPLETED"],
+  COMPLETED: [],
+  FAILED: [],
+  CANCELLED: [],
+};
+
+/** Whether the state machine allows `from` → `to`. A state never transitions to itself. */
+export function canTransition(from: RunState, to: RunState): boolean {
+  return RUN_TRANSITIONS[from].includes(to);
+}
+
+/**
+ * Whether a run passed its acceptance criteria, kept apart from whether it finished
+ * (spec §4.2, §15.3). `waived_by_user` records the user's decision; no check passed.
+ */
+export const Acceptance = z.enum(["passed", "failed", "pending", "waived_by_user"]);
+export type Acceptance = z.infer<typeof Acceptance>;
+
+/** One file a run wrote, as ComfyUI's history names it. */
+export const RunOutput = z
+  .object({
+    node: z.string().min(1),
+    filename: z.string().min(1),
+    subfolder: z.string().default(""),
+    type: z.enum(["output", "temp"]),
+  })
+  .strict();
+export type RunOutput = z.infer<typeof RunOutput>;
+
+/**
+ * Why a run failed or is uncertain. `COMFYUI_ERROR` marks an error ComfyUI itself reported
+ * (a node or execution error); its message is ComfyUI's text and stays data (spec §14.4).
+ * The run controller writes `EXECUTION_FAILED` for both a refusal at submission and an
+ * execution error in the history, since the result envelope's code takes only
+ * `ArchitectErrorCode`; it doesn't write `COMFYUI_ERROR`.
+ */
+export const RunError = z
+  .object({
+    code: z.union([ArchitectErrorCode, z.literal("COMFYUI_ERROR")]),
+    message: z.string().min(1),
+  })
+  .strict();
+export type RunError = z.infer<typeof RunError>;
+
+export const RunTimings = z
+  .object({
+    submittedAt: Timestamp.optional(),
+    startedAt: Timestamp.optional(),
+    finishedAt: Timestamp.optional(),
+  })
+  .strict();
+export type RunTimings = z.infer<typeof RunTimings>;
+
+/**
+ * States in which the run has been, or may have been, submitted. The prompt ID is stored
+ * before submission (ARCH milestone 3, run controller), so these states always carry it:
+ * reconciliation and cancellation key on it, and without it neither is possible.
+ */
+const SUBMITTED_STATES: readonly RunState[] = [
+  "QUEUED",
+  "RUNNING",
+  "OUTCOME_UNKNOWN",
+  "EVALUATING",
+  "AWAITING_REVIEW",
+  "COMPLETED",
+];
+
+/** One execution of an action plan's render (spec §7.1, `RunRecord`). */
+export const RunRecord = z
+  .object({
+    schemaVersion: SchemaVersion,
+    id: prefixedId("run"),
+    actionPlanId: prefixedId("actions"),
+    planId: RecordId,
+    taskId: RecordId,
+    taskRevision: z.number().int().min(1),
+    candidateId: RecordId,
+    graphFingerprint: Sha256,
+    target: ExecutionTarget,
+    /** Scoped to target, task and plan revision (spec §15.4); one key maps to one run. */
+    idempotencyKey: z.string().min(1),
+    state: RunState,
+    /** The client-chosen prompt ID ComfyUI is given at submission (ARCH milestone 3). */
+    promptId: z.string().uuid().optional(),
+    grantId: prefixedId("grant").optional(),
+    outputs: z.array(RunOutput).default([]),
+    timings: RunTimings.default({}),
+    acceptance: Acceptance.default("pending"),
+    error: RunError.optional(),
+    createdAt: Timestamp,
+    updatedAt: Timestamp,
+  })
+  .strict()
+  .superRefine((r, ctx) => {
+    if (SUBMITTED_STATES.includes(r.state) && r.promptId === undefined) {
+      ctx.addIssue({ code: "custom", message: `a run in ${r.state} carries its promptId`, path: ["promptId"] });
+    }
+    // A failure without a reason can't be surfaced with a stable code (spec §16.4).
+    if (r.state === "FAILED" && r.error === undefined) {
+      ctx.addIssue({ code: "custom", message: "a FAILED run carries its error", path: ["error"] });
+    }
+  });
+export type RunRecord = z.infer<typeof RunRecord>;
+
+/** Who caused a run event: the user through an approval channel, the agent, or the controller itself. */
+export const RunPrincipal = z.enum(["user", "agent", "controller"]);
+export type RunPrincipal = z.infer<typeof RunPrincipal>;
+
+export const RunEventKind = z.enum(["transition", "submit_attempt", "submit_result", "reconcile", "cancel", "note"]);
+export type RunEventKind = z.infer<typeof RunEventKind>;
+
+/**
+ * One entry of a run's history (spec §15.3: each transition has a guard, timestamp,
+ * principal and reason). `seq` orders a run's events from 1 without gaps. A `transition`
+ * names the state it entered; its `from` is absent only for the event that created the run.
+ * Other kinds record what happened without changing state, so they carry neither.
+ */
+export const RunEvent = z
+  .object({
+    schemaVersion: SchemaVersion,
+    runId: prefixedId("run"),
+    seq: z.number().int().min(1),
+    at: Timestamp,
+    kind: RunEventKind,
+    from: RunState.optional(),
+    to: RunState.optional(),
+    principal: RunPrincipal,
+    reason: z.string().min(1),
+    data: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict()
+  .superRefine((e, ctx) => {
+    if (e.kind === "transition" && e.to === undefined) {
+      ctx.addIssue({ code: "custom", message: "a transition names the state it entered", path: ["to"] });
+    }
+    if (e.kind !== "transition" && (e.from !== undefined || e.to !== undefined)) {
+      ctx.addIssue({ code: "custom", message: `a ${e.kind} event changes no state`, path: ["kind"] });
+    }
+  });
+export type RunEvent = z.infer<typeof RunEvent>;
+
+/**
+ * One criterion checked against one run (spec §7.1, §13.2, `EvaluationRecord`). `source`
+ * keeps the user's verdict apart from the agent's: a verdict the agent relays is stored as
+ * `agent_reported`, and only a verdict that came through an approval channel is the user's
+ * (ARCH milestone 3, evaluation). Kind-neutral: what a measurement means is the evaluator's.
+ */
+export const EvaluationRecord = z
+  .object({
+    schemaVersion: SchemaVersion,
+    id: prefixedId("eval"),
+    runId: prefixedId("run"),
+    criterionId: z.string().min(1),
+    evaluatorId: z.string().min(1),
+    evaluatorVersion: z.string().min(1),
+    verdict: Verdict,
+    source: z.enum(["automatic", "user", "agent_reported"]),
+    channel: ApprovalChannel.optional(),
+    measurement: z.object({ value: z.number(), unit: z.string().min(1) }).strict().optional(),
+    explanation: z.string().min(1),
+    /** Asset references the verdict rests on (spec §13.2 `evidenceAssetIds`). */
+    evidence: z.array(z.string().min(1)).default([]),
+    createdAt: Timestamp,
+  })
+  .strict()
+  .superRefine((e, ctx) => {
+    // A user verdict names the channel it came through; any other source naming one would
+    // dress an automatic or relayed verdict up as the user's.
+    if ((e.source === "user") !== (e.channel !== undefined)) {
+      ctx.addIssue({ code: "custom", message: "channel is set exactly when the source is the user", path: ["channel"] });
+    }
+  });
+export type EvaluationRecord = z.infer<typeof EvaluationRecord>;
+
+/**
+ * A hold on one memory pool (spec §11.3, ARCH milestone 3, resources). Coordination state
+ * with no history to migrate: it lives in relational columns only and carries no
+ * `schemaVersion`.
+ */
+export const ResourceLease = z
+  .object({
+    pool: z.string().min(1),
+    ownerId: z.string().min(1),
+    runId: prefixedId("run").optional(),
+    acquiredAt: Timestamp,
+    heartbeatAt: Timestamp,
+    expiresAt: Timestamp,
+  })
+  .strict();
+export type ResourceLease = z.infer<typeof ResourceLease>;
+
+// ---------------------------------------------------------------------------------------
 // Result envelope (spec §16.2)
 
 export const ResultEnvelope = z
@@ -517,6 +933,12 @@ const STORED = {
   recipe: Recipe,
   plan: Plan,
   candidate: PlanCandidate,
+  actionPlan: ActionPlan,
+  approvalRequest: ApprovalRequest,
+  approvalGrant: ApprovalGrant,
+  run: RunRecord,
+  runEvent: RunEvent,
+  evaluation: EvaluationRecord,
 } as const;
 export type StoredKind = keyof typeof STORED;
 type StoredRecord<K extends StoredKind> = z.infer<(typeof STORED)[K]>;
@@ -528,6 +950,12 @@ const UPGRADES: { [K in StoredKind]: Record<number, (raw: Record<string, unknown
   recipe: {},
   plan: {},
   candidate: {},
+  actionPlan: {},
+  approvalRequest: {},
+  approvalGrant: {},
+  run: {},
+  runEvent: {},
+  evaluation: {},
 };
 
 export class StoredRecordError extends Error {

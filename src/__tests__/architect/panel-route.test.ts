@@ -51,7 +51,10 @@ describe("the panel agent's tool server", () => {
 
   it("forwards every Architect variable and no other", () => {
     const all = Object.fromEntries(ARCHITECT_ENV_KEYS.map((k) => [k, "1"]));
-    expect(architectChildEnv({ ...all, PATH: "/bin", HF_TOKEN: "secret" })).toEqual(all);
+    // With the flag on, the panel route is marked, so that server never asks for an approval
+    // by elicitation (upstream's panel Codex agent accepts every one; GAPS Q20).
+    expect(architectChildEnv({ ...all, PATH: "/bin", HF_TOKEN: "secret" })).toEqual({ ...all, ARCHITECT_ROUTE: "panel" });
+    expect(architectChildEnv({ ARCHITECT_DATA_DIR: "/d" })).toEqual({ ARCHITECT_DATA_DIR: "/d" });
     expect(architectChildEnv({ COMFYUI_ARCHITECT: "" })).toEqual({});
   });
 

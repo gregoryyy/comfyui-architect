@@ -1,19 +1,20 @@
 # ComfyUI Architect
 
-ComfyUI Architect plans a ComfyUI workflow before an agent builds it. You describe what you want made. Architect starts from curated recipes and the models installed on your machine, builds up to three candidate graphs, validates each against your live ComfyUI, and tells you which ones run as they are and what blocks the others. It asks before anything downloads, installs code or costs money, and it records why it chose what it did.
+ComfyUI Architect plans a ComfyUI workflow before an agent builds it. You describe what you want made. Architect starts from curated recipes and the models installed on your machine, builds up to three candidate graphs, validates each against your live ComfyUI, and tells you which ones run as they are and what blocks the others. It renders the one you choose once you approve it, checks the output and keeps the record. It asks before anything runs, downloads, installs code or costs money, and it records why it chose what it did.
 
 It's a fork of [`artokun/comfyui-mcp`](https://github.com/artokun/comfyui-mcp), the MCP server and sidebar agent for ComfyUI. Everything upstream does keeps working; Architect adds a planning layer next to it, switched on with one environment variable. Upstream's README is kept as [README_BASE.md](README_BASE.md), and it describes all the inherited tools.
 
-> **Status: early.** Planning and export work for images. Architect doesn't run renders, download models or install nodes yet; that comes with the next phases ([roadmap](#roadmap)). The package isn't published: run it from a clone.
+> **Status: early.** Planning, export and approved local renders work for images. Architect doesn't download models or install nodes yet; that comes with the next phases ([roadmap](#roadmap)). The package isn't published: run it from a clone.
 
 ## What it does today
 
-With `COMFYUI_ARCHITECT=1`, the server adds two tools and two prompts to upstream's:
+With `COMFYUI_ARCHITECT=1`, the server adds three tools and two prompts to upstream's:
 
 | Tool | Actions | What it does |
 |---|---|---|
 | `architect_inspect` | `environment`, `capabilities` | Reads the connected ComfyUI: versions, devices, loaded node classes, installed model files, and which probes failed. Lists the recipe catalog and how well the installed files fit each recipe. |
 | `architect_plan` | `prepare`, `propose`, `get`, `validate`, `select`, `export` | Stores the task, builds and validates candidates, records your choice and writes the chosen graph with its evidence to disk. |
+| `architect_run` | `prepare`, `start`, `status`, `cancel`, `evaluate`, `finalize` | Renders the chosen candidate on your ComfyUI once you approve it, follows the job, checks the output and records your verdict. |
 
 A planning run looks like this:
 
@@ -21,7 +22,17 @@ A planning run looks like this:
 2. **Propose.** Architect binds each fitting recipe to installed models, compiles it to an API graph and validates it in layers: contract, structure, node types, model families, dependencies, policy. Each candidate comes back as `feasible`, `blocked` or `diagnostic`, with its blockers grouped (missing dependencies, unsupported operation, insufficient evidence, resource limits, policy conflicts).
 3. **Select and export.** You pick a feasible candidate. Export writes the task, the plan, the API graph, the validation report and a dependency lock under `~/.comfyui-mcp/architect/artifacts/`. You can drag the graph into ComfyUI, or queue it with upstream's tools.
 
-Selecting a candidate records a choice and authorizes nothing.
+Selecting a candidate records a choice and authorizes nothing. To render it:
+
+4. **Prepare a run.** Architect validates the candidate again and shows an action plan: what runs, on which target, within which limits, with a short hash.
+5. **Approve it yourself.** Where your MCP client can show a dialog, you approve there. Otherwise the agent gives you a command to run in your own terminal:
+
+   ```bash
+   COMFYUI_ARCHITECT=1 node dist/index.js architect approve <request-id>
+   ```
+
+   It shows the plan and asks you to type its hash. `architect pending` lists what's waiting. The agent can't approve for you; an approval is bound to that plan, one run and 30 minutes, and anything that changes the plan voids it.
+6. **Run and review.** Architect submits the job with its own prompt ID, follows it, and checks the output's count, format, size and readability. If a response gets lost, the run is marked `OUTCOME_UNKNOWN` and reconciled, never submitted twice. `cancel` stops only this job. You give your verdict in a dialog or with `architect review <run-id>`; execution, acceptance and your verdict are reported separately. `finalize` writes `run.json` and `evaluation.json` next to the plan's files.
 
 ### The rules it follows
 
@@ -29,6 +40,7 @@ Selecting a candidate records a choice and authorizes nothing.
 - **Unknown is not pass.** Every check is `pass`, `fail`, `unknown` or `not_applicable`. A hard unknown keeps a candidate from being feasible.
 - **Nothing is relaxed silently.** No lower resolution, other model or dropped constraint without your approval.
 - **Verdicts stay separate.** A graph that validates, a run that finished, an output that passed its checks and an output you accepted are four different statements.
+- **Approvals are yours.** A render needs your approval for that exact plan, given in a client dialog or your terminal. An agent that has a shell on your account could still run the terminal command itself, so a strict setup also restricts the agent's host ([SEC](ext/SEC.md#known-issues)).
 
 ### Recipes
 
@@ -75,9 +87,11 @@ Settings:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `COMFYUI_ARCHITECT` | off | `1` adds the Architect tools and prompts. Off, the server behaves as upstream. |
+| `COMFYUI_ARCHITECT` | off | `1` adds the Architect tools and prompts next to upstream's. `managed` also withholds upstream's tools that render, install or change things, so every effect goes through `architect_run`. Off, the server behaves as upstream. |
 | `ARCHITECT_DATA_DIR` | `~/.comfyui-mcp/architect` | Where `architect.db` and the exported artifacts go. Must be an absolute path. |
 | `COMFYUI_URL` | auto-detected | The ComfyUI target, as upstream reads it. |
+| `ARCHITECT_PANEL_RUNS` | off | `terminal` lets the ComfyUI panel's agent start a run you approved with the terminal command. Off, runs start only from an external client. The panel's agents approve their own shell commands, so with `terminal` the panel's agent could approve for you. |
+| `ARCHITECT_MANAGE_RESIDENCY` | off | `1` lets Architect unload the models a local Ollama holds in the render's memory and load them back after the render. The approval names each model and its size, so you're asked first; a model loaded after you approved isn't touched and blocks the render. Off, loaded models block the render until you unload them. |
 
 Don't install `comfyui-mcp` from npm or let upstream's panel launcher start a server: both start upstream's package. The package, the command and the server name stay `comfyui-mcp` until a rename before the first release.
 
@@ -95,7 +109,7 @@ Don't install `comfyui-mcp` from npm or let upstream's panel launcher start a se
 |---|---|---|
 | 0 | Reproducible fork, feature flag, seam audit | done, except the first CI run |
 | 1 | One end-to-end planning slice: tasks, catalog, recipes, validation, export | done |
-| 2 | Managed execution: action plans, approvals you give, a durable run controller, output checks, your review | next |
+| 2 | Managed execution: action plans, approvals you give, a durable run controller, output checks, your review | in review |
 | 3 | More recipes, approved downloads and installs, bounded repair | planned |
 | 4 | Architect controls in the ComfyUI sidebar | planned |
 | 5 | Learning from measured runs | planned |

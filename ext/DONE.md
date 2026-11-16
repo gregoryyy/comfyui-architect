@@ -2,6 +2,37 @@
 
 The progress log, newest entry on top. Each entry: `## YYYY-MM-DD HH:MM — Title` (time from `date`), the TODO items and PR or commit, an `Agent:` line, then **Implementation notes**, **Deviations** and **Insights**. The plan is in [TODO](TODO.md).
 
+## 2026-11-15 22:54 — Managed execution: approved local renders (milestone 3)
+
+TODO items: 3.3 to 3.9 (3.1 and 3.2 landed earlier on the branch). GAPS Q20, Q21, Q22 (answered 22:24), Q23 (answered 22:36). PR on branch `feat/milestone-3`.
+
+Agent: Opus 5.5, subagents: implementer (contracts and storage; controller, leases and output checks; the review's controller-side fixes; Q23's unload and reload), assurance (milestone review), gap-researcher (approval channel).
+
+### Implementation notes
+
+- `architect_run` (prepare, start, status, cancel, evaluate, finalize) renders a selected candidate on the local ComfyUI. `prepare` validates the candidate again and stores an action plan whose sha256 hash covers plan, task revision, candidate, target, effects and budgets, and opens an approval request.
+- Grants come from two channels only: an MCP form dialog, where the client declares `elicitation.form` and the server isn't the panel's, or the terminal command `comfyui-mcp architect approve <request>`, which needs a TTY and the typed short hash. Only an explicit "approve" grants; a declined or unanswered dialog leaves the request for the terminal. No tool parameter carries an approval. A grant is for one run, expires after 30 minutes and is consumed in the transaction that creates the run.
+- `admitEffect` is the one gate on every route. It refuses on the panel route unless `ARCHITECT_PANEL_RUNS=terminal` (Q22), refuses targets that aren't loopback or don't report ComfyUI 0.3.57 or newer, and rebuilds the plan hash against a fresh snapshot.
+- `COMFYUI_ARCHITECT=managed` applies upstream's `readonly` tool preset, so upstream's effectful tools are withheld on every route; an operator allow list that would re-admit one stops the server (Q21).
+- The run controller stores every transition before it acts. A submission is claimed in one transaction (migration 3, one `submit_attempt` per run) with a client-chosen prompt ID before the POST; a lost response is `OUTCOME_UNKNOWN` and reconciles against queue and history. Cancel dequeues or interrupts only the run's own prompt, after reading the queue again. Unfinished runs resume when the server starts.
+- One lease per memory pool. With `ARCHITECT_MANAGE_RESIDENCY=1` the action plan names the Ollama models resident in the pool, with their sizes, so the user approves them; only those are unloaded, one by one, and they are loaded back after the render with the keep-alive they had (Q23). Otherwise a resident model blocks the render.
+- Output checks (evaluator `architect.output-basic` v2): run completion, count, readability (a full decode through sharp; without sharp it's `unknown`), format and dimensions. The user's verdict comes through the dialog or `comfyui-mcp architect review <run>`; a verdict the agent relays is stored as `agent_reported`. Execution, acceptance and the user's verdict are reported separately; a later user verdict on a completed run updates its acceptance.
+- `finalize` writes `run.json` (with lineage and the dependency lock's digest), `evaluation.json` and `dependencies.lock.json` under the plan's artifacts, refusing symbolic links.
+- Upstream seams: an optional `promptId` on `enqueuePrompt` (`src/comfyui/client.ts`) and the `architect` subcommand dispatch in `src/boot.ts`, both in ARCH's footprint.
+- Checks: `tsc`, build, asset counts, `check:vocabulary`, `check:unknown-collapse`, `vocab:export --check` and `docs:gen` pass; 555 Architect tests pass. The full suite's result is in the PR.
+
+### Deviations
+
+- Spec §15.4 scopes the idempotency key to the plan revision. Here it is the action plan, and `prepare` refuses while the plan has a run whose job may still run, which gives the same guarantee and keeps a deliberate rerun possible with a new approval.
+- Resource estimates stay `unknown`: every first run is the bounded probe its grant names, and "unload as needed" means every resident model in the pool until resource profiles exist.
+- Left open: the lease is released before the models are loaded back, so another run may see them mid-reload; a process that resumes a `VALIDATING` run submits before its next heartbeat takes the lease.
+
+### Insights
+
+- Upstream's panel agents approve their own shell commands and its Codex backend accepts every elicitation, so no channel on that route can tell the user from the agent; the operator now decides that trade-off explicitly.
+- The full suite caught what the Architect tests couldn't: `architect/config.ts` had started importing the facade, and since upstream's `panel-secrets.ts` imports `config.ts`, two upstream test files that mock the ComfyUI client failed to load. `config.ts` now imports nothing (a test checks it) and managed mode lives in `mode.ts`. The suite never finished on this machine because `lsof` hangs here, and upstream's `bridge-port-reclaim.test.ts` calls it through `execFileSync` without a timeout, which blocks its worker so no test timeout can fire; the suite ran with that one file excluded. Setting `COMFYUI_PORT` to keep the live ComfyUI out of reach doesn't help and breaks four upstream tests that expect it unset.
+- The assurance review found the two serious gaps (a race between two processes submitting one run, and the panel route) that the unit tests didn't. Both have negative tests now.
+
 ## 2026-11-15 21:05 — The fork's own README
 
 GAPS Q11 (answer of 21:05). PR on branch `docs/readme`.

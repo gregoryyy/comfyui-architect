@@ -2,9 +2,10 @@
 // always through upstream's registrar, so the tool-surface policy and compact `call_tool`
 // cover it like any other tool (spec §14.3).
 //
-// Milestone 2: `architect_inspect` (environment, capabilities) and `architect_plan`
-// (prepare, propose, get, validate, select, export). Neither downloads, installs, renders
-// or touches the canvas. Descriptions are prompt text for models: English, exact, and not
+// `architect_inspect` (environment, capabilities) and `architect_plan` (prepare, propose,
+// get, validate, select, export) read and plan; `architect_run` (architect-run.ts) renders a
+// selected candidate under the user's approval. None downloads, installs or touches the
+// canvas. Descriptions are prompt text for models: English, exact, and not
 // translated (STYLE, MCP tools).
 
 import { randomUUID } from "node:crypto";
@@ -14,7 +15,12 @@ import { fileURLToPath } from "node:url";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { ARCHITECT_SCHEMA_VERSION } from "../fork-identity.js";
-import { architectEnabled } from "../services/architect/config.js";
+import { requireFeasible } from "../services/architect/admission.js";
+import { ARCHITECT_RESIDENCY_ENV, architectEnabled } from "../services/architect/config.js";
+import { RunController } from "../services/architect/controller.js";
+import { ArchitectExecution } from "../services/architect/execution.js";
+import { ResourceCoordinator } from "../services/architect/resources.js";
+import { registerArchitectRunTool, type RunToolContext } from "./architect-run.js";
 import { ArchitectPlanning, PlanningError, SHIPPED_SOURCE } from "../services/architect/planning.js";
 import { TaskSpecInput, type ResultEnvelope } from "../services/architect/schemas.js";
 import { ArchitectService, defaultDeps } from "../services/architect/service.js";
@@ -89,12 +95,93 @@ function need<T>(value: T | undefined, name: string, action: string): T {
   return value;
 }
 
+/**
+ * The execution side over the same planning instance and store (TODO 3.9). Built at the
+ * first `architect_run` call; it then reconciles runs left unfinished by an earlier process
+ * and polls active runs, so a run's progress doesn't depend on the agent asking (spec §11.3:
+ * the controller needs no LLM to follow a render).
+ */
+// One per process: the direct registration and upstream's compact catalog each register the
+// tools, and two controllers would poll the same runs.
+let processRunContext: RunToolContext | undefined;
+
+function defaultRunContext(planning: PlanningFactory, upstream: UpstreamFacade): () => RunToolContext {
+  return () => {
+    if (processRunContext) return processRunContext;
+    let ctx: RunToolContext;
+    const p = planning();
+    const store = p.store;
+    const now = () => new Date();
+    const newId = () => randomUUID();
+    const resources = new ResourceCoordinator({
+      store,
+      upstream,
+      ownerId: `server-${process.pid}-${randomUUID()}`,
+      now,
+      manageResidency: process.env[ARCHITECT_RESIDENCY_ENV] === "1",
+    });
+    const controller = new RunController({
+      store,
+      upstream,
+      resources,
+      now,
+      newUuid: () => randomUUID(),
+      graphFor: async (run) => {
+        const task = store.getTask(run.taskId, run.taskRevision);
+        if (!task) throw new PlanningError("GRAPH_CONFLICT", `task ${run.taskId} r${run.taskRevision} is not stored`, "Prepare a new run.");
+        return p.graphOfCandidate(run.candidateId, task).graph;
+      },
+      taskFor: (run) => {
+        const task = store.getTask(run.taskId, run.taskRevision);
+        if (!task) throw new PlanningError("GRAPH_CONFLICT", `task ${run.taskId} r${run.taskRevision} is not stored`, "Prepare a new run.");
+        return task;
+      },
+      // A run that waited for its resources is validated again before it's submitted.
+      revalidate: (run) => requireFeasible(p, run.planId, run.candidateId),
+    });
+    const execution = new ArchitectExecution({
+      store,
+      planning: p,
+      baseUrl: () => upstream.comfyuiBaseUrl(),
+      now,
+      newId,
+      driver: controller,
+      dataDir: architectDataDir(),
+      dependencyLock: (candidateId, task) => p.dependencyLock(candidateId, task),
+      // What a render would unload, read at prepare so the approval names it (GAPS Q23).
+      releasable: (baseUrl) => resources.releasable(baseUrl),
+    });
+    ctx = { execution, store, now, newId };
+    processRunContext = ctx;
+    void controller.resumeAll().catch(() => undefined);
+    controller.startPolling();
+    return ctx;
+  };
+}
+
 export function registerArchitectTools(
   server: McpServer,
   service: ArchitectService = new ArchitectService(defaultDeps(createUpstreamFacade())),
   planningFactory?: PlanningFactory,
+  runContext?: () => RunToolContext,
 ): void {
-  const planning = planningFactory ?? defaultPlanningFactory(service, createUpstreamFacade());
+  const upstream = createUpstreamFacade();
+  const planning = planningFactory ?? defaultPlanningFactory(service, upstream);
+  const context = runContext ?? defaultRunContext(planning, upstream);
+  registerArchitectRunTool(server, context);
+  if (!runContext) {
+    // Build the run context at start rather than at the first architect_run call, so runs
+    // left unfinished by an earlier process are reconciled and their leases kept without
+    // waiting for the agent (spec §15.3: the browser connection isn't the job's source of
+    // truth). A failure here (an unusable data directory) is reported by the first call.
+    setImmediate(() => {
+      try {
+        context();
+      } catch {
+        // The first architect_* call reports it with its own error envelope.
+      }
+    }).unref();
+  }
 
   server.tool(
     "architect_inspect",
@@ -248,7 +335,7 @@ export function registerArchitectPrompts(server: McpServer, env: NodeJS.ProcessE
     "architect",
     {
       title: "Plan a workflow with ComfyUI Architect",
-      description: "Plan a ComfyUI workflow for a task from installed models and curated recipes, without downloads or renders.",
+      description: "Plan a ComfyUI workflow for a task from installed models and curated recipes, and render it once you approve; no downloads or installs.",
       argsSchema: { task: z.string().describe("What to make, in the user's words.") },
     },
     ({ task }) => ({

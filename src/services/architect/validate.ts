@@ -122,7 +122,7 @@ export function isPaidRenderNode(def: ComfyUINodeDef): boolean {
 }
 
 /** Loopback hosts, as upstream's `isLoopbackHost` lists them, plus the rest of 127.0.0.0/8. */
-function isLoopbackHostname(hostname: string): boolean {
+export function isLoopbackHostname(hostname: string): boolean {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (h === "localhost" || h === "::1" || h === "0.0.0.0" || h === "::") return true;
   return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
