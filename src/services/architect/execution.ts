@@ -371,14 +371,22 @@ export class ArchitectExecution {
   async cancel(request: { runId: string }) {
     const { store, now, driver } = this.deps;
     const run = this.requireRun(request.runId);
-    if (!run.attempt) return { run: await driver.cancel(run.id, "agent") };
-    const root = this.requireRun(run.attempt.rootRunId);
-    const current = store.listAttempts(root.id).at(-1) ?? root;
-    if (current.id !== root.id && !store.listRunEvents(root.id).some((e) => e.kind === "cancel")) {
-      store.appendRunEvent({ runId: root.id, kind: "cancel", principal: "agent", reason: `cancellation of the attempts requested by the agent (attempt ${current.attempt?.index ?? "?"} in flight)`, at: now() });
+    const render = store.getActionPlan(run.actionPlanId)?.effects.find((e): e is LocalRenderEffect => e.kind === "local_render");
+    const chained = run.attempt !== undefined || render?.stages !== undefined || render?.repair !== undefined;
+    if (!chained) return { run: await driver.cancel(run.id, "agent") };
+    const root = this.requireRun(run.attempt?.rootRunId ?? run.id);
+    // The root's cancel event is what stops the chain: the store refuses a further attempt
+    // after it, and the controller decides nothing more. It is written whatever the attempt in
+    // flight is, since the controller's cancel is a no-op on a run that is EVALUATING, waiting
+    // for review or final, and such a root may still be followed by a repair or a final. It
+    // is written before the attempt in flight is read, so an attempt created a moment earlier
+    // is the one cancelled, and none can be created after.
+    if (!store.listRunEvents(root.id).some((e) => e.kind === "cancel")) {
+      store.appendRunEvent({ runId: root.id, kind: "cancel", principal: "agent", reason: "cancellation of the attempts requested by the agent", at: now() });
     }
+    const current = store.listAttempts(root.id).at(-1) ?? root;
     await driver.cancel(current.id, "agent");
-    return { run: this.requireRun(run.id), chain: this.chainView(root.id).summary };
+    return { run: this.requireRun(run.id), ...(root.attempt ? { chain: this.chainView(root.id).summary } : {}) };
   }
 
   /**

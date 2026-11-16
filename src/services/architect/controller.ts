@@ -35,7 +35,7 @@ import { type DecodeResult, acceptanceFrom, evaluateOutputs, needsUserReview, ty
 import type { FetchedOutput } from "./evaluators/contract.js";
 import type { PoolLease, VisualEvaluation } from "./evaluators/registry.js";
 import { type MediaProbe, probeMedia } from "./media-probe.js";
-import { type AttemptView, SEED_CHANGEABLE_CRITERIA, type StopRule, applySteps, buildRevision, chainStopOf, nextAttempt } from "./repair.js";
+import { type AttemptView, SEED_CHANGEABLE_CRITERIA, type StopRule, applySteps, buildRevision, chainStopOf, nextAttempt, resultOf } from "./repair.js";
 import { type ResourceCoordinator, residencyRestored, unloadedForRun } from "./resources.js";
 import {
   type AcquireModelsEffect,
@@ -88,9 +88,12 @@ export interface RunControllerDeps {
   /** The task revision the run serves. */
   taskFor: (run: RunRecord) => TaskSpec;
   /**
-   * Check the run against a fresh environment snapshot before it is submitted. Called only
-   * for a run that waited in WAITING_FOR_RESOURCE, since the target may have changed while
-   * it waited. A throw fails the run with the error's code, as a `graphFor` error does.
+   * Check the run against a fresh environment snapshot, and its input files against the
+   * sha256 its effect bound, before it is submitted. Called for a run that waited in
+   * WAITING_FOR_RESOURCE, since the target may have changed while it waited, for every
+   * later attempt of a chain, which a root's start checked only once, and after placed
+   * downloads. A throw fails the run with the error's code, as a `graphFor` error does;
+   * without it a later attempt isn't submitted.
    */
   revalidate?: (run: RunRecord) => Promise<void>;
   /**
@@ -425,6 +428,12 @@ export class RunController {
     const run = this.require(runId);
     if (run.state === "VALIDATING") return this.validateAndSubmit(run);
     if (run.state !== "PREPARING" && run.state !== "WAITING_FOR_RESOURCE") return run;
+    if (this.cancelPending(run)) {
+      // Recorded, but not acted on: the process stopped in between, or the request came for
+      // the chain while this attempt was being created. It is cancelled unsubmitted.
+      if (run.state === "PREPARING" && !isLaterAttempt(run) && this.acquireEffectOf(run) && this.deps.acquirer) await this.deps.acquirer.stop(run, "cancelled");
+      return this.move(this.require(runId), "CANCELLED", "cancelled before submission, as requested");
+    }
 
     const overBudget = this.budgetExceeded(run);
     // A later attempt takes no downloads: the root acquired what the grant approved (ARCH 2026-11-16).
@@ -456,6 +465,15 @@ export class RunController {
       },
     });
     return validating.state === "VALIDATING" ? this.validateAndSubmit(validating) : validating;
+  }
+
+  /**
+   * Whether a cancel request is recorded for a run not yet submitted: on the run itself, or,
+   * for a later attempt, on its chain's root, where execution records it for the whole chain.
+   */
+  private cancelPending(run: RunRecord): boolean {
+    if (cancelRequested(this.deps.store.listRunEvents(run.id))) return true;
+    return isLaterAttempt(run) && run.attempt !== undefined && cancelRequested(this.deps.store.listRunEvents(run.attempt.rootRunId));
   }
 
   /** The run's approved downloads, when its action plan has them. */
@@ -558,9 +576,18 @@ export class RunController {
       }
     }
     // A run that waited for the pool was checked against the environment of its start; the
-    // target may have changed since, so it is checked again before the POST (spec §15.3).
+    // target may have changed since, so it is checked again before the POST (spec §15.3). So
+    // is every later attempt: start checked the inputs and the snapshot once, for the root,
+    // and a repair or a final may follow it many minutes later. revalidate reads the input
+    // files again against the sha256 the effect bound, so a changed one invalidates the
+    // approval instead of reaching ComfyUI under it (GAPS Q33).
     const waited = events.some((e) => e.kind === "transition" && e.to === "WAITING_FOR_RESOURCE");
-    if (waited && this.deps.revalidate) {
+    const later = isLaterAttempt(run);
+    if (later && !this.deps.revalidate) {
+      const message = `attempt ${run.attempt?.index ?? "?"} can't be checked against its inputs and a fresh snapshot here, so it isn't submitted`;
+      return this.move(run, "FAILED", message, { patch: { error: { code: "APPROVAL_INVALIDATED", message } } });
+    }
+    if ((waited || later) && this.deps.revalidate) {
       try {
         await this.deps.revalidate(run);
       } catch (err) {
@@ -569,6 +596,8 @@ export class RunController {
       }
     }
 
+    // A cancel request recorded during the awaits above, on the run or on its chain's root.
+    if (this.cancelPending(run)) return this.move(run, "CANCELLED", "cancelled before submission, as requested");
     // spec §15.4: one submission per run. The claim checks state and attempt under the
     // store's write lock and writes the attempt, so of two processes that both got here
     // (two servers resuming one VALIDATING run, or a poll racing an advance) one POSTs. The
@@ -842,13 +871,17 @@ export class RunController {
     const run = this.require(runId);
     // A final run, or one whose render is done, has nothing left to cancel.
     if (FINAL_RUN_STATES.includes(run.state) || run.state === "EVALUATING" || run.state === "AWAITING_REVIEW") return run;
-    this.deps.store.appendRunEvent({
-      runId,
-      kind: "cancel",
-      principal,
-      reason: `cancellation requested by the ${principal}`,
-      at: this.deps.now(),
-    });
+    // One request is one event: a chain's root may already carry the request execution
+    // recorded for the whole chain.
+    if (!cancelRequested(this.deps.store.listRunEvents(runId))) {
+      this.deps.store.appendRunEvent({
+        runId,
+        kind: "cancel",
+        principal,
+        reason: `cancellation requested by the ${principal}`,
+        at: this.deps.now(),
+      });
+    }
     switch (run.state) {
       case "PREPARING":
         // The run's own downloads stop first, by the job ids on its acquisitions; staged
@@ -1172,8 +1205,17 @@ export class RunController {
     const attempts = store.listAttempts(root.id);
     const last = attempts.at(-1);
     if (!last?.attempt) return undefined;
-    // A created attempt that hasn't left PREPARING (the process stopped after creating it) is advanced.
-    if (last.id !== root.id && last.state === "PREPARING") return last;
+    const cancelled = cancelRequested(rootEvents) || cancelRequested(store.listRunEvents(last.id));
+    // A created attempt that hasn't left PREPARING (the process stopped after creating it) is
+    // advanced, unless the chain was cancelled meanwhile: then it is cancelled unsubmitted.
+    if (last.id !== root.id && last.state === "PREPARING") {
+      if (!cancelled) return last;
+      this.move(last, "CANCELLED", "cancelled before submission: the chain was cancelled");
+      const task = this.deps.taskFor(root);
+      const resultRunId = resultOf(store.listAttempts(root.id).map((a) => this.attemptView(a, task)));
+      this.stopChain(root, { rule: "cancelled", reason: "the run was cancelled", ...(resultRunId ? { resultRunId } : {}) }, attempts);
+      return undefined;
+    }
     if (!ATTEMPT_ENDED.includes(last.state)) return undefined;
 
     let actionPlan: ActionPlan | undefined;
@@ -1202,13 +1244,15 @@ export class RunController {
       if (graphFingerprint(approved) !== root.graphFingerprint) throw new Error(`the graph compiled now isn't the one grant ${grant.id} approved`);
       return applySteps(approved, lastView.steps);
     };
-    const needsGraph = last.state === "FAILED" || (last.state === "COMPLETED" && lastView.qualityFailure !== undefined);
+    // A cancelled chain stops without the graph: compiling it may fail, and a failure here
+    // would leave the decision pending, to be retried, instead of stopping the chain.
+    const needsGraph = !cancelled && (last.state === "FAILED" || (last.state === "COMPLETED" && lastView.qualityFailure !== undefined));
     const decision = nextAttempt({
       attempts: views,
       repair: render.repair?.transformations ?? [],
       limits: grant.limits,
       deadlinePassed: now().getTime() >= Date.parse(root.createdAt) + grant.limits.maxWallTimeSeconds * 1000,
-      cancelRequested: cancelRequested(rootEvents) || cancelRequested(store.listRunEvents(last.id)),
+      cancelRequested: cancelled,
       lastGraph: needsGraph ? await graphOfLast() : {},
     });
     if (decision.kind === "wait") return undefined;

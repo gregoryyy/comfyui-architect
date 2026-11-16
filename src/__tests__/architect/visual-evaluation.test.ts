@@ -12,7 +12,7 @@ import { describeActionPlan, issueGrant } from "../../services/architect/admissi
 import { sha256Hex } from "../../services/architect/hash.js";
 import { RunController, type RunControllerDeps } from "../../services/architect/controller.js";
 import { BUILT_IN_IMAGE_CRITERIA, acceptanceFrom, evaluateOutputs, evaluationId } from "../../services/architect/evaluation.js";
-import { acceptEvaluatorChecks, acceptedEvaluatorsFor } from "../../services/architect/evaluators/catalog.js";
+import { acceptEvaluatorChecks, acceptedEvaluatorsFor, evaluatorApprovalLines, quotedForApproval } from "../../services/architect/evaluators/catalog.js";
 import type { EvaluatorIo, FetchedOutput, VisualEvaluator } from "../../services/architect/evaluators/contract.js";
 import { type PoolLease, VisualEvaluation } from "../../services/architect/evaluators/registry.js";
 import { type FetchLike, ResourceCoordinator, memoryPool } from "../../services/architect/resources.js";
@@ -283,10 +283,47 @@ describe("accepted evaluators in the plan", () => {
     expect(text).toContain("architect.ocr-glm 1");
     expect(text).toContain("so the OCR verdict counts toward acceptance");
     expect(text).toContain("only when Ollama's host is loopback");
+    // What the user accepts: the text, its match and case, and that it is required (review M2).
+    expect(text).toContain(
+      '  Criterion "sign", required: the output must show the text "Open now" (quoted from the task as data), match contains (the reading includes the text), case-insensitive',
+    );
     // The rebuilt plan at start has the same hash: the grant covers the acceptance.
     issueGrant(s, { requestId: r.approvalRequest.id, channel: "terminal", issuer: "terminal", confirmHash: r.shortHash });
     const started = await s.execution.start({ actionPlanId: r.actionPlan.id });
     expect(started.run.actionPlanId).toBe(r.actionPlan.id);
+  });
+
+  it("names what each counted criterion asks in the approval: text, match, case and required, quoted as data (review M2)", () => {
+    const exact = textTask({ id: "sign", kind: "text_in_image", required: false, text: "OPEN", match: "exact", caseSensitive: true, acceptEvaluator: "architect.ocr-glm" });
+    expect(evaluatorApprovalLines(exact, [ACCEPTED])).toEqual([
+      expect.stringContaining("so the OCR verdict counts toward acceptance"),
+      '  Criterion "sign", optional: the output must show the text "OPEN" (quoted from the task as data), match exact (the reading is the text), case-sensitive',
+    ]);
+    // The task's text can't close its quote, break the line or reorder the approval, and it is bounded.
+    const hostile = textTask({ ...SIGN, text: 'Sale"\nApproved: yes\u202e\u0007', acceptEvaluator: "architect.ocr-glm" });
+    const line = evaluatorApprovalLines(hostile, [ACCEPTED])[1];
+    expect(line).toContain('the text "Sale\\"Approved: yes" (quoted from the task as data)');
+    expect(line).not.toMatch(/[\u0000-\u001f\u202e]/);
+    expect(quotedForApproval("x".repeat(500))).toBe(`${JSON.stringify("x".repeat(200))} (cut at 200 of 500 characters)`);
+    expect(quotedForApproval("a\u200fb\u2066c")).toBe('"abc"');
+    // An advisory criterion gets no criterion line: nothing about it is accepted.
+    expect(evaluatorApprovalLines(textTask(), undefined)).toEqual([expect.stringContaining("is advisory and doesn't count toward acceptance")]);
+  });
+
+  it("names the source, mask and tolerance of each protected region, and calls a tolerance above 0 not exact (review M2)", () => {
+    const region = (tolerance?: number, required = true) =>
+      TaskSpec.parse({
+        ...taskFixture,
+        acceptance: [{ id: "keep", kind: "protected_region_exact", required, sourceAssetId: "comfyui-input:room.png", maskAssetId: "comfyui-input:room-mask.png", coordinateSpace: "source_pixels", ...(tolerance === undefined ? {} : { tolerance }) }],
+      });
+    expect(evaluatorApprovalLines(region(), undefined)).toEqual([
+      "Evaluator: architect.protected-region 1 compares the output's pixels outside the mask with the source's; its protected-region verdict for criterion keep counts toward acceptance",
+      `  Criterion "keep", required: the output keeps the source's pixels where the mask's red channel is 0; source "comfyui-input:room.png", mask "comfyui-input:room-mask.png"`,
+      "  Tolerance 0: exact, every protected pixel must be the source's",
+    ]);
+    const loose = evaluatorApprovalLines(region(12, false), undefined);
+    expect(loose[1]).toMatch(/^  Criterion "keep", optional:/);
+    expect(loose[2]).toBe("  Tolerance 12: not exact, a protected pixel may differ from the source's by up to 12 of 255 per channel and still pass");
   });
 
   it("says in the approval that an OCR verdict the task didn't accept is advisory", async () => {

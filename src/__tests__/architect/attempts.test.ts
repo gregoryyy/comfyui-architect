@@ -10,11 +10,12 @@ import { join } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ApprovalError, describeActionPlan, issueGrant } from "../../services/architect/admission.js";
+import { ApprovalError, describeActionPlan, issueGrant, requireInputsUnchanged } from "../../services/architect/admission.js";
 import { graphFingerprint } from "../../services/architect/compile.js";
 import { RunController, type RunControllerDeps } from "../../services/architect/controller.js";
 import { ArchitectExecution } from "../../services/architect/execution.js";
-import { canonicalJson } from "../../services/architect/hash.js";
+import { evaluationId } from "../../services/architect/evaluation.js";
+import { canonicalJson, sha256Hex } from "../../services/architect/hash.js";
 import { buildRevision, smokeStep, SMOKE_TRANSFORMATION } from "../../services/architect/repair.js";
 import { ResourceCoordinator, type FetchLike, memoryPool } from "../../services/architect/resources.js";
 import {
@@ -355,6 +356,53 @@ describe("createChildAttempt: the store's admission of a further attempt (TODO 6
   });
 });
 
+describe("createChildAttempt after a submission claim or a cancel request (review L1, H1)", () => {
+  const TRANSPORT = { code: "INTERNAL_ERROR" as const, message: "fetch failed: connect ECONNREFUSED 127.0.0.1:8188" };
+  const RETRY: TransformationStep = { id: "retry.unchanged", version: 1, reason: "attempt 1 failed: transport", failureClass: "transport", failedRunId: "run-1" };
+
+  /** Fail a run with a transport error, claiming its submission first when `claimed`. */
+  function failAfter(store: ArchitectStore, run: RunRecord, claimed: boolean): RunRecord {
+    store.transitionRun({ runId: run.id, from: "PREPARING", to: "VALIDATING", principal: "controller", reason: "t", at: clock });
+    if (claimed) expect(store.claimSubmission({ runId: run.id, promptId: "11111111-2222-4333-8444-555555555555", at: clock }).won).toBe(true);
+    return store.transitionRun({ runId: run.id, from: "VALIDATING", to: "FAILED", principal: "controller", reason: "t", patch: { error: TRANSPORT }, at: clock }).run;
+  }
+
+  it("refuses retry.unchanged after a predecessor whose submission was claimed, and allows it before any claim", () => {
+    const store = openStore();
+    const claimed = failAfter(store, seedRun(store, { chain: CHAIN }), true);
+    expect(() => create(store, claimed, child(claimed, claimed, { index: 2, stage: "smoke", repairRound: 1, steps: [SMOKE, RETRY] }))).toThrow(
+      /retry\.unchanged follows only an attempt that never claimed a submission/,
+    );
+    expect(store.listAttempts(claimed.id)).toHaveLength(1);
+
+    const store2 = ArchitectStore.open(mkdtempSync(join(tmpdir(), "architect-attempts-r-")), { now: () => clock });
+    stores.push(store2);
+    const unclaimed = failAfter(store2, seedRun(store2, { chain: CHAIN }), false);
+    expect(create(store2, unclaimed, child(unclaimed, unclaimed, { index: 2, stage: "smoke", repairRound: 1, steps: [SMOKE, RETRY] })).created).toBe(true);
+  });
+
+  it("never lets a later attempt claim its submission once the root has a cancel request", () => {
+    const store = openStore();
+    const root = failRun(store, seedRun(store, { chain: CHAIN }), OOM);
+    const second = create(store, root, child(root, root, { index: 2, stage: "smoke", repairRound: 1, steps: [SMOKE, TILED] })).run;
+    store.transitionRun({ runId: second.id, from: "PREPARING", to: "VALIDATING", principal: "controller", reason: "t", at: clock });
+    store.appendRunEvent({ runId: root.id, kind: "cancel", principal: "agent", reason: "stop", at: clock });
+    expect(store.claimSubmission({ runId: second.id, promptId: "11111111-2222-4333-8444-555555555555", at: clock })).toEqual({ won: false, reason: `run ${second.id} has a cancel request` });
+    expect(store.listRunEvents(second.id).some((e) => e.kind === "submit_attempt")).toBe(false);
+  });
+
+  it("refuses an attempt after a cancel request on the attempt it follows", () => {
+    const store = openStore();
+    const root = failRun(store, seedRun(store, { chain: CHAIN }), OOM);
+    const second = failRun(store, create(store, root, child(root, root, { index: 2, stage: "smoke", repairRound: 1, steps: [SMOKE, TILED] })).run, OOM);
+    store.appendRunEvent({ runId: second.id, kind: "cancel", principal: "user", reason: "stop", at: clock });
+    expect(() => create(store, second, child(root, second, { index: 3, stage: "smoke", repairRound: 2, steps: [SMOKE, TILED, { ...TILED, id: "vae.smaller_tiles" }] }))).toThrow(
+      /attempt .* was cancelled/,
+    );
+    expect(store.listAttempts(root.id)).toHaveLength(2);
+  });
+});
+
 // ---------------------------------------------------------------------------------------
 // The controller drives the chain
 
@@ -417,9 +465,21 @@ class FakeComfy {
   }
 }
 
-function chainHarness(opts: { chain?: SeedOptions["chain"]; task?: Record<string, unknown>; visualEvaluation?: RunControllerDeps["visualEvaluation"] } = {}) {
+function chainHarness(
+  opts: {
+    chain?: SeedOptions["chain"];
+    task?: Record<string, unknown>;
+    visualEvaluation?: RunControllerDeps["visualEvaluation"];
+    inputs?: SeedOptions["inputs"];
+    /** The check before a later attempt's POST; by default one that passes and is recorded. */
+    revalidate?: RunControllerDeps["revalidate"];
+    /** The graph the candidate compiles to now; by default the approved one. */
+    graphFor?: RunControllerDeps["graphFor"];
+  } = {},
+) {
   const store = openStore();
-  const root = seedRun(store, { chain: opts.chain ?? CHAIN, ...(opts.task ? { task: opts.task } : {}) });
+  const root = seedRun(store, { chain: opts.chain ?? CHAIN, ...(opts.task ? { task: opts.task } : {}), ...(opts.inputs ? { inputs: opts.inputs } : {}) });
+  const revalidated: string[] = [];
   const comfy = new FakeComfy();
   const now = () => new Date(clock);
   let n = 0;
@@ -430,12 +490,17 @@ function chainHarness(opts: { chain?: SeedOptions["chain"]; task?: Record<string
     resources: new ResourceCoordinator({ store, upstream: { ollamaHost: () => "http://127.0.0.1:11434", loadOllama: async () => true, isOwnHostAddress: () => false }, ownerId: "instance-a", now, manageResidency: false, fetchImpl: refused, probeTimeoutMs: 20 }),
     now,
     newUuid: uuid,
-    graphFor: async () => CHAIN_GRAPH,
+    graphFor: opts.graphFor ?? (async () => CHAIN_GRAPH),
     taskFor: (r): TaskSpec => {
       const t = store.getTask(r.taskId, r.taskRevision);
       if (!t) throw new Error("task missing");
       return t;
     },
+    revalidate:
+      opts.revalidate ??
+      (async (r) => {
+        revalidated.push(r.id);
+      }),
     ...(opts.visualEvaluation ? { visualEvaluation: opts.visualEvaluation } : {}),
   });
   const notUsed = () => {
@@ -451,7 +516,7 @@ function chainHarness(opts: { chain?: SeedOptions["chain"]; task?: Record<string
     dataDir: dir,
     dependencyLock: () => undefined,
   });
-  return { store, comfy, controller, execution, root };
+  return { store, comfy, controller, execution, root, revalidated };
 }
 
 describe("the controller's attempts (TODO 6.1.3, 6.2.1)", () => {
@@ -637,6 +702,247 @@ describe("the controller's attempts (TODO 6.1.3, 6.2.1)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------------------
+// Cancelling a chain whatever its attempt in flight is (review H1), and the check of a later
+// attempt before its POST (review M1)
+
+/** A chain whose one final may be repaired into a second by `seed.next`, for a failed OCR criterion. */
+const SEED_CHAIN: NonNullable<SeedOptions["chain"]> = {
+  graph: CHAIN_GRAPH,
+  outputNodes: ["7"],
+  stages: [{ stage: "final" }],
+  repair: { transformations: [{ id: "seed.next", version: 1 }] },
+  limits: { maxPreviewRuns: 0, maxFinalRuns: 2, maxRepairRounds: 2 },
+};
+const SIGN_TASK = { acceptance: [{ id: "sign", kind: "text_in_image", required: true, text: "Open now", acceptEvaluator: "architect.ocr-glm" }] };
+
+/** OCR that waits for the pool while `waiting` is set, then reads text that fails the criterion. */
+function ocrFake() {
+  const fake = {
+    waiting: true,
+    calls: 0,
+    evaluate: async (input: Parameters<NonNullable<RunControllerDeps["visualEvaluation"]>["evaluate"]>[0]) => {
+      fake.calls += 1;
+      if (fake.waiting) return { records: [], criteria: new Set(["sign"]), waiting: [{ criterionId: "sign", reason: "the memory pool is leased by instance-b for run-other" }] };
+      return {
+        records: [
+          {
+            schemaVersion: 1,
+            id: evaluationId(input.run.id, "sign", "architect.ocr-glm"),
+            runId: input.run.id,
+            criterionId: "sign",
+            evaluatorId: "architect.ocr-glm",
+            evaluatorVersion: "1",
+            verdict: "fail" as const,
+            source: "automatic" as const,
+            advisory: false,
+            explanation: "read CLOSED",
+            evidence: [],
+            createdAt: input.at.toISOString(),
+          },
+        ],
+        criteria: new Set(["sign"]),
+        waiting: [],
+      };
+    },
+  };
+  return fake;
+}
+
+const stopOf = (store: ArchitectStore, rootId: string) => store.listRunEvents(rootId).find((e) => e.data?.chain === "stopped")?.data;
+
+describe("cancelling a chain (review H1)", () => {
+  it("repairs a final whose OCR failed into a second final when nobody cancelled it", async () => {
+    // The control for the next test: without the cancel, seed.next follows.
+    const ocr = ocrFake();
+    const h = chainHarness({ chain: SEED_CHAIN, task: SIGN_TASK, visualEvaluation: ocr });
+    await h.controller.advance(h.root.id);
+    h.comfy.files.set("final.png", await png(1024, 1024));
+    h.comfy.finish(h.comfy.submitted[0].promptId, "final.png", "output");
+    expect((await h.controller.reconcile(h.root.id)).state).toBe("EVALUATING");
+    ocr.waiting = false;
+    await h.controller.pollOnce();
+    expect(h.store.listAttempts(h.root.id).map((a) => [a.attempt?.stage, a.attempt?.repairRound])).toEqual([
+      ["final", 0],
+      ["final", 1],
+    ]);
+    expect(h.comfy.submitted).toHaveLength(2);
+  });
+
+  it("creates no attempt after a cancel while the root waits in EVALUATING for the pool and its OCR then fails", async () => {
+    const ocr = ocrFake();
+    const h = chainHarness({ chain: SEED_CHAIN, task: SIGN_TASK, visualEvaluation: ocr });
+    await h.controller.advance(h.root.id);
+    h.comfy.files.set("final.png", await png(1024, 1024));
+    h.comfy.finish(h.comfy.submitted[0].promptId, "final.png", "output");
+    expect((await h.controller.reconcile(h.root.id)).state).toBe("EVALUATING");
+
+    await h.execution.cancel({ runId: h.root.id });
+    expect(h.store.listRunEvents(h.root.id).filter((e) => e.kind === "cancel")).toHaveLength(1);
+    // The render is done, so the root itself isn't cancelled: its evaluation goes on.
+    expect(h.store.getRun(h.root.id)?.state).toBe("EVALUATING");
+
+    ocr.waiting = false;
+    await h.controller.pollOnce();
+    expect(h.store.getRun(h.root.id)).toMatchObject({ state: "COMPLETED", acceptance: "failed" });
+    expect(h.store.listAttempts(h.root.id)).toHaveLength(1);
+    expect(stopOf(h.store, h.root.id)).toMatchObject({ rule: "cancelled", resultRunId: h.root.id });
+    await h.controller.pollOnce();
+    expect(h.store.listAttempts(h.root.id)).toHaveLength(1);
+    expect(h.comfy.submitted).toHaveLength(1);
+  });
+
+  it("creates no final after a cancel when the smoke passed and the final's creation is still pending", async () => {
+    let broken = false;
+    const h = chainHarness({
+      graphFor: async () => {
+        if (broken) throw new Error("object_info unreachable");
+        return CHAIN_GRAPH;
+      },
+    });
+    await h.controller.advance(h.root.id);
+    h.comfy.files.set("smoke.png", await png(1024, 1024));
+    h.comfy.finish(h.comfy.submitted[0].promptId, "smoke.png", "temp");
+    // The decision fails while the graph can't be compiled, and is left to the poller.
+    broken = true;
+    expect(await h.controller.reconcile(h.root.id)).toMatchObject({ state: "COMPLETED", acceptance: "passed" });
+    expect(h.store.listAttempts(h.root.id)).toHaveLength(1);
+    expect(stopOf(h.store, h.root.id)).toBeUndefined();
+
+    const r = await h.execution.cancel({ runId: h.root.id });
+    expect(r.chain).toMatchObject({ state: "stopped", stopRule: "cancelled" });
+    broken = false;
+    await h.controller.pollOnce();
+    expect(h.store.listAttempts(h.root.id)).toHaveLength(1);
+    expect(h.comfy.submitted).toHaveLength(1);
+  });
+
+  it("creates no repair after a cancel when the smoke failed and its repair decision is pending", async () => {
+    let broken = false;
+    const h = chainHarness({
+      graphFor: async () => {
+        if (broken) throw new Error("object_info unreachable");
+        return CHAIN_GRAPH;
+      },
+    });
+    await h.controller.advance(h.root.id);
+    h.comfy.fail(h.comfy.submitted[0].promptId, { node_id: "6", node_type: "VAEDecode", exception_type: "torch.OutOfMemoryError", exception_message: "out of memory" });
+    broken = true;
+    expect((await h.controller.reconcile(h.root.id)).state).toBe("FAILED");
+    expect(h.store.listAttempts(h.root.id)).toHaveLength(1);
+    expect(stopOf(h.store, h.root.id)).toBeUndefined();
+
+    // Still unreachable: the cancelled chain stops without compiling the graph.
+    const r = await h.execution.cancel({ runId: h.root.id });
+    expect(r.chain).toMatchObject({ state: "stopped", stopRule: "cancelled" });
+    broken = false;
+    await h.controller.pollOnce();
+    expect(h.store.listAttempts(h.root.id)).toHaveLength(1);
+    expect(h.comfy.submitted).toHaveLength(1);
+  });
+
+  it("cancels, unsubmitted, an attempt created before a cancel the process recorded without acting on it", async () => {
+    const h = chainHarness();
+    const root = failRun(h.store, h.root, OOM);
+    const second = create(h.store, root, child(root, root, { index: 2, stage: "smoke", repairRound: 1, steps: [SMOKE, TILED] })).run;
+    h.store.appendRunEvent({ runId: root.id, kind: "cancel", principal: "agent", reason: "stop", at: clock });
+    await h.controller.resumeAll();
+    expect(h.store.getRun(second.id)?.state).toBe("CANCELLED");
+    expect(stopOf(h.store, root.id)).toMatchObject({ rule: "cancelled" });
+    expect(h.comfy.submitted).toEqual([]);
+  });
+});
+
+describe("a later attempt is checked before its POST (review M1)", () => {
+  const CAT = Buffer.from("the cat as approved");
+  const INPUT = { assetId: "comfyui-input:cat.png", sha256: sha256Hex(CAT), sizeBytes: CAT.length };
+
+  /** A chain whose effect binds cat.png; revalidate reads it back as the server's does. */
+  function withInput() {
+    const files = new Map<string, Buffer>([["cat.png", CAT]]);
+    const holder: { store?: ArchitectStore } = {};
+    const h = chainHarness({
+      inputs: [INPUT],
+      revalidate: async (r) => {
+        if (!holder.store) throw new Error("no store yet");
+        await requireInputsUnchanged(
+          {
+            store: holder.store,
+            readInputFile: async (name) => {
+              const bytes = files.get(name);
+              if (!bytes) throw new Error(`${name}: not found`);
+              return { bytes };
+            },
+          },
+          r,
+        );
+      },
+    });
+    holder.store = h.store;
+    return { ...h, files };
+  }
+
+  it("doesn't submit the final when an input file changed between the smoke and the final", async () => {
+    const h = withInput();
+    await h.controller.advance(h.root.id);
+    h.comfy.files.set("smoke.png", await png(1024, 1024));
+    h.comfy.finish(h.comfy.submitted[0].promptId, "smoke.png", "temp");
+    h.files.set("cat.png", Buffer.from("another cat, same name"));
+    await h.controller.reconcile(h.root.id);
+    const attempts = h.store.listAttempts(h.root.id);
+    expect(attempts.map((a) => [a.attempt?.stage, a.state])).toEqual([
+      ["smoke", "COMPLETED"],
+      ["final", "FAILED"],
+    ]);
+    expect(attempts[1].error).toMatchObject({ code: "APPROVAL_INVALIDATED", message: expect.stringMatching(/input comfyui-input:cat\.png changed since it was approved/) });
+    expect(h.comfy.submitted).toHaveLength(1);
+    // A policy failure isn't repaired.
+    expect(stopOf(h.store, h.root.id)).toMatchObject({ rule: "not_repairable" });
+  });
+
+  it("submits the final when the input is unchanged, after checking it", async () => {
+    const h = withInput();
+    await h.controller.advance(h.root.id);
+    h.comfy.files.set("smoke.png", await png(1024, 1024));
+    h.comfy.finish(h.comfy.submitted[0].promptId, "smoke.png", "temp");
+    await h.controller.reconcile(h.root.id);
+    expect(h.store.listAttempts(h.root.id).map((a) => a.state)).toEqual(["COMPLETED", "QUEUED"]);
+    expect(h.comfy.submitted).toHaveLength(2);
+  });
+
+  it("checks every later attempt, and refuses one on a server that can't check it", async () => {
+    const h = chainHarness();
+    await h.controller.advance(h.root.id);
+    expect(h.revalidated).toEqual([]);
+    h.comfy.fail(h.comfy.submitted[0].promptId, { node_id: "6", node_type: "VAEDecode", exception_type: "torch.OutOfMemoryError", exception_message: "out of memory" });
+    await h.controller.reconcile(h.root.id);
+    const second = h.store.listAttempts(h.root.id)[1];
+    expect(h.revalidated).toEqual([second.id]);
+
+    // The same chain on a controller without revalidate: the repair isn't submitted.
+    const u = chainHarnessAgain();
+    const bare = new RunController({
+      store: u.store,
+      upstream: u.comfy.facade(),
+      resources: { acquire: async (run) => ({ ok: true, lease: { pool: "p", ownerId: "o", runId: run.id, acquiredAt: clock.toISOString(), heartbeatAt: clock.toISOString(), expiresAt: clock.toISOString() } }), heartbeat: () => ({ held: true }), release: () => undefined, restore: async () => undefined },
+      now: () => clock,
+      newUuid: () => `00000000-0000-4000-8000-0000000000${String(10 + u.comfy.submitted.length)}`,
+      graphFor: async () => CHAIN_GRAPH,
+      taskFor: (r) => {
+        const t = u.store.getTask(r.taskId, r.taskRevision);
+        if (!t) throw new Error("task missing");
+        return t;
+      },
+    });
+    await bare.advance(u.root.id);
+    u.comfy.fail(u.comfy.submitted[0].promptId, { node_id: "6", node_type: "VAEDecode", exception_type: "torch.OutOfMemoryError", exception_message: "out of memory" });
+    await bare.reconcile(u.root.id);
+    const repaired = u.store.listAttempts(u.root.id)[1];
+    expect(repaired).toMatchObject({ state: "FAILED", error: { code: "APPROVAL_INVALIDATED" } });
+    expect(u.comfy.submitted).toHaveLength(1);
+  });
+});
+
 /** A second chain harness in the same test, on its own data directory. */
 function chainHarnessAgain() {
   dir = mkdtempSync(join(tmpdir(), "architect-attempts-2-"));
@@ -697,6 +1003,15 @@ describe("the action plan with stages (TODO 6.1.4)", () => {
     expect(started.run.attempt).toBeUndefined();
     expect(started.run.grantId).toBe(grant.id);
     expect(describeActionPlan(s.store, stored)).toContain("Limits: 1 run, at most 1800 s");
+  });
+
+  it("refuses at prepare a task whose budgets exceed 5 previews, 3 finals or 3 repair rounds, and takes the caps themselves (review L2)", async () => {
+    const s = await setup(DEFAULT_TASK);
+    for (const [field, value] of [["maxPreviewRuns", 6], ["maxFinalRuns", 4], ["maxRepairRounds", 4]] as const) {
+      await expect(s.planning.prepare({ task: { ...TASK, budgets: { [field]: value } } })).rejects.toThrow(new RegExp(`budgets\\.${field}: Too big: expected number to be <=${value - 1}`));
+    }
+    const atCaps = await s.planning.prepare({ task: { ...TASK, budgets: { maxPreviewRuns: 5, maxFinalRuns: 3, maxRepairRounds: 3 } } });
+    expect(atCaps.task.budgets).toEqual({ maxPreviewRuns: 5, maxFinalRuns: 3, maxRepairRounds: 3 });
   });
 
   it("refuses a task whose budgets allow no final render", async () => {

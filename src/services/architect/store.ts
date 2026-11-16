@@ -339,7 +339,8 @@ function rootAttemptProblem(run: RunRecord, actionPlan: ActionPlan, revision: Gr
  * Why a child attempt's transformations don't fit, or undefined: each is the effect's smoke
  * transformation (first, and only on a smoke attempt) or one of its repair transformations;
  * a final after its smoke keeps the smoke's repair steps and round, and only after the smoke
- * passed; a repair is the predecessor's steps plus one, in the next round, at the same stage.
+ * passed; a repair is the predecessor's steps plus one, in the next round, at the same stage;
+ * `retry.unchanged` follows only a predecessor without a claimed submission.
  */
 function childStepsProblem(c: {
   attempt: NonNullable<RunRecord["attempt"]>;
@@ -347,6 +348,8 @@ function childStepsProblem(c: {
   render: LocalRenderEffect;
   last: RunRecord;
   lastSteps: GraphRevision["steps"];
+  /** Whether a submission was ever claimed for the predecessor: its prompt may have reached ComfyUI. */
+  lastSubmitted: boolean;
   rootId: string;
   candidateId: string;
   actionPlanId: string;
@@ -377,6 +380,11 @@ function childStepsProblem(c: {
     if (attempt.repairRound !== lastAttempt.repairRound + 1) return "a repair at the same stage is the next repair round";
     if (canonicalJson(now.slice(0, -1)) !== before || now.length !== repairSteps(c.lastSteps).length + 1) {
       return "a repair keeps the predecessor's steps and adds one";
+    }
+    // spec §15.4: the same graph again only when no prompt can have reached ComfyUI under the
+    // predecessor's ID. A claimed submission may have been queued, so it is reconciled, never retried.
+    if (now.at(-1)?.id === "retry.unchanged" && c.lastSubmitted) {
+      return "retry.unchanged follows only an attempt that never claimed a submission";
     }
   } else {
     return `a ${attempt.stage} attempt doesn't follow a ${lastAttempt.stage} one`;
@@ -1353,6 +1361,9 @@ export class ArchitectStore {
       if (!last?.attempt || last.id !== args.predecessorRunId) {
         throw new StoreConflictError(`run ${args.predecessorRunId} isn't the latest attempt of ${root.id}`);
       }
+      const lastEvents = this.listRunEvents(last.id);
+      // A cancel request on the attempt it follows stops the chain as one on the root does.
+      if (lastEvents.some((e) => e.kind === "cancel")) throw new StoreConflictError(`attempt ${last.id} was cancelled`);
       if (last.state !== "FAILED" && last.state !== "COMPLETED") {
         throw new StoreConflictError(`attempt ${last.id} is ${last.state}; a further attempt follows only a FAILED or COMPLETED one`);
       }
@@ -1371,7 +1382,17 @@ export class ArchitectStore {
       }
       const render = actionPlan.effects.find((e): e is LocalRenderEffect => e.kind === "local_render");
       if (!render) throw new StoreConflictError(`action plan ${actionPlan.id} has no render`);
-      const problem = childStepsProblem({ attempt, revision, render, last, lastSteps: this.stepsOf(last), rootId: root.id, candidateId: root.candidateId, actionPlanId: actionPlan.id });
+      const problem = childStepsProblem({
+        attempt,
+        revision,
+        render,
+        last,
+        lastSteps: this.stepsOf(last),
+        lastSubmitted: lastEvents.some((e) => e.kind === "submit_attempt"),
+        rootId: root.id,
+        candidateId: root.candidateId,
+        actionPlanId: actionPlan.id,
+      });
       if (problem) throw new StoreConflictError(`attempt ${attempt.index} of ${root.id}: ${problem}`);
 
       const at = args.now.toISOString();
@@ -1498,7 +1519,8 @@ export class ArchitectStore {
    * Claim the run's one submission (spec §15.4) and write its `submit_attempt` event with
    * the prompt ID, before the network call. The claim wins only while the run is VALIDATING
    * and has no attempt yet, checked and written under the write lock, so of two processes
-   * on one database exactly one goes on to POST; the loser gets `won: false` and why.
+   * on one database exactly one goes on to POST; the loser gets `won: false` and why. A run
+   * with a cancel request, on itself or on its chain's root, never wins.
    * Migration 3's unique index refuses a second attempt even from a writer that skipped
    * this check.
    */
@@ -1509,8 +1531,15 @@ export class ArchitectStore {
       const current = this.getRun(args.runId);
       if (!current) throw new StoreConflictError(`run ${args.runId} is not stored`);
       if (current.state !== "VALIDATING") return { won: false, reason: `run ${current.id} is ${current.state}, not VALIDATING` };
-      const attempt = this.listRunEvents(current.id).find((e) => e.kind === "submit_attempt");
+      const events = this.listRunEvents(current.id);
+      const attempt = events.find((e) => e.kind === "submit_attempt");
       if (attempt) return { won: false, reason: `run ${current.id} already has a submission attempt (event ${attempt.seq})` };
+      // A run with a cancel request, or a later attempt of a chain cancelled at its root, is
+      // never submitted; the controller cancels it.
+      const root = current.attempt && current.attempt.rootRunId !== current.id ? current.attempt.rootRunId : undefined;
+      if (events.some((e) => e.kind === "cancel") || (root !== undefined && this.listRunEvents(root).some((e) => e.kind === "cancel"))) {
+        return { won: false, reason: `run ${current.id} has a cancel request` };
+      }
       const event = this.insertEvent({
         runId: current.id,
         at,

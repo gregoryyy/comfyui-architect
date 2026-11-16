@@ -90,21 +90,70 @@ export function acceptEvaluatorChecks(task: Pick<TaskSpec, "acceptance">): Check
   return out;
 }
 
+/** The most of a task's text the approval quotes. */
+export const APPROVAL_QUOTE_MAX_CHARS = 200;
+
 /**
- * What the approval says about the task's optional evaluators: an accepted one counts, and the
- * user's approval is that acceptance (GAPS A11); any other stays advisory.
+ * A task's text as the approval quotes it: data, never wording of the approval itself. Control
+ * and bidirectional formatting characters are removed, so it can't break the line or reorder
+ * what the user reads; at most APPROVAL_QUOTE_MAX_CHARS characters, then a mark that it was
+ * cut; in JSON quotes, so it can't close its quote either.
+ */
+export function quotedForApproval(text: string): string {
+  const cleaned = text.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "");
+  const chars = [...cleaned];
+  const cut = chars.length > APPROVAL_QUOTE_MAX_CHARS;
+  return `${JSON.stringify(chars.slice(0, APPROVAL_QUOTE_MAX_CHARS).join(""))}${cut ? ` (cut at ${APPROVAL_QUOTE_MAX_CHARS} of ${chars.length} characters)` : ""}`;
+}
+
+/** What a counted criterion asks, so the user approves the acceptance itself, not its name. */
+function criterionLines(c: AcceptanceCriterion): string[] {
+  const required = c.required ? "required" : "optional";
+  switch (c.kind) {
+    case "text_in_image":
+      return [
+        `  Criterion ${quotedForApproval(c.id)}, ${required}: the output must show the text ${quotedForApproval(c.text)} (quoted from the task as data), ` +
+          `match ${c.match === "exact" ? "exact (the reading is the text)" : "contains (the reading includes the text)"}, ${c.caseSensitive ? "case-sensitive" : "case-insensitive"}`,
+      ];
+    case "protected_region_exact": {
+      const tolerance = c.tolerance ?? 0;
+      return [
+        `  Criterion ${quotedForApproval(c.id)}, ${required}: the output keeps the source's pixels where the mask's red channel is 0; source ${quotedForApproval(c.sourceAssetId)}, mask ${quotedForApproval(c.maskAssetId)}`,
+        tolerance === 0
+          ? "  Tolerance 0: exact, every protected pixel must be the source's"
+          : `  Tolerance ${tolerance}: not exact, a protected pixel may differ from the source's by up to ${tolerance} of 255 per channel and still pass`,
+      ];
+    }
+    default:
+      return [];
+  }
+}
+
+/**
+ * What the approval says about the task's visual evaluators: for each criterion one judges,
+ * whether its verdict counts, and for each that counts what it asks (its text, match and case,
+ * or its source, mask and tolerance) and whether it is required, so the user's approval is
+ * the acceptance spec §13.2 asks for (GAPS A11). An optional evaluator not accepted stays
+ * advisory.
  */
 export function evaluatorApprovalLines(task: Pick<TaskSpec, "acceptance">, accepted: readonly AcceptedEvaluator[] | undefined): string[] {
   const lines: string[] = [];
   for (const c of task.acceptance) {
     const entry = evaluatorForKind(c.kind);
-    if (!entry?.advisoryUnlessAccepted) continue;
+    if (!entry) continue;
+    if (!entry.advisoryUnlessAccepted) {
+      lines.push(`Evaluator: ${entry.id} ${entry.version} ${entry.does}; its ${entry.verdictName} for criterion ${c.id} counts toward acceptance`, ...criterionLines(c));
+      continue;
+    }
     const a = (accepted ?? []).find((x) => x.criterionId === c.id);
-    lines.push(
-      a
-        ? `Evaluator: ${a.evaluatorId} ${a.evaluatorVersion} ${entry.does}; approving accepts its verdict for criterion ${c.id}, so the ${entry.verdictName} counts toward acceptance`
-        : `Evaluator: ${entry.id} ${entry.version} ${entry.does}; its verdict for criterion ${c.id} is advisory and doesn't count toward acceptance`,
-    );
+    if (a) {
+      lines.push(
+        `Evaluator: ${a.evaluatorId} ${a.evaluatorVersion} ${entry.does}; approving accepts its verdict for criterion ${c.id}, so the ${entry.verdictName} counts toward acceptance`,
+        ...criterionLines(c),
+      );
+    } else {
+      lines.push(`Evaluator: ${entry.id} ${entry.version} ${entry.does}; its verdict for criterion ${c.id} is advisory and doesn't count toward acceptance`);
+    }
   }
   return lines;
 }

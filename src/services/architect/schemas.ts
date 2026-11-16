@@ -383,11 +383,21 @@ export function taskInputPaths(inputs: readonly TaskInput[]): { path: string; in
   });
 }
 
+/**
+ * The most attempts a task may ask one approval to cover (review of milestone 6, L2): the
+ * user approves every attempt at once, and the grant's wall time is shared by them, so a
+ * budget above these is refused at prepare rather than approved unread. Defaults are in
+ * repair.ts (3, 1 and 2).
+ */
+export const MAX_TASK_PREVIEW_RUNS = 5;
+export const MAX_TASK_FINAL_RUNS = 3;
+export const MAX_TASK_REPAIR_ROUNDS = 3;
+
 export const TaskBudgets = z
   .object({
-    maxPreviewRuns: z.number().int().nonnegative().optional(),
-    maxFinalRuns: z.number().int().nonnegative().optional(),
-    maxRepairRounds: z.number().int().nonnegative().optional(),
+    maxPreviewRuns: z.number().int().nonnegative().max(MAX_TASK_PREVIEW_RUNS).optional(),
+    maxFinalRuns: z.number().int().nonnegative().max(MAX_TASK_FINAL_RUNS).optional(),
+    maxRepairRounds: z.number().int().nonnegative().max(MAX_TASK_REPAIR_ROUNDS).optional(),
     maxDownloadBytes: z.number().int().nonnegative().optional(),
     maxWallTimeSeconds: z.number().int().nonnegative().optional(),
     maxApiSpendUsd: z.number().nonnegative().optional(),

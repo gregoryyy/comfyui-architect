@@ -3,6 +3,8 @@
 // download functions over upstream's job registry (TODO 4.5.1).
 
 import { createHash } from "node:crypto";
+import { type Server, createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConnectionError, WorkflowExecutionError } from "../../utils/errors.js";
@@ -185,6 +187,51 @@ describe("loadOllama", () => {
     expect(warm.calls).toEqual([["http://127.0.0.1:11434", "qwen3:32b", "600s"]]);
     warm.result = false;
     expect(await createUpstreamFacade().loadOllama("http://127.0.0.1:11434", "qwen3:32b", "-1m")).toBe(false);
+  });
+});
+
+describe("ollamaJson (review L3)", () => {
+  const servers: Server[] = [];
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((srv) => new Promise<void>((resolve) => srv.close(() => resolve()))));
+  });
+
+  /** A loopback HTTP server; resolves to its base URL once it listens. */
+  async function listen(handler: Parameters<typeof createServer>[1]): Promise<string> {
+    const srv = createServer(handler);
+    servers.push(srv);
+    await new Promise<void>((resolve) => srv.listen(0, "127.0.0.1", () => resolve()));
+    return `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
+  }
+
+  it("doesn't follow a 3xx from a loopback Ollama, so nothing reaches the redirect target", async () => {
+    const reached: { method: string | undefined; url: string | undefined; body: string }[] = [];
+    const target = await listen((req, res) => {
+      let body = "";
+      req.on("data", (chunk: Buffer) => (body += chunk.toString("utf8")));
+      req.on("end", () => {
+        reached.push({ method: req.method, url: req.url, body });
+        res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+      });
+    });
+    for (const status of [301, 302, 307, 308]) {
+      const ollama = await listen((req, res) => {
+        req.resume();
+        res.writeHead(status, { Location: `${target}/api/generate` }).end();
+      });
+      const facade = createUpstreamFacade();
+      const r = await facade.ollamaJson(ollama, "/api/generate", { body: { model: "glm-ocr", images: ["aW1hZ2U="] }, timeoutMs: 5_000 });
+      expect(r.status).toBe(status);
+      expect(r.json).toBeUndefined();
+      const tags = await facade.ollamaJson(ollama, "/api/tags", { timeoutMs: 5_000 });
+      expect(tags.status).toBe(status);
+    }
+    // Neither the image in the POST body nor a GET went on to the other server.
+    expect(reached).toEqual([]);
+  });
+
+  it("refuses a host that isn't loopback before anything is sent", async () => {
+    await expect(createUpstreamFacade().ollamaJson("http://192.0.2.10:11434", "/api/tags", { timeoutMs: 1_000 })).rejects.toThrow(/isn't on this machine; nothing was sent/);
   });
 });
 
