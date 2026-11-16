@@ -4,9 +4,10 @@
 //
 // `architect_inspect` (environment, capabilities) and `architect_plan` (prepare, propose,
 // get, validate, select, export) read and plan; `architect_run` (architect-run.ts) renders a
-// selected candidate under the user's approval. None downloads, installs or touches the
-// canvas. Descriptions are prompt text for models: English, exact, and not
-// translated (STYLE, MCP tools).
+// selected candidate under the user's approval, after downloading the pinned model files
+// the user approved with it (TODO 4.5). None installs nodes or touches the canvas.
+// Descriptions are prompt text for models: English, exact, and not translated (STYLE, MCP
+// tools).
 
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -15,6 +16,8 @@ import { fileURLToPath } from "node:url";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { ARCHITECT_SCHEMA_VERSION } from "../fork-identity.js";
+import { ModelAcquirer, defaultAcquisitionIo } from "../services/architect/acquisition.js";
+import { formatBytes } from "../services/architect/acquisition-policy.js";
 import { requireFeasible } from "../services/architect/admission.js";
 import { ARCHITECT_RESIDENCY_ENV, architectEnabled } from "../services/architect/config.js";
 import { RunController } from "../services/architect/controller.js";
@@ -120,6 +123,8 @@ function defaultRunContext(planning: PlanningFactory, upstream: UpstreamFacade):
       now,
       manageResidency: process.env[ARCHITECT_RESIDENCY_ENV] === "1",
     });
+    const acquisitionIo = defaultAcquisitionIo(upstream);
+    const acquirer = new ModelAcquirer({ store, io: acquisitionIo, now, newId });
     const controller = new RunController({
       store,
       upstream,
@@ -136,8 +141,10 @@ function defaultRunContext(planning: PlanningFactory, upstream: UpstreamFacade):
         if (!task) throw new PlanningError("GRAPH_CONFLICT", `task ${run.taskId} r${run.taskRevision} is not stored`, "Prepare a new run.");
         return task;
       },
-      // A run that waited for its resources is validated again before it's submitted.
+      // A run that waited for its resources, or acquired model files, is validated again
+      // against a fresh snapshot before it's submitted.
       revalidate: (run) => requireFeasible(p, run.planId, run.candidateId),
+      acquirer,
     });
     const execution = new ArchitectExecution({
       store,
@@ -150,6 +157,8 @@ function defaultRunContext(planning: PlanningFactory, upstream: UpstreamFacade):
       dependencyLock: (candidateId, task) => p.dependencyLock(candidateId, task),
       // What a render would unload, read at prepare so the approval names it (GAPS Q23).
       releasable: (baseUrl) => resources.releasable(baseUrl),
+      acquisitionIo,
+      acquirer,
     });
     ctx = { execution, store, now, newId };
     processRunContext = ctx;
@@ -225,7 +234,9 @@ export function registerArchitectTools(
       'action:"get" with `planId` (and `graphOf`: a candidate ID, for its API graph) reads a plan; ' +
       'action:"validate" with `planId` and `candidateId` re-checks against a fresh snapshot; ' +
       'action:"select" with `planId` and `candidateId` records the user\'s choice of a feasible ' +
-      'candidate and authorizes nothing; action:"export" with `planId` writes the selected ' +
+      "or acquirable candidate and authorizes nothing (acquirable: only model files with a pinned " +
+      "source are missing; architect_run downloads them once the user approves); " +
+      'action:"export" with `planId` writes the selected ' +
       "candidate's graph, task, plan, validation and dependency lock to files. Every check is " +
       "pass, fail, unknown or not_applicable: unknown is not pass. Don't invent node names, " +
       "model files, URLs or measurements; report blockers instead.",
@@ -255,11 +266,27 @@ export function registerArchitectTools(
           case "propose": {
             const r = await p.propose({ planId: need(args.planId, "planId", "propose"), ...(args.proposals ? { proposals: args.proposals } : {}) });
             const feasible = r.candidates.filter((c) => c.status === "feasible").length;
+            const acquirable = r.candidates.filter((c) => c.status === "acquirable");
             const warnings = [
               ...r.readiness.reasons.map((x) => `environment: ${x}`),
               ...(r.truncated ? [`enumeration stopped at ${r.expanded} candidates`] : []),
               ...p.catalogWarnings(),
             ];
+            if (feasible === 0 && acquirable.length > 0) {
+              // Not a dead end: the user can approve the downloads (TODO 4.5). Say what they are.
+              const what = acquirable
+                .map((c) => `${c.id} (${c.recipe}): ${(c.acquisition?.files ?? []).map((f) => `${f.folder}/${f.file} ${f.size}`).join(", ")}, ${formatBytes(c.acquisition?.totalBytes ?? 0)} in total`)
+                .join("; ");
+              return reply({
+                ...okEnvelope(
+                  `No feasible candidate for plan ${r.plan?.id}; ${acquirable.length} acquirable after downloading pinned model files: ${what}. ` +
+                    "Show the user the files and sizes; if they choose one, select it and prepare a run, which asks them to approve the downloads.",
+                  r,
+                  warnings,
+                ),
+                status: "partial",
+              });
+            }
             if (r.candidates.length === 0 || feasible === 0) {
               return reply({
                 ...okEnvelope(`No feasible candidate for plan ${r.plan?.id}; ${r.candidates.length} blocked or diagnostic. See blockers.`, r, warnings),
@@ -335,7 +362,8 @@ export function registerArchitectPrompts(server: McpServer, env: NodeJS.ProcessE
     "architect",
     {
       title: "Plan a workflow with ComfyUI Architect",
-      description: "Plan a ComfyUI workflow for a task from installed models and curated recipes, and render it once you approve; no downloads or installs.",
+      description:
+        "Plan a ComfyUI workflow for a task from installed models and curated recipes, and render it once you approve; pinned model downloads only with your approval, no node installs.",
       argsSchema: { task: z.string().describe("What to make, in the user's words.") },
     },
     ({ task }) => ({

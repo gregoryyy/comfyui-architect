@@ -75,12 +75,15 @@ src/services/architect/       the Architect domain: config (modes, forwarded var
                               (architect.db), hash, catalog, compile, validate, planner, planning (the architect_plan
                               workflow and export), admission (action plans, grants, the effect gate), execution (the
                               architect_run workflow), controller (runs), resources (leases, Ollama residency),
+                              acquisition-policy (which missing files a candidate may acquire), acquisition (the
+                              redirect preflight, staging, sha256 check and placement of approved downloads),
                               evaluation and media-probe (output checks), cli (the terminal approval channel), panel
 src/tools/architect.ts        the architect_* MCP tools (architect_inspect, architect_plan) and the MCP prompts;
                               architect-run.ts registers architect_run and its approval dialogs
 src/__tests__/architect/      Architect tests; fixtures/ holds fixture recipes and node schemas
 scripts/architect/            Architect scripts: stdio-smoke.mjs, what an MCP client sees with the flag off and on;
-                              --plan plans and --run renders on the target
+                              --plan plans, --run renders on the target, --acquire downloads a pinned file first;
+                              pin-source.mjs, the maintainer tool that pins a recipe's model source
 dev/research/                 research notes; index in its README
 architect/recipes/            shipped recipes, *.recipe.json
 architect/skills/, architect/commands/   the skill and the /architect command, served as MCP prompts while the

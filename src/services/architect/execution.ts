@@ -8,6 +8,8 @@
 // stored as the agent's report and never counts as the user's (spec §16.1).
 
 import { join } from "node:path";
+import { z } from "zod";
+import { type ModelAcquirer, acquiredLockEntry, acquisitionView } from "./acquisition.js";
 import {
   type AdmissionDeps,
   ApprovalError,
@@ -53,7 +55,11 @@ export interface ExecutionDeps extends AdmissionDeps {
   dataDir: string;
   /** The dependency lock of a candidate's graph (planning's `dependencyLock`), for a run's lineage. */
   dependencyLock: (candidateId: string, task: TaskSpec) => unknown;
+  /** A run's acquisitions with download progress, for status; without it, progress isn't shown. */
+  acquirer?: Pick<ModelAcquirer, "view">;
 }
+
+const LockObject = z.record(z.string(), z.unknown());
 
 /** The idempotency key of a run: one per target, task revision, plan and action plan (spec §15.4). */
 export function idempotencyKey(actionPlan: ActionPlan): string {
@@ -265,8 +271,12 @@ export class ArchitectExecution {
     const run = FINAL_RUN_STATES.includes(before.state) ? before : await driver.reconcile(before.id);
     const records = store.listEvaluations(run.id);
     const events = store.listRunEvents(run.id);
+    const acquisitions = this.deps.acquirer
+      ? await this.deps.acquirer.view(run.id)
+      : store.listAcquisitions(run.id).map((a) => acquisitionView(a));
     return {
       run,
+      ...(acquisitions.length > 0 ? { acquisitions } : {}),
       verdicts: verdictsOf(run, records, this.submitted(run.id)),
       evaluations: records.map((r) => ({ criterion: r.criterionId, verdict: r.verdict, source: r.source, explanation: r.explanation })),
       recentEvents: events.slice(-5).map((e) => ({ seq: e.seq, at: e.at, kind: e.kind, ...(e.to ? { to: e.to } : {}), reason: e.reason })),
@@ -343,7 +353,14 @@ export class ArchitectExecution {
     const actionPlan = store.getActionPlan(run.actionPlanId);
     const grant = run.grantId ? store.getGrant(run.grantId) : undefined;
     const task = store.getTask(run.taskId, run.taskRevision);
-    const lock = task ? this.deps.dependencyLock(run.candidateId, task) : undefined;
+    // FR-11: each file the run acquired, with its source, commit and the sha256 observed
+    // before it was placed. Only placed files: the others never reached a model folder.
+    const acquisitions = store.listAcquisitions(run.id);
+    const acquired = acquisitions.filter((a) => a.state === "placed").map(acquiredLockEntry);
+    const baseLock = task ? this.deps.dependencyLock(run.candidateId, task) : undefined;
+    const lockFields = LockObject.safeParse(baseLock);
+    const lock =
+      baseLock === undefined || acquired.length === 0 ? baseLock : { ...(lockFields.success ? lockFields.data : { lock: baseLock }), acquired };
     const lockText = lock === undefined ? undefined : `${JSON.stringify(lock, null, 2)}\n`;
     const files: Record<string, string> = {
       "run.json": `${JSON.stringify(
@@ -358,6 +375,17 @@ export class ArchitectExecution {
             actionPlan: actionPlan ? { id: actionPlan.id, hash: actionPlan.hash } : run.actionPlanId,
             grant: grant ? { id: grant.id, channel: grant.channel, issuer: grant.issuer, issuedAt: grant.issuedAt } : undefined,
             promptId: run.promptId,
+            ...(acquisitions.length > 0
+              ? {
+                  acquisitions: acquisitions.map((a) => ({
+                    ...acquiredLockEntry(a),
+                    state: a.state,
+                    pinnedSha256: a.source.sha256,
+                    pinnedSizeBytes: a.source.sizeBytes,
+                    ...(a.error ? { error: a.error } : {}),
+                  })),
+                }
+              : {}),
             dependencyLock: lockText ? { file: "dependencies.lock.json", sha256: sha256Hex(lockText) } : "unknown: the task revision is not stored",
           },
           verdicts: verdictsOf(run, records, this.submitted(run.id)),

@@ -1,15 +1,73 @@
 // The facade's own classification and decoding (TODO 3.5, 3.7): which failed POST /prompt
-// proves the prompt wasn't queued, and what a full decode of an output image says.
+// proves the prompt wasn't queued, and what a full decode of an output image says; and the
+// download functions over upstream's job registry (TODO 4.5.1).
 
 import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConnectionError, WorkflowExecutionError } from "../../utils/errors.js";
 
-const enqueue = vi.hoisted(() => ({ impl: async (): Promise<{ prompt_id: string }> => ({ prompt_id: "" }) }));
+const enqueue = vi.hoisted(() => ({ impl: async (): Promise<{ prompt_id: string }> => ({ prompt_id: "" }), resets: 0 }));
 
 vi.mock("../../comfyui/client.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../comfyui/client.js")>();
-  return { ...actual, enqueuePrompt: () => enqueue.impl() };
+  return {
+    ...actual,
+    enqueuePrompt: () => enqueue.impl(),
+    resetObjectInfoCache: () => {
+      enqueue.resets += 1;
+    },
+  };
+});
+
+// Upstream's downloader, recorded: the facade's contract is which arguments it passes and
+// how it maps the job records back (TODO 4.5.1).
+const dl = vi.hoisted(() => ({
+  resolveCalls: [] as unknown[][],
+  startCalls: [] as unknown[][],
+  manager: false,
+  job: undefined as Record<string, unknown> | undefined,
+  unresolved: undefined as string | undefined,
+  progress: null as Record<string, unknown> | null,
+  progressIds: [] as string[],
+  cancel: {} as Record<string, unknown>,
+}));
+
+vi.mock("../../services/model-resolver.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../services/model-resolver.js")>();
+  return {
+    ...actual,
+    resolveDownloadTarget: async (...args: unknown[]) => {
+      dl.resolveCalls.push(args);
+      const [, sub, file] = args as [string, string, string];
+      return { targetDir: `/models/${sub}`, filename: file, targetPath: `/models/${sub}/${file}` };
+    },
+    shouldDispatchDownloadToManager: async () => dl.manager,
+  };
+});
+
+vi.mock("../../services/download-jobs.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../services/download-jobs.js")>();
+  return {
+    ...actual,
+    startDownloadJob: async (...args: unknown[]) => {
+      dl.startCalls.push(args);
+      return { job: { id: "job-abc" } };
+    },
+    getDownloadJob: () => dl.job,
+    describeUnresolvedDownload: () => dl.unresolved,
+    cancelDownloadJob: () => dl.cancel,
+  };
+});
+
+vi.mock("../../services/download-progress.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../services/download-progress.js")>();
+  return {
+    ...actual,
+    readDownloadProgress: (id: string) => {
+      dl.progressIds.push(id);
+      return dl.progress;
+    },
+  };
 });
 
 const warm = vi.hoisted(() => ({ calls: [] as unknown[][], result: true }));
@@ -106,5 +164,98 @@ describe("loadOllama", () => {
     expect(warm.calls).toEqual([["http://127.0.0.1:11434", "qwen3:32b", "600s"]]);
     warm.result = false;
     expect(await createUpstreamFacade().loadOllama("http://127.0.0.1:11434", "qwen3:32b", "-1m")).toBe(false);
+  });
+});
+
+describe("the download functions (TODO 4.5.1)", () => {
+  const job = (over: Record<string, unknown> = {}) => ({
+    id: "job-abc",
+    trayId: "tray-1",
+    url: "https://huggingface.co/x",
+    target_subfolder: ".architect-staging/run-1",
+    status: "downloading",
+    started_at: 1,
+    ...over,
+  });
+
+  it("resolves a destination with upstream's resolver; root is the folder's parent", async () => {
+    dl.resolveCalls = [];
+    expect(await createUpstreamFacade().resolveModelDestination("upscale_models", "x.safetensors")).toEqual({
+      root: "/models",
+      path: "/models/upscale_models/x.safetensors",
+    });
+    expect(dl.resolveCalls).toEqual([["https://huggingface.co/", "upscale_models", "x.safetensors"]]);
+  });
+
+  it("reports upstream's Manager route as it decides it", async () => {
+    dl.manager = true;
+    expect(await createUpstreamFacade().downloadRoutesToManager()).toBe(true);
+    dl.manager = false;
+    expect(await createUpstreamFacade().downloadRoutesToManager()).toBe(false);
+  });
+
+  it("starts a job never through the Manager and with no auth override", async () => {
+    dl.startCalls = [];
+    const r = await createUpstreamFacade().startDownload({ url: "https://huggingface.co/a/b/resolve/c/x.safetensors", subfolder: ".architect-staging/run-1", filename: "x.safetensors" });
+    expect(r).toEqual({ jobId: "job-abc" });
+    expect(dl.startCalls).toEqual([
+      ["https://huggingface.co/a/b/resolve/c/x.safetensors", ".architect-staging/run-1", "x.safetensors", undefined, undefined, false, undefined],
+    ]);
+  });
+
+  it("maps a job's state, path, error and progress; progress is read by the id upstream writes it under", async () => {
+    const facade = createUpstreamFacade();
+    dl.progressIds = [];
+    dl.job = job({ progressId: "prog-1" });
+    dl.progress = { downloaded: 10, total: 100 };
+    expect(await facade.downloadStatus("job-abc")).toEqual({ status: "downloading", bytes: 10, totalBytes: 100 });
+    expect(dl.progressIds).toEqual(["prog-1"]);
+    dl.progress = { downloaded: 5, total: 0 };
+    dl.job = job({ status: "done", path: "/models/x.safetensors" });
+    expect(await facade.downloadStatus("job-abc")).toEqual({ status: "done", path: "/models/x.safetensors", bytes: 5 });
+    dl.progress = null;
+    dl.job = job({ status: "error", error: "HTTP 503" });
+    expect(await facade.downloadStatus("job-abc")).toEqual({ status: "error", error: "HTTP 503" });
+    dl.job = job({ status: "cancelled" });
+    expect(await facade.downloadStatus("job-abc")).toEqual({ status: "cancelled" });
+  });
+
+  it("reads a job whose writer is proven gone, or one dispatched to the Manager, as an error", async () => {
+    const facade = createUpstreamFacade();
+    dl.progress = null;
+    dl.job = job({ writerProvenGone: true, staleInflight: true });
+    expect(await facade.downloadStatus("job-abc")).toMatchObject({ status: "error" });
+    dl.job = job({ viaManager: true, status: "done" });
+    expect(await facade.downloadStatus("job-abc")).toMatchObject({ status: "error" });
+    // A stale record whose writer isn't proven gone may still be writing: downloading.
+    dl.job = job({ staleInflight: true });
+    expect(await facade.downloadStatus("job-abc")).toMatchObject({ status: "downloading" });
+  });
+
+  it("tells a job that is gone from one upstream won't pick (#796)", async () => {
+    const facade = createUpstreamFacade();
+    dl.job = undefined;
+    dl.unresolved = undefined;
+    expect(await facade.downloadStatus("job-abc")).toEqual({ status: "missing" });
+    dl.unresolved = "two live downloads share this id";
+    expect(await facade.downloadStatus("job-abc")).toEqual({ status: "unknown", error: "two live downloads share this id" });
+  });
+
+  it("cancels only what upstream aborted, and says when it couldn't", async () => {
+    const facade = createUpstreamFacade();
+    dl.cancel = { found: true, owned: true, aborted: true };
+    expect(await facade.cancelDownload("job-abc")).toMatchObject({ cancelled: true });
+    dl.cancel = { found: true, owned: true, aborted: false, status: "done" };
+    expect(await facade.cancelDownload("job-abc")).toMatchObject({ cancelled: true });
+    dl.cancel = { found: true, owned: false, aborted: false, status: "downloading", reclaimDenied: "owner-alive" };
+    expect(await facade.cancelDownload("job-abc")).toMatchObject({ cancelled: false, message: expect.stringContaining("another process") });
+    dl.cancel = { found: false, owned: false, aborted: false };
+    expect(await facade.cancelDownload("job-abc")).toMatchObject({ cancelled: false });
+  });
+
+  it("forgets upstream's cached node schemas", () => {
+    enqueue.resets = 0;
+    createUpstreamFacade().forgetNodeSchemas();
+    expect(enqueue.resets).toBe(1);
   });
 });

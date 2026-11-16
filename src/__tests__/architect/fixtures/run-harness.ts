@@ -5,7 +5,13 @@
 
 import { graphFingerprint } from "../../../services/architect/compile.js";
 import type { FetchLike } from "../../../services/architect/resources.js";
-import { type ApiGraph, type ReleaseResidencyEffect, type RunRecord, actionPlanHash } from "../../../services/architect/schemas.js";
+import {
+  type AcquireModelsEffect,
+  type ApiGraph,
+  type ReleaseResidencyEffect,
+  type RunRecord,
+  actionPlanHash,
+} from "../../../services/architect/schemas.js";
 import type { UpstreamFacade } from "../../../services/architect/upstream.js";
 import type { ArchitectStore } from "../../../services/architect/store.js";
 import { actionPlan, approvalRequest, candidate, env, grant, plan, run, task } from "./execution-records.js";
@@ -26,12 +32,15 @@ export interface SeedOptions {
   maxWallTimeSeconds?: number;
   /** A `release_residency` effect the user approved with the render. */
   release?: ReleaseResidencyEffect;
+  /** An `acquire_models` effect the user approved before the render (TODO 4.5). */
+  acquire?: AcquireModelsEffect;
 }
 
 /** Seed everything up to a run in PREPARING and return it. */
 export function seedRun(store: ArchitectStore, opts: SeedOptions = {}): RunRecord {
   const budgets = { maxRuns: 1, maxWallTimeSeconds: opts.maxWallTimeSeconds ?? 600 };
   const effects = [
+    ...(opts.acquire ? [opts.acquire] : []),
     { kind: "local_render" as const, graphFingerprint: GRAPH_FINGERPRINT, outputNodes: ["2"] },
     ...(opts.release ? [opts.release] : []),
   ];

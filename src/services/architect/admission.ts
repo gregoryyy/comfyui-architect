@@ -10,17 +10,21 @@
 //   gives another hash and the old grant no longer applies (APPROVAL_INVALIDATED).
 // - One grant starts one run: the store consumes it in the transaction that creates the run.
 
-import { formatBytes } from "./acquisition-policy.js";
+import { join } from "node:path";
+import { type AcquisitionIo, freeDiskBytesSync, hfEndpointRefusal } from "./acquisition.js";
+import { MIN_FREE_DISK_BYTES, acquisitionPolicy, formatBytes } from "./acquisition-policy.js";
 import { ARCHITECT_PANEL_RUNS_ENV, onPanelRoute, panelRunsAllowed } from "./config.js";
 import { canonicalJson } from "./hash.js";
 import type { ArchitectPlanning } from "./planning.js";
 import {
+  type AcquireModelsEffect,
   type ActionPlan,
   type ApprovalChannel,
   type ApprovalGrant,
   type ApprovalRequest,
   type ApiGraph,
-  type Effect,
+  type CandidateAcquisition,
+  Effect,
   type PlanCandidate,
   type Recipe,
   type ReleaseResidencyEffect,
@@ -38,7 +42,7 @@ export const DEFAULT_MAX_WALL_TIME_SECONDS = 1800;
 /** A refusal on the effect path, with a stable code (spec §16.4) and a safe next step. */
 export class ApprovalError extends Error {
   constructor(
-    readonly code: "APPROVAL_REQUIRED" | "APPROVAL_INVALIDATED" | "MISSING_INPUT" | "STALE_ENVIRONMENT" | "GRAPH_CONFLICT",
+    readonly code: "APPROVAL_REQUIRED" | "APPROVAL_INVALIDATED" | "MISSING_INPUT" | "STALE_ENVIRONMENT" | "GRAPH_CONFLICT" | "DEPENDENCY_UNAVAILABLE",
     message: string,
     readonly nextStep: string,
     readonly data?: Record<string, unknown>,
@@ -97,6 +101,11 @@ export interface AdmissionDeps {
    * Undefined when management is off, nothing is resident, or the pool isn't shared.
    */
   releasable?: (baseUrl: string) => Promise<ReleaseResidencyEffect | undefined>;
+  /**
+   * Upstream's downloader, the filesystem and the network, for a candidate that acquires
+   * model files first (TODO 4.5). Without it such a candidate isn't prepared or started.
+   */
+  acquisitionIo?: AcquisitionIo;
 }
 
 /** What the action plan binds, built from a selected candidate (everything the hash covers). */
@@ -104,6 +113,7 @@ function binding(
   ctx: { plan: { id: string }; task: TaskSpec; candidate: { id: string }; recipe: Recipe; fingerprint: string },
   baseUrl: string,
   residency: ReleaseResidencyEffect | undefined,
+  acquire?: AcquireModelsEffect,
 ) {
   return {
     planId: ctx.plan.id,
@@ -112,6 +122,8 @@ function binding(
     candidateId: ctx.candidate.id,
     target: { baseUrl },
     effects: [
+      // The files are acquired before the render that needs them (ARCH 2026-11-16, candidates).
+      ...(acquire ? [acquire] : []),
       { kind: "local_render" as const, graphFingerprint: ctx.fingerprint, outputNodes: ctx.recipe.outputs.map((o) => o.node) },
       ...(residency ? [residency] : []),
     ] satisfies Effect[],
@@ -126,13 +138,22 @@ function binding(
  */
 export async function prepareActionPlan(deps: AdmissionDeps, planId: string): Promise<{ actionPlan: ActionPlan; request: ApprovalRequest }> {
   const { store, now, newId } = deps;
-  const ctx = await freshSelection(deps, planId);
+  const ctx = await freshSelection(deps, planId, { allowAcquirable: true });
   const created = now();
   const expiresAt = new Date(created.getTime() + (deps.actionPlanTtlMs ?? DEFAULT_ACTION_PLAN_TTL_MS)).toISOString();
   const baseUrl = deps.baseUrl();
+  // An acquirable candidate gets its downloads in the plan, checked and sized now, so the
+  // user approves each file, its source and destination (TODO 4.5). A feasible one gets none.
+  let acquire: AcquireModelsEffect | undefined;
+  if (ctx.candidate.status === "acquirable") {
+    // A download writes into this machine's model folders: only for a local target, the
+    // same rule start applies to the render.
+    requireLocalCapableTarget(store, baseUrl, ctx.candidate.environmentId);
+    acquire = await acquireEffectFor(deps, ctx.task, ctx.candidate, { checkDisk: true });
+  }
   // The models to unload are read now and shown in the approval, so the user is asked
   // before any of them is unloaded (GAPS Q23).
-  const bound = binding(ctx, baseUrl, await deps.releasable?.(baseUrl));
+  const bound = binding(ctx, baseUrl, await deps.releasable?.(baseUrl), acquire);
   const actionPlan = store.putActionPlan({
     schemaVersion: 1,
     id: `actions-${newId()}`,
@@ -197,11 +218,99 @@ export async function requireAdmissible(
   return stored;
 }
 
-async function freshSelection(deps: AdmissionDeps, planId: string) {
-  const before = deps.planning.selectedForRun(planId);
-  await requireFeasible(deps.planning, planId, before.candidate.id);
+async function freshSelection(deps: AdmissionDeps, planId: string, options: { allowAcquirable: boolean }) {
+  const before = deps.planning.selectedForRun(planId, options);
+  await requireAdmissible(deps.planning, planId, before.candidate.id, options);
   // Read again: validation stored a fresh report and environment for the candidate.
-  return deps.planning.selectedForRun(planId);
+  return deps.planning.selectedForRun(planId, options);
+}
+
+/** A refusal while the downloads of a plan are built, with the step that can fix it. */
+function acquisitionRefusal(message: string, nextStep = "Report this to the user; the candidate can't acquire its files on this target."): ApprovalError {
+  return new ApprovalError("DEPENDENCY_UNAVAILABLE", message, nextStep);
+}
+
+/**
+ * The `acquire_models` effect for a candidate's acquisition (TODO 4.5; GAPS Q25). Its files
+ * are the candidate's, one for one; the destination root of each is where upstream's own
+ * resolver would write it. Refused: a task that forbids downloads or a policy refusal, an
+ * `HF_ENDPOINT` that would change the host, the ComfyUI-Manager route, a destination
+ * upstream can't resolve or that isn't `<root>/<folder>/<file>`, and a destination that
+ * already exists (the candidate needs validating again then). With `checkDisk` (at
+ * prepare), each root must keep at least 50 GB free after the whole download; a free-disk
+ * reading that fails refuses too (spec §7.3).
+ */
+async function acquireEffectFor(
+  deps: AdmissionDeps,
+  task: TaskSpec,
+  candidate: PlanCandidate,
+  options: { checkDisk: boolean },
+): Promise<AcquireModelsEffect> {
+  const acquisition: CandidateAcquisition | undefined = candidate.acquisition;
+  if (!acquisition) throw acquisitionRefusal(`candidate ${candidate.id} has no acquisition`);
+  const io = deps.acquisitionIo;
+  if (!io) throw acquisitionRefusal("this server isn't set up to download model files", "Plan with installed models only.");
+  const policy = acquisitionPolicy(task, acquisition.files);
+  if (!policy.allowed) throw acquisitionRefusal(`the download policy refuses: ${policy.refusals.map((r) => r.message).join("; ")}`);
+  const endpoint = hfEndpointRefusal(io.env);
+  if (endpoint) throw acquisitionRefusal(endpoint, "Unset HF_ENDPOINT, or download the files yourself.");
+  if (await io.facade.downloadRoutesToManager()) {
+    throw acquisitionRefusal(
+      "upstream would hand these downloads to ComfyUI-Manager, whose files can't be checked before they are placed",
+      "Set COMFYUI_PATH to the ComfyUI install, so downloads are written locally, then prepare again.",
+    );
+  }
+  const files: AcquireModelsEffect["files"] = [];
+  for (const f of acquisition.files) {
+    let dest: { root: string; path: string };
+    try {
+      dest = await io.facade.resolveModelDestination(f.folder, f.file);
+    } catch (err) {
+      throw acquisitionRefusal(`upstream can't resolve where ${f.folder}/${f.file} would go: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (dest.path !== join(dest.root, f.folder, f.file)) {
+      throw acquisitionRefusal(`upstream would write ${f.folder}/${f.file} to ${dest.path}, not into a ${f.folder} folder under a model root`);
+    }
+    try {
+      await io.fs.lstat(dest.path);
+      throw new ApprovalError(
+        "STALE_ENVIRONMENT",
+        `${dest.path} already exists, so the candidate doesn't need it downloaded`,
+        "Call architect_plan validate for the candidate, then prepare again.",
+      );
+    } catch (err) {
+      if (err instanceof ApprovalError) throw err;
+      const code = err !== null && typeof err === "object" && "code" in err ? err.code : undefined;
+      if (code !== "ENOENT") {
+        throw acquisitionRefusal(`couldn't check whether ${dest.path} exists: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    files.push({ folder: f.folder, file: f.file, source: f.source, destinationRoot: dest.root });
+  }
+  if (options.checkDisk) {
+    for (const root of new Set(files.map((f) => f.destinationRoot))) {
+      let free: number;
+      try {
+        free = await io.fs.freeDiskBytes(root);
+      } catch (err) {
+        throw acquisitionRefusal(`the free disk under ${root} couldn't be read: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (free - policy.totalBytes < MIN_FREE_DISK_BYTES) {
+        throw acquisitionRefusal(
+          `${formatBytes(free)} free under ${root}; after ${formatBytes(policy.totalBytes)} less than ${formatBytes(MIN_FREE_DISK_BYTES)} would remain (GAPS Q25)`,
+          "Report this to the user: they can free disk space, then prepare again.",
+        );
+      }
+    }
+  }
+  const effect = Effect.parse({ kind: "acquire_models", files, totalBytes: policy.totalBytes, maxBytes: policy.maxBytes, minFreeBytes: MIN_FREE_DISK_BYTES });
+  if (effect.kind !== "acquire_models") throw acquisitionRefusal("the download effect didn't parse as one");
+  return effect;
+}
+
+/** The (folder, file, source) list a plan's effect and a candidate's acquisition must share. */
+function acquiredFiles(files: readonly { folder: string; file: string; source: unknown }[]): string {
+  return canonicalJson(files.map((f) => ({ folder: f.folder, file: f.file, source: f.source })));
 }
 
 /**
@@ -257,7 +366,10 @@ function gigabytes(bytes: number): string {
   return `${(bytes / 1e9).toFixed(1)} GB`;
 }
 
-function describeEffect(e: Effect): string {
+/** Reads the free disk under a path for the approval text; a failed read says so. */
+export type FreeDiskReader = (path: string) => { known: true; bytes: number } | { known: false; reason: string };
+
+function describeEffect(e: Effect, freeDisk: FreeDiskReader): string {
   switch (e.kind) {
     case "local_render":
       return `Effect: local_render of graph ${shortHash(e.graphFingerprint)}`;
@@ -266,21 +378,28 @@ function describeEffect(e: Effect): string {
         `Effect: unload from Ollama at ${e.host} before the render, and load back after it: ` +
         `${e.models.map((m) => `${m.name} (${gigabytes(m.sizeBytes)})`).join(", ")}`
       );
-    case "acquire_models":
+    case "acquire_models": {
+      const roots = [...new Set(e.files.map((f) => f.destinationRoot))];
       return [
-        `Effect: download ${e.files.length} model file(s), ${formatBytes(e.totalBytes)} in total (at most ${formatBytes(e.maxBytes)}; ` +
-          `at least ${formatBytes(e.minFreeBytes)} of disk stays free), each checked against its sha256 before it is placed:`,
+        `Effect: download ${e.files.length} model file(s) from Hugging Face before the render, ${formatBytes(e.totalBytes)} in total ` +
+          `(at most ${formatBytes(e.maxBytes)}), each checked against its pinned sha256 and size before it is placed; an existing file is never replaced:`,
         ...e.files.map(
           (f) =>
-            `  ${f.destinationRoot}/${f.folder}/${f.file} (${formatBytes(f.source.sizeBytes)}) from ` +
-            `huggingface.co/${f.source.repo} commit ${f.source.revision} path ${f.source.path}`,
+            `  ${f.folder}/${f.file}: ${f.source.repo}@${f.source.revision.slice(0, 12)} ${f.source.path}, ${formatBytes(f.source.sizeBytes)}` +
+            (f.source.license ? `, licence ${f.source.license}` : ""),
         ),
+        ...roots.map((root) => {
+          const free = freeDisk(root);
+          const remains = free.known ? `${formatBytes(free.bytes - e.totalBytes)} of disk will remain free` : `free disk unknown (${free.reason})`;
+          return `  Destination: ${root} (${remains}; at least ${formatBytes(e.minFreeBytes)} must)`;
+        }),
       ].join("\n");
+    }
   }
 }
 
 /** What an approval channel shows the user before they decide. */
-export function describeActionPlan(store: ArchitectStore, actionPlan: ActionPlan): string {
+export function describeActionPlan(store: ArchitectStore, actionPlan: ActionPlan, freeDisk: FreeDiskReader = freeDiskBytesSync): string {
   const task = store.getTask(actionPlan.taskId, actionPlan.taskRevision);
   const candidate = store.getCandidate(actionPlan.candidateId);
   const lines = [
@@ -288,7 +407,7 @@ export function describeActionPlan(store: ArchitectStore, actionPlan: ActionPlan
     `Task: ${task ? JSON.stringify(task.intent) : actionPlan.taskId} (${task ? `${task.media.kind}, ${task.media.operation}` : "?"})`,
     `Candidate: ${candidate ? `${candidate.recipeId} r${candidate.recipeRevision}` : actionPlan.candidateId}`,
     ...(candidate ? [`Models: ${Object.entries(candidate.bindings).filter(([, v]) => typeof v === "string" && /\.(safetensors|ckpt|pt|pth|bin|gguf)$/i.test(String(v))).map(([k, v]) => `${k}=${String(v)}`).join(", ") || "none"}`] : []),
-    ...actionPlan.effects.map(describeEffect),
+    ...actionPlan.effects.map((e) => describeEffect(e, freeDisk)),
     `Target: ${actionPlan.target.baseUrl}`,
     `Limits: ${actionPlan.budgets.maxRuns} run, at most ${actionPlan.budgets.maxWallTimeSeconds} s`,
     `Memory and time: unknown; nothing has been measured for this recipe here, so this run is the bounded probe that measures it`,
@@ -336,12 +455,32 @@ export async function admitEffect(
       "Prepare the run again for the current target.",
     );
   }
-  const ctx = await freshSelection(deps, actionPlan.planId);
+  // A plan that acquires files was approved for an acquirable candidate, which stays
+  // acquirable until the files are placed; every other plan needs a feasible one.
+  const approvedAcquire = actionPlan.effects.find((e): e is AcquireModelsEffect => e.kind === "acquire_models");
+  const ctx = await freshSelection(deps, actionPlan.planId, { allowAcquirable: approvedAcquire !== undefined });
   requireLocalCapableTarget(store, baseUrl, ctx.candidate.environmentId);
+  // The downloads are rebuilt from the candidate's fresh acquisition and upstream's current
+  // destinations, without the free-disk reading (it isn't part of the hash; the controller
+  // checks it before each file). A candidate that became feasible meanwhile rebuilds without
+  // them, and the hash tells the user to prepare again.
+  let acquire: AcquireModelsEffect | undefined;
+  if (approvedAcquire && ctx.candidate.status === "acquirable") {
+    if (!ctx.candidate.acquisition || acquiredFiles(ctx.candidate.acquisition.files) !== acquiredFiles(approvedAcquire.files)) {
+      throw new ApprovalError(
+        "APPROVAL_INVALIDATED",
+        `the files candidate ${ctx.candidate.id} needs aren't the ones action plan ${actionPlan.id} downloads`,
+        "Call architect_run prepare again; the user approves the new downloads.",
+      );
+    }
+    acquire = await acquireEffectFor(deps, ctx.task, ctx.candidate, { checkDisk: false });
+  }
   // The residency effect is the one the user approved, not a fresh reading: a model that
   // left Ollama since doesn't invalidate the approval, and one that arrived since isn't
   // unloaded (the controller blocks on it).
-  const rebuilt = actionPlanHash(binding(ctx, baseUrl, actionPlan.effects.find((e): e is ReleaseResidencyEffect => e.kind === "release_residency")));
+  const rebuilt = actionPlanHash(
+    binding(ctx, baseUrl, actionPlan.effects.find((e): e is ReleaseResidencyEffect => e.kind === "release_residency"), acquire),
+  );
   if (rebuilt !== actionPlan.hash) {
     throw new ApprovalError(
       "APPROVAL_INVALIDATED",

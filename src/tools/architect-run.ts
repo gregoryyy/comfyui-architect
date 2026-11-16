@@ -142,18 +142,20 @@ export function registerArchitectRunTool(server: McpServer, context: () => RunTo
     "architect_run",
     "ComfyUI Architect: run a selected candidate locally under the user's approval, follow it and record its outcome. " +
       'action:"prepare" with `planId` (a plan with a selected candidate) validates it again and returns an action plan, its short hash ' +
-      "and an approval request; tell the user what will run. " +
+      "and an approval request; tell the user what will run. For an acquirable candidate the action plan also downloads its missing " +
+      "model files first, each from the source its recipe pins (Hugging Face, a fixed commit), checked against its sha256 before it is " +
+      "placed: tell the user each file, its size and where it goes. You never supply a URL or a file. " +
       'action:"start" with `actionPlanId` starts the run when the user has approved: where the client supports it, the user is asked ' +
       "in a dialog; otherwise the reply says APPROVAL_REQUIRED and names a terminal command the user runs themselves. You can't " +
       "approve for the user, and you must not run that command. From the ComfyUI panel's agent, start is refused unless the operator allowed it: plan there, run from an external client. " +
       "Starting the same action plan again returns the same run, never a second render. " +
-      'action:"status" with `runId` reconciles with ComfyUI and returns the state, outputs, checks and three separate verdicts: ' +
+      'action:"status" with `runId` reconciles with ComfyUI and returns the state, the downloads\' progress (PREPARING while they run), outputs, checks and three separate verdicts: ' +
       "execution, acceptance and the user's. OUTCOME_UNKNOWN means a submission's result was lost: never prepare and start the same plan " +
       "again to retry; report it and keep calling status. " +
-      'action:"cancel" with `runId` cancels this run\'s own job only. ' +
+      'action:"cancel" with `runId` cancels this run\'s own job and downloads only. ' +
       'action:"evaluate" with `runId` asks the user for their verdict on the outputs; `reportedVerdict` records only what the user told ' +
       "you in chat, stored as your report and never as the user's verdict. " +
-      'action:"finalize" with `runId` writes run.json and evaluation.json next to the plan\'s exported files.',
+      'action:"finalize" with `runId` writes run.json, evaluation.json and the dependency lock, with each downloaded file\'s commit and sha256, next to the plan\'s exported files.',
     {
       action: z.enum(["prepare", "start", "status", "cancel", "evaluate", "finalize"]).describe("The run step; see the tool description for each one's fields."),
       planId: z.string().optional().describe("prepare: a plan with a selected candidate."),

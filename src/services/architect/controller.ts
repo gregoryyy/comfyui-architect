@@ -17,17 +17,25 @@
 // runs. So the queue is read right before every interrupt, and the interrupt is sent only
 // while the run's prompt is the one running. Nothing here clears the queue.
 //
+// A run whose action plan acquires model files (TODO 4.5) does so in PREPARING, before it
+// leases the pool: each advance or poll moves the downloads one step (acquisition.ts) and
+// returns, so no call waits for a download. Once every file is placed, the candidate must be
+// feasible on a fresh snapshot before the run goes on (ARCH 2026-11-16, after acquisition).
+// The wall time of the grant counts from the run's creation, so it covers the downloads.
+//
 // Ollama models a run's acquisition unloaded, with the user's approval, are loaded back
 // once the render is over (GAPS Q23): when the run leaves the states in which the render
 // may be live, or when its prompt is taken as not live on the target. The reload runs
 // beside the run and never changes its state or acceptance.
 
 import { z } from "zod";
+import type { ModelAcquirer } from "./acquisition.js";
 import { graphFingerprint } from "./compile.js";
 import { type DecodeResult, acceptanceFrom, evaluateOutputs, needsUserReview, type ProbedOutput } from "./evaluation.js";
 import { type MediaProbe, probeMedia } from "./media-probe.js";
 import { type ResourceCoordinator, residencyRestored, unloadedForRun } from "./resources.js";
 import {
+  type AcquireModelsEffect,
   type ApiGraph,
   ArchitectErrorCode,
   FINAL_RUN_STATES,
@@ -75,6 +83,11 @@ export interface RunControllerDeps {
    * it waited. A throw fails the run with the error's code, as a `graphFor` error does.
    */
   revalidate?: (run: RunRecord) => Promise<void>;
+  /**
+   * Acquires the model files of a run whose action plan has an `acquire_models` effect.
+   * Without it such a run fails in PREPARING; nothing is downloaded.
+   */
+  acquirer?: Pick<ModelAcquirer, "step" | "stop" | "forgetNodeSchemas">;
   pollIntervalMs?: number;
   /** Absences from queue and history after which an OUTCOME_UNKNOWN run waits for the user. */
   maxConsecutiveAbsent?: number;
@@ -352,8 +365,15 @@ export class RunController {
     if (run.state !== "PREPARING" && run.state !== "WAITING_FOR_RESOURCE") return run;
 
     const overBudget = this.budgetExceeded(run);
+    const acquire = run.state === "PREPARING" ? this.acquireEffectOf(run) : undefined;
     if (overBudget !== false) {
+      // Downloads still running are the run's own and stop with it.
+      if (acquire && this.deps.acquirer) await this.deps.acquirer.stop(run, { failed: { code: overBudget.code, message: overBudget.reason } });
       return this.move(run, "FAILED", overBudget.reason, { patch: { error: { code: overBudget.code, message: overBudget.reason } } });
+    }
+    if (acquire) {
+      const ready = await this.acquireModels(run, acquire);
+      if (ready !== true) return ready;
     }
     const acquired = await this.deps.resources.acquire(run);
     if (!acquired.ok) {
@@ -373,6 +393,45 @@ export class RunController {
       },
     });
     return validating.state === "VALIDATING" ? this.validateAndSubmit(validating) : validating;
+  }
+
+  /** The run's approved downloads, when its action plan has them. */
+  private acquireEffectOf(run: RunRecord): AcquireModelsEffect | undefined {
+    return this.deps.store.getActionPlan(run.actionPlanId)?.effects.find((e): e is AcquireModelsEffect => e.kind === "acquire_models");
+  }
+
+  /**
+   * One step of the run's downloads. True once every file is placed and the candidate is
+   * feasible on a fresh snapshot; otherwise the run as it stands (still PREPARING while
+   * downloads run, FAILED when one failed or the recheck refused the candidate).
+   */
+  private async acquireModels(run: RunRecord, effect: AcquireModelsEffect): Promise<RunRecord | true> {
+    const fail = (code: RunError["code"], message: string) => this.move(run, "FAILED", message, { patch: { error: { code, message } } });
+    const { acquirer, revalidate } = this.deps;
+    if (!acquirer) return fail("INTERNAL_ERROR", "this server can't acquire model files; nothing was downloaded");
+    const progress = await acquirer.step(run, effect);
+    const current = this.require(run.id);
+    // Cancelled or moved by another actor during the step: theirs to finish.
+    if (current.state !== "PREPARING") return current;
+    if (progress.kind === "in_progress") return current;
+    if (progress.kind === "failed") return fail(progress.error.code, `acquisition failed: ${progress.error.message}`);
+    // The cached node schemas predate the placement; the snapshot must see the new files.
+    acquirer.forgetNodeSchemas();
+    if (!revalidate) return fail("INTERNAL_ERROR", "the placed files can't be checked against a fresh snapshot here");
+    try {
+      await revalidate(current);
+    } catch (err) {
+      return fail(codeOf(err), `the files were placed, but the candidate isn't feasible on a fresh snapshot: ${messageOf(err)}`);
+    }
+    this.deps.store.appendRunEvent({
+      runId: run.id,
+      kind: "note",
+      principal: "controller",
+      reason: `acquired ${progress.records.length} model file(s); the candidate is feasible on a fresh snapshot`,
+      data: { acquired: progress.records.map((r) => ({ file: `${r.folder}/${r.file}`, placedPath: r.placedPath, sha256: r.observedSha256 })) },
+      at: this.deps.now(),
+    });
+    return true;
   }
 
   private async validateAndSubmit(run: RunRecord): Promise<RunRecord> {
@@ -699,8 +758,12 @@ export class RunController {
       at: this.deps.now(),
     });
     switch (run.state) {
-      case "AWAITING_APPROVAL":
       case "PREPARING":
+        // The run's own downloads stop first, by the job ids on its acquisitions; staged
+        // files go with them (spec §14.5: nothing that isn't the run's is touched).
+        if (this.acquireEffectOf(run) && this.deps.acquirer) await this.deps.acquirer.stop(run, "cancelled");
+        return this.move(this.require(runId), "CANCELLED", `cancelled by the ${principal} before submission`, { principal });
+      case "AWAITING_APPROVAL":
       case "WAITING_FOR_RESOURCE":
         return this.move(run, "CANCELLED", `cancelled by the ${principal} before submission`, { principal });
       case "VALIDATING":
