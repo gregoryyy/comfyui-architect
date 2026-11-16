@@ -255,9 +255,10 @@ async function runTask(client, label, planId, acquiring, progress) {
   check(again.data?.run?.id === runId && again.data?.resumed === true, `${label} a second start returns the same run`);
   let status;
   let lastProgress = "";
-  // A render on the reference target has taken from 85 s to almost 6 min for the same graph,
-  // depending on what ComfyUI held in memory; the limit leaves room for that.
-  const deadline = Date.now() + 20 * 60 * 1000;
+  // On the reference target the same graph has taken from 85 s to almost 6 min, depending on
+  // what ComfyUI held in memory, and SeedVR2 3B took 19 min for 1024 → 4096; the limit leaves
+  // room for the slowest recipe.
+  const deadline = Date.now() + 45 * 60 * 1000;
   do {
     await new Promise((r) => setTimeout(r, 2000));
     status = await callRun(client, { action: "status", runId });
