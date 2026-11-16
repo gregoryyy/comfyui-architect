@@ -31,7 +31,7 @@
         "text": "OPEN",
         "match": "contains",
         "caseSensitive": false,
-        "acceptEvaluator": true
+        "acceptEvaluator": "architect.ocr-glm"
       }
     ]
   }
