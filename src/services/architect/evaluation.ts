@@ -210,6 +210,12 @@ function evaluateImage(
   out.push(formatCheck(files, output.format, record));
   out.push(dimensionsCheck("output_dimensions", files, [output.width, output.height], record));
 
+  // A smoke attempt shows the path executes; the task's criteria are the final's to meet
+  // (spec §13.1; TODO 6.2.1), so it records them as not applicable, never as a verdict.
+  if (run.attempt?.stage === "smoke") {
+    for (const criterion of task.acceptance) out.push(record(criterion.id, "not_applicable", "smoke render: the task's criteria are checked on the final render", { evidence: [] }));
+    return out;
+  }
   for (const criterion of task.acceptance) out.push(...taskCriterion(criterion, files, record));
   return out;
 }

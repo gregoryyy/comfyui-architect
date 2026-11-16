@@ -25,6 +25,7 @@ import {
   type ApiGraph,
   type CandidateAcquisition,
   Effect,
+  type LocalRenderEffect,
   type PlanCandidate,
   type Recipe,
   type ReleaseResidencyEffect,
@@ -34,6 +35,7 @@ import {
   actionPlanHash,
   parseAssetId,
 } from "./schemas.js";
+import { type PlannedAttempts, describeTransformation, planAttempts } from "./repair.js";
 import { architectDataDir, type ArchitectStore } from "./store.js";
 import { isLoopbackHostname } from "./validate.js";
 
@@ -168,14 +170,29 @@ async function readRenderInputs(deps: Pick<AdmissionDeps, "readInputFile">, task
  */
 export type InputBytes = ReadonlyMap<string, Buffer>;
 
+/**
+ * The render's stages and repair scope for the compiled graph (TODO 6.1, 6.2), or undefined
+ * for a plan with one render. A task whose budgets allow no final render is refused.
+ */
+function attemptsFor(graph: ApiGraph, task: TaskSpec): PlannedAttempts | undefined {
+  try {
+    return planAttempts(graph, task);
+  } catch (err) {
+    throw new ApprovalError("MISSING_INPUT", err instanceof Error ? err.message : String(err), "Revise the task's budgets so they allow a final render, then plan again.");
+  }
+}
+
 /** What the action plan binds, built from a selected candidate (everything the hash covers). */
 function binding(
-  ctx: { plan: { id: string }; task: TaskSpec; candidate: { id: string }; recipe: Recipe; fingerprint: string },
+  ctx: { plan: { id: string }; task: TaskSpec; candidate: { id: string }; recipe: Recipe; fingerprint: string; graph: ApiGraph },
   baseUrl: string,
   residency: ReleaseResidencyEffect | undefined,
-  acquire?: AcquireModelsEffect,
-  inputs?: RenderInput[],
+  acquire: AcquireModelsEffect | undefined,
+  inputs: RenderInput[] | undefined,
+  attempts: PlannedAttempts | undefined,
 ) {
+  const wallTime =
+    ctx.task.budgets.maxWallTimeSeconds ?? DEFAULT_MAX_WALL_TIME_SECONDS + (acquire ? downloadAllowanceSeconds(acquire.totalBytes) : 0);
   return {
     planId: ctx.plan.id,
     taskId: ctx.task.id,
@@ -190,16 +207,17 @@ function binding(
         graphFingerprint: ctx.fingerprint,
         outputNodes: ctx.recipe.outputs.map((o) => o.node),
         ...(inputs ? { inputs } : {}),
+        ...(attempts ? { stages: attempts.stages } : {}),
+        ...(attempts?.repair ? { repair: attempts.repair } : {}),
       },
       ...(residency ? [residency] : []),
     ] satisfies Effect[],
-    // The wall time counts from the run's start and so covers its downloads: a task without
-    // its own gets the default plus an allowance at 10 MB/s. A task's own value stays as given.
-    budgets: {
-      maxRuns: 1,
-      maxWallTimeSeconds:
-        ctx.task.budgets.maxWallTimeSeconds ?? DEFAULT_MAX_WALL_TIME_SECONDS + (acquire ? downloadAllowanceSeconds(acquire.totalBytes) : 0),
-    },
+    // The wall time counts from the run's start and so covers its downloads and every
+    // attempt: a task without its own gets the default plus an allowance at 10 MB/s. A
+    // task's own value stays as given.
+    budgets: attempts
+      ? { maxRuns: attempts.limits.maxPreviewRuns + attempts.limits.maxFinalRuns, maxWallTimeSeconds: wallTime, ...attempts.limits }
+      : { maxRuns: 1, maxWallTimeSeconds: wallTime },
   };
 }
 
@@ -228,7 +246,9 @@ export async function prepareActionPlan(deps: AdmissionDeps, planId: string): Pr
   }
   // The models to unload are read now and shown in the approval, so the user is asked
   // before any of them is unloaded (GAPS Q23).
-  const bound = binding(ctx, baseUrl, await deps.releasable?.(baseUrl), acquire, inputs);
+  // Stages and repair only for a plan that can render more than once; a plan with one render
+  // binds what it bound before milestone 6, so its hash doesn't change (ARCH 2026-11-16).
+  const bound = binding(ctx, baseUrl, await deps.releasable?.(baseUrl), acquire, inputs, attemptsFor(ctx.graph, ctx.task));
   const actionPlan = store.putActionPlan({
     schemaVersion: 1,
     id: `actions-${newId()}`,
@@ -503,6 +523,24 @@ function describeEffect(e: Effect, freeDisk: FreeDiskReader): string {
         `Effect: local_render of graph ${shortHash(e.graphFingerprint)}`,
         // The content the grant binds; a changed file needs a new approval (GAPS Q33).
         ...(e.inputs ?? []).map((i) => `  Input: ${i.assetId}, sha256 ${shortHash(i.sha256)}, ${formatBytes(i.sizeBytes)}, read from the target's input folder`),
+        // The stages and every repair transformation the controller may apply on its own
+        // within this approval (spec §13.4; ARCH 2026-11-16, milestone 6, stages).
+        ...(e.stages
+          ? [
+              `  Stages: ${e.stages.map((s) => s.stage).join(", then ")}`,
+              ...e.stages.flatMap((s) =>
+                s.stage === "smoke"
+                  ? [`  Smoke render first (${describeTransformation(s.transformation)}); its result is never reported as the final's, and the final follows only when it passes its built-in checks`]
+                  : [],
+              ),
+            ]
+          : []),
+        ...(e.repair
+          ? [
+              "  Repairs the controller may apply on its own to a failed attempt, within the limits below; nothing else (no other model, node or setting):",
+              ...e.repair.transformations.map((t) => `    ${describeTransformation(t)}`),
+            ]
+          : []),
       ].join("\n");
     case "release_residency":
       return (
@@ -536,6 +574,18 @@ function wallTimeNote(task: TaskSpec | undefined, actionPlan: ActionPlan): strin
   return ` from the start, downloads included (${DEFAULT_MAX_WALL_TIME_SECONDS} s plus ${downloadAllowanceSeconds(acquire.totalBytes)} s for ${formatBytes(acquire.totalBytes)} at 10 MB/s)`;
 }
 
+/** The limits the grant will carry, as the approval states them. */
+function limitsLine(actionPlan: ActionPlan): string {
+  const b = actionPlan.budgets;
+  if (b.maxPreviewRuns === undefined || b.maxFinalRuns === undefined || b.maxRepairRounds === undefined) {
+    return `Limits: ${b.maxRuns} run, at most ${b.maxWallTimeSeconds} s`;
+  }
+  return (
+    `Limits: at most ${b.maxRuns} runs in all (${b.maxPreviewRuns} smoke render(s), ${b.maxFinalRuns} final render(s)), ${b.maxRepairRounds} repair round(s), ` +
+    `at most ${b.maxWallTimeSeconds} s from the first attempt's start for every attempt together`
+  );
+}
+
 /** What an approval channel shows the user before they decide. */
 export function describeActionPlan(store: ArchitectStore, actionPlan: ActionPlan, freeDisk: FreeDiskReader = freeDiskBytesSync): string {
   const task = store.getTask(actionPlan.taskId, actionPlan.taskRevision);
@@ -557,7 +607,7 @@ export function describeActionPlan(store: ArchitectStore, actionPlan: ActionPlan
     // One line per entry: `printable` turns a newline inside a line into a visible mark.
     ...actionPlan.effects.flatMap((e) => describeEffect(e, freeDisk).split("\n")),
     `Target: ${actionPlan.target.baseUrl}`,
-    `Limits: ${actionPlan.budgets.maxRuns} run, at most ${actionPlan.budgets.maxWallTimeSeconds} s` + wallTimeNote(task, actionPlan),
+    limitsLine(actionPlan) + wallTimeNote(task, actionPlan),
     `Memory and time: unknown; nothing has been measured for this recipe here, so this run is the bounded probe that measures it`,
     `Expires: ${actionPlan.expiresAt}`,
   ];
@@ -630,8 +680,20 @@ export async function admitEffect(
   // The residency effect is the one the user approved, not a fresh reading: a model that
   // left Ollama since doesn't invalidate the approval, and one that arrived since isn't
   // unloaded (the controller blocks on it).
+  // Stages are rebuilt when the approved plan has them. A plan approved with one render (one
+  // prepared before milestone 6, or with previews off) stays one render: the user approved
+  // no further attempt, and rebuilding it with stages would give another hash.
+  const approvedRender = actionPlan.effects.find((e): e is LocalRenderEffect => e.kind === "local_render");
+  const staged = approvedRender?.stages !== undefined || approvedRender?.repair !== undefined;
   const rebuilt = actionPlanHash(
-    binding(ctx, baseUrl, actionPlan.effects.find((e): e is ReleaseResidencyEffect => e.kind === "release_residency"), acquire, inputs),
+    binding(
+      ctx,
+      baseUrl,
+      actionPlan.effects.find((e): e is ReleaseResidencyEffect => e.kind === "release_residency"),
+      acquire,
+      inputs,
+      staged ? attemptsFor(ctx.graph, ctx.task) : undefined,
+    ),
   );
   if (rebuilt !== actionPlan.hash) {
     throw new ApprovalError(

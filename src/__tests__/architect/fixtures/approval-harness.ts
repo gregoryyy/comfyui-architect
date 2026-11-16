@@ -27,9 +27,15 @@ const STATS: SystemStats = {
   devices: [],
 };
 
+/**
+ * The fixture task. It allows no preview runs, so its plan has one render and binds what a
+ * plan bound before stages existed (TODO 6.2): the tests of milestones 3 to 5 keep checking
+ * that path. The stages and repairs have their tests in attempts.test.ts.
+ */
 export const TASK: TaskSpecInput = {
   intent: "A red bicycle against a white wall.",
   media: { kind: "image", operation: "text_to_image", output: { width: 1024, height: 768 } },
+  budgets: { maxPreviewRuns: 0 },
 };
 
 const BASE = "http://127.0.0.1:8188";
@@ -40,8 +46,8 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-/** A selected plan on the fixture recipe, a fake driver, and a clock the test moves. */
-export async function setup() {
+/** A selected plan on the fixture recipe for `task` (TASK by default), a fake driver, and a clock the test moves. */
+export async function setup(task: TaskSpecInput = TASK) {
   const dataDir = mkdtempSync(join(tmpdir(), "architect-execution-"));
   dirs.push(dataDir);
   const store = ArchitectStore.open(dataDir);
@@ -65,7 +71,7 @@ export async function setup() {
   } as Pick<UpstreamFacade, "comfyuiBaseUrl" | "systemStats" | "objectInfo" | "installedModels" | "isPaidNode">;
   const service = new ArchitectService({ upstream: upstream as UpstreamFacade, now, newId });
   const planning = new ArchitectPlanning({ store, service, upstream, dataDir, sources: [FIXTURES], now, newId });
-  const prepared = await planning.prepare({ task: TASK });
+  const prepared = await planning.prepare({ task });
   const proposed = await planning.propose({ planId: prepared.plan.id });
   const best = proposed.candidates.find((c) => c.status === "feasible");
   if (!best) throw new Error("fixture has no feasible candidate");
