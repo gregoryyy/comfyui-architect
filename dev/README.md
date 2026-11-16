@@ -10,13 +10,13 @@ The implementation extends a fork of **`artokun/comfyui-mcp`**, reusing its prov
 
 ## 2. Implementation
 
-The project follows gregoryyy's agentic coding project structure, as adapted in [BOOT](input/BOOT.md). `ext/` holds the project's documents, the role `docs/` plays elsewhere, because upstream's `docs/` is its published documentation site.
+The project follows gregoryyy's agentic coding project structure, as adapted in [BOOT](input/BOOT.md). `dev/` holds the project's documents, the role `docs/` plays elsewhere, because upstream's `docs/` is its published documentation site.
 
 **Where things go.** The Architect code is additive and has its own directories next to upstream's:
 
 | Path | Content |
 | --- | --- |
-| `ext/` | Project documents: this README, [BOOT](input/BOOT.md), [IDEA](IDEA.md), [GAPS](GAPS.md), [TODO](TODO.md), [ROAD](ROAD.md), [DONE](DONE.md), [SEC](SEC.md), [ARCH](ARCH.md), [EVAL](EVAL.md), [SDLC](SDLC.md), [SBOM](SBOM.md), [STYLE](STYLE.md), [SPEC](design/SPEC.md) (the design), [BASE](input/BASE.md), and the [spec](input/comfyui-architect-system-spec.md) as input |
+| `dev/` | Project documents: this README, [BOOT](input/BOOT.md), [IDEA](IDEA.md), [GAPS](GAPS.md), [TODO](TODO.md), [ROAD](ROAD.md), [DONE](DONE.md), [SEC](SEC.md), [ARCH](ARCH.md), [EVAL](EVAL.md), [SDLC](SDLC.md), [SBOM](SBOM.md), [STYLE](STYLE.md), [SPEC](design/SPEC.md) (the design), [BASE](input/BASE.md), and the [spec](input/comfyui-architect-system-spec.md) as input |
 | `src/services/architect/` | The Architect domain: task specs, catalog, planner, constraints, policy, resources, run controller, evaluation, store |
 | `src/services/architect/upstream.ts` | The one facade through which the Architect code calls upstream services |
 | `src/tools/architect.ts` | The MCP tools `architect_inspect`, `architect_plan`, `architect_run`, `architect_library` |
@@ -44,7 +44,7 @@ The fork is meant to stay a superset of upstream: everything upstream does keeps
 
 The list is in [ARCH](ARCH.md#upstream-footprint). Changing a file outside it needs a recorded decision.
 
-**Upstream updates come in by merge.** The pinned upstream commit is recorded in `ext/input/BASE.md`. To take a newer upstream:
+**Upstream updates come in by merge.** The pinned upstream commit is recorded in `dev/input/BASE.md`. To take a newer upstream:
 1. Merge `upstream/main` into a sync branch.
 2. Run upstream's suite and the Architect tests against it.
 3. Merge the sync branch through a PR, and record the new baseline.

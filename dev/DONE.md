@@ -2,6 +2,26 @@
 
 The progress log, newest entry on top. Each entry: `## YYYY-MM-DD HH:MM — Title` (time from `date`), the TODO items and PR or commit, an `Agent:` line, then **Implementation notes**, **Deviations** and **Insights**. The plan is in [TODO](TODO.md).
 
+## 2026-11-16 03:52 — The docs folder is dev/
+
+Owner's request (2026-11-16). Commit on branch `feat/milestone-4`.
+
+Agent: Opus 5.5.
+
+### Implementation notes
+
+- `ext/` moves to `dev/`, for development, with its history (`git mv`).
+- The new path is used in AGENTS, the README, the recipe README, the five subagent briefs and the PR template. The same goes for SDLC, STYLE, ARCH, TODO, SPEC, BOOT and the approval-channel note, and for `src/fork-identity.ts` and its test, which reads `dev/input/BASE.md`. The commit scope for documents is `docs(dev)`.
+- Earlier DONE entries, GAPS questions and answers, and BASE's recorded check results keep `ext/` as written. BOOT, AGENTS and ARCH say when the name changed.
+
+### Deviations
+
+None.
+
+### Insights
+
+- No hook or ignore file named the folder, so nothing outside the documents and one test had to follow.
+
 ## 2026-11-16 02:33 — Plan for ROAD phase 3 (milestones 4 to 6)
 
 TODO items: milestones 4, 5 and 6 added. GAPS Q24 to Q29 opened. PR on branch `docs/phase-3-plan`.

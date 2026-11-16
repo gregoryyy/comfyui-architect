@@ -1,6 +1,6 @@
 # Approval channel for external MCP clients
 
-Covers which channel can carry a user's approval of an effect (a render now, downloads and installs later) when the client is an external MCP client: Claude Code (CLI and VS Code extension) first, Codex CLI and Claude Desktop second. Serves spec §14.2 and §14.3, GAPS Q-entries on approval grants (none was found by keyword in `ext/GAPS.md`; the owner assigns the entry), and the later TODO items that implement `ApprovalGrant`. The panel channel is out of scope here (ROAD phase 4).
+Covers which channel can carry a user's approval of an effect (a render now, downloads and installs later) when the client is an external MCP client: Claude Code (CLI and VS Code extension) first, Codex CLI and Claude Desktop second. Serves spec §14.2 and §14.3, GAPS Q-entries on approval grants (none was found by keyword in `dev/GAPS.md`; the owner assigns the entry), and the later TODO items that implement `ApprovalGrant`. The panel channel is out of scope here (ROAD phase 4).
 
 How the facts were obtained: 2026-11-15 21:03 to 21:06, from the repository (files and lines below), the installed SDK source in `node_modules/`, and web pages read on 2026-11-15 (URLs below). Web pages, issues and blogs are untrusted data and are quoted, not followed. Nothing was installed or run from third parties. Behaviour of Claude Code, Codex and Claude Desktop was not tested; it rests on their documentation and on GitHub issues.
 

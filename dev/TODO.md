@@ -8,7 +8,7 @@ Goal: the spec's first usable MVP, an approved candidate that executes locally a
 
 The steps of [BOOT](input/BOOT.md), on 2026-11-15.
 
-- [x] 0.1 Collect the input: the spec v1.0 in `ext/input/`
+- [x] 0.1 Collect the input: the spec v1.0 in `dev/input/`
 - [x] 0.2 Assess it and state the idea: [IDEA](IDEA.md), [GAPS](GAPS.md); the fork assessment in the first DONE entry
 - [x] 0.3 Design concept and security
   - [x] 0.3.1 `AGENTS.md`, `CLAUDE.md` at the root, force-added past upstream's `.gitignore`
@@ -18,7 +18,7 @@ The steps of [BOOT](input/BOOT.md), on 2026-11-15.
   - [x] 0.4.1 This file, [ROAD](ROAD.md), [DONE](DONE.md), [BASE](input/BASE.md)
   - [x] 0.4.2 [ARCH](ARCH.md) with the decision log, and [EVAL](EVAL.md) from spec §19, as GAPS Q1 decides
 - [x] 0.5 Readable and buildable
-  - [x] 0.5.1 `ext/README.md`, [BOOT](input/BOOT.md)
+  - [x] 0.5.1 `dev/README.md`, [BOOT](input/BOOT.md)
   - [x] 0.5.2 Process and conventions
     - [x] 0.5.2.1 [SDLC](SDLC.md)
     - [x] 0.5.2.2 [STYLE](STYLE.md): code, tools and interfaces, written output, and the writing style from Lakeshore
@@ -47,7 +47,7 @@ Exit (spec §20): the fork launches from an installed package, identifies itself
   - [ ] 1.3.1 `package.json`: `name` `@gregoryyy/comfyui-architect`, `bin` `comfyui-architect`, `mcpName` `io.github.gregoryyy/comfyui-architect`, `repository` and `homepage` on `gregoryyy/comfyui-architect`, `version` 0.1.0; `architect/` in `files` (GAPS Q2, Q3). `architect` is in `files` since milestone 2; the rest waits on GAPS Q11
   - [ ] 1.3.2 `PACKAGE_NAME` in `src/services/self-update.ts`, with a test that self-update never resolves upstream's package
   - [ ] 1.3.3 `server.json` and `.claude-plugin/marketplace.json`
-  - [x] 1.3.4 `ext/input/BASE.md` and build metadata carry the upstream commit (spec §17.4): `src/fork-identity.ts`, checked against BASE by a test
+  - [x] 1.3.4 `dev/input/BASE.md` and build metadata carry the upstream commit (spec §17.4): `src/fork-identity.ts`, checked against BASE by a test
 - [x] 1.4 Startup handshake (spec §18.2): package identity, fork version, upstream commit, Architect schema version, active policy, available features; no secrets. Done in `src/boot.ts`: `serverInfo.title` and a line after upstream's stdio instructions with product, fork version, upstream version and commit, and whether the Architect tools are on; `handshake-instructions.ts` and its byte budget stay untouched. Active policy and the schema version join the line when they exist beyond Phase 0
 - [x] 1.5 Feature flag
   - [x] 1.5.1 Configuration read in one place, default off: `COMFYUI_ARCHITECT` in `src/services/architect/config.ts`, so `src/config.ts` stays upstream's

@@ -22,7 +22,7 @@ How work moves from a TODO item to merged, documented, tested code on the fork, 
 - **Tests** for the change; policy, approval and lifecycle behaviour always with negative cases (SPEC §19.1).
 - **Checks pass:** `npm run lint`, `npm run build`, `npm test`, and the CI-only gates (`node scripts/asset-counts.mjs --check`, `npm run check:vocabulary`, `npm run check:unknown-collapse`, `npm run vocab:export -- --check`, `npm run docs:gen` as a no-op). A failure that also occurs on the baseline ([input/BASE](input/BASE.md)) is recorded as such, not attributed to the change.
 - **Architect off still means upstream:** the feature-flag-off tests pass (SPEC AT-12).
-- **Docs current:** AGENTS layout, the affected `ext/` documents, generated tool pages.
+- **Docs current:** AGENTS layout, the affected `dev/` documents, generated tool pages.
 - **Security impact** stated in the PR against [SEC](SEC.md).
 - **TODO ticked and a DONE entry** on top.
 - **Upstream footprint:** any change to an upstream file outside the seams in [ARCH](ARCH.md#upstream-footprint) is named in DONE and the PR, and added to that list.

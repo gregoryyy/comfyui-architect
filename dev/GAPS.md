@@ -70,7 +70,7 @@ Actions is off on a new fork. Public repositories run it at no cost, but enablin
 
 The stock panel works through its chat and choice controls (spec §3.2). Candidate cards, approvals and graph diffs need a change to `artokun/comfyui-mcp-panel`, a separate repository.
 
-- **Proposed:** not before Phase 4; until then, test the stock panel with autospawn off. Its documents then go in that fork's own `ext/`.
+- **Proposed:** not before Phase 4; until then, test the stock panel with autospawn off. Its documents then go in that fork's own `dev/` (called `ext/` until 2026-11-16).
 - **Answer** (2026-11-15 13:45, Gregor Heinrich): In ROAD phase 4, as proposed.
 - **Resolved** (2026-11-15 13:45, Opus 5.5 for Gregor Heinrich): ROAD phase 4; until then the stock panel with autospawn off (TODO 1.2.4, 1.10).
 
