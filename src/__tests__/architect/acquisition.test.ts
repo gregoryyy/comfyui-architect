@@ -529,7 +529,7 @@ describe("acquisitions in the store", () => {
     const again = store.transitionAcquisition({ id: a.id, from: "downloading", to: "planned", patch: { jobId: null }, at });
     expect(again.jobId).toBeUndefined();
     store.transitionAcquisition({ id: a.id, from: "planned", to: "downloading", patch: { jobId: "job-2" }, at });
-    store.transitionAcquisition({ id: a.id, from: "downloading", to: "verifying", patch: { stagedPath: "/m/.architect-staging/run-1/x" }, at });
+    store.transitionAcquisition({ id: a.id, from: "downloading", to: "verifying", patch: { stagedPath: "/m/upscale_models/x.safetensors.architect-run-1" }, at });
     // Placed needs the pinned hash observed: the schema refuses anything else.
     expect(() =>
       store.transitionAcquisition({

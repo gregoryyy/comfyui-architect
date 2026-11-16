@@ -189,7 +189,7 @@ describe("the download functions (TODO 4.5.1)", () => {
     id: "job-abc",
     trayId: "tray-1",
     url: "https://huggingface.co/x",
-    target_subfolder: ".architect-staging/run-1",
+    target_subfolder: "upscale_models",
     status: "downloading",
     started_at: 1,
     ...over,
@@ -213,10 +213,10 @@ describe("the download functions (TODO 4.5.1)", () => {
 
   it("starts a job never through the Manager and with no auth override", async () => {
     dl.startCalls = [];
-    const r = await createUpstreamFacade().startDownload({ url: "https://huggingface.co/a/b/resolve/c/x.safetensors", subfolder: ".architect-staging/run-1", filename: "x.safetensors" });
+    const r = await createUpstreamFacade().startDownload({ url: "https://huggingface.co/a/b/resolve/c/x.safetensors", subfolder: "upscale_models", filename: "x.safetensors.architect-run-1" });
     expect(r).toEqual({ jobId: "job-abc" });
     expect(dl.startCalls).toEqual([
-      ["https://huggingface.co/a/b/resolve/c/x.safetensors", ".architect-staging/run-1", "x.safetensors", undefined, undefined, false, undefined],
+      ["https://huggingface.co/a/b/resolve/c/x.safetensors", "upscale_models", "x.safetensors.architect-run-1", undefined, undefined, false, undefined],
     ]);
   });
 

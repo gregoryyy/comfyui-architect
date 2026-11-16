@@ -10,8 +10,8 @@
 //   gives another hash and the old grant no longer applies (APPROVAL_INVALIDATED).
 // - One grant starts one run: the store consumes it in the transaction that creates the run.
 
-import { join } from "node:path";
-import { type AcquisitionIo, diskShortfall, freeDiskBytesSync, hfEndpointRefusal } from "./acquisition.js";
+import { dirname, join } from "node:path";
+import { type AcquisitionIo, diskShortfall, freeDiskBytesSync, hfEndpointRefusal, stagedNameOf } from "./acquisition.js";
 import { MIN_FREE_DISK_BYTES, acquisitionPolicy, formatBytes } from "./acquisition-policy.js";
 import { ARCHITECT_PANEL_RUNS_ENV, onPanelRoute, panelRunsAllowed } from "./config.js";
 import { canonicalJson } from "./hash.js";
@@ -286,6 +286,17 @@ async function acquireEffectFor(
     }
     if (dest.path !== join(dest.root, f.folder, f.file)) {
       throw acquisitionRefusal(`upstream would write ${f.folder}/${f.file} to ${dest.path}, not into a ${f.folder} folder under a model root`);
+    }
+    // The download is staged next to the destination under a name no loader lists; it has
+    // to resolve into the same folder, or the controller would refuse it later.
+    let staged: { root: string; path: string };
+    try {
+      staged = await io.facade.resolveModelDestination(f.folder, stagedNameOf(f.file, "run-check"));
+    } catch (err) {
+      throw acquisitionRefusal(`upstream can't resolve a staged name next to ${f.folder}/${f.file}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (dirname(staged.path) !== dirname(dest.path)) {
+      throw acquisitionRefusal(`upstream would stage ${f.folder}/${f.file} in ${dirname(staged.path)}, not next to its destination ${dest.path}`);
     }
     try {
       await io.fs.lstat(dest.path);

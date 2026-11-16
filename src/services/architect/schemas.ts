@@ -682,8 +682,8 @@ export const Effect = z.discriminatedUnion("kind", [
     .object({
       /**
        * Download these model files from their pinned sources into the target's model folders
-       * before the render (ARCH 2026-11-16, placement; GAPS Q25). Each file is staged under
-       * `<destinationRoot>/.architect-staging/<run id>/`, checked against `source.sha256` and
+       * before the render (ARCH 2026-11-16, placement; GAPS Q25). Each file is staged next to
+       * its destination as `<file>.architect-<run id>`, a name no loader lists, checked against `source.sha256` and
        * `sizeBytes`, and only then placed as `<destinationRoot>/<folder>/<file>`, never over
        * an existing file. `maxBytes` is the bound the approval names (at most 40 GB);
        * `minFreeBytes` the free disk that must remain after each file (50 GB). The hash of

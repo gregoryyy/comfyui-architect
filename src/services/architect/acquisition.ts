@@ -8,8 +8,12 @@
 // - Architect follows the redirect chain itself with HEAD requests, allowing only https and
 //   Hugging Face's hosts, then hands upstream's downloader the pinned URL. Upstream follows
 //   the chain again unchecked; the sha256 below rejects any other content;
-// - upstream downloads into its own download cache, then links or copies the entry into
-//   `<model root>/.architect-staging/<run id>/`, a folder ComfyUI doesn't list. Free disk
+// - upstream downloads into its own download cache, then links or copies the entry into the
+//   destination folder itself under a staged name, `<file>.architect-<run id>`, which no
+//   loader lists, since ComfyUI lists only files with a model extension. The staged file is
+//   resolved by the same upstream call as the destination, so both sit in the folder
+//   upstream resolves for the category, also when the server's extra model paths move that
+//   category to another root, and `link` places it on the same filesystem. Free disk
 //   is checked on the model root's disk and the cache's, counting other runs' unfinished
 //   downloads as reserved; after placement Architect removes upstream's cache copy of that
 //   one file, which upstream would otherwise keep;
@@ -38,8 +42,12 @@ import {
 import { type AcquisitionPatch, type ArchitectStore, StoreConflictError } from "./store.js";
 import type { DownloadStatus, UpstreamFacade } from "./upstream.js";
 
-/** The folder under a model root that holds a run's staged files. */
-export const STAGING_DIR = ".architect-staging";
+/**
+ * Extensions ComfyUI's folder listing offers to loaders (`folder_paths.supported_pt_extensions`,
+ * plus `.gguf` for ComfyUI-GGUF). A staged name must not end in one, or a loader would list
+ * the unverified file.
+ */
+export const MODEL_FILE_EXTENSIONS: readonly string[] = [".safetensors", ".pth", ".ckpt", ".pt", ".pt2", ".bin", ".pkl", ".sft", ".gguf"];
 /** Redirects followed before the chain is refused (ARCH 2026-11-16, redirects). */
 export const MAX_REDIRECT_HOPS = 5;
 /** Download attempts per file: the first and two restarts (TODO 4.5.3). */
@@ -83,10 +91,8 @@ export interface HashedFile extends FileIdentity {
 export interface AcquisitionFs {
   lstat(path: string): Promise<{ isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean; size: number; dev: number; ino: number }>;
   realpath(path: string): Promise<string>;
-  mkdir(path: string, mode: number): Promise<void>;
   link(existing: string, newPath: string): Promise<void>;
   unlink(path: string): Promise<void>;
-  rmdir(path: string): Promise<void>;
   /**
    * sha256 and size of a regular file, read without following a symbolic link, with the
    * device and inode of the open handle (fstat), so the bytes hashed are tied to one file.
@@ -151,12 +157,8 @@ async function existingAncestor(path: string): Promise<string> {
 export const NODE_ACQUISITION_FS: AcquisitionFs = {
   lstat: (p) => fsp.lstat(p),
   realpath: (p) => fsp.realpath(p),
-  mkdir: async (p, mode) => {
-    await fsp.mkdir(p, { mode });
-  },
   link: (a, b) => fsp.link(a, b),
   unlink: (p) => fsp.unlink(p),
-  rmdir: (p) => fsp.rmdir(p),
   hashFile: hashFileNoFollow,
   freeDiskBytes: async (p) => {
     const s = await fsp.statfs(await existingAncestor(p));
@@ -334,9 +336,16 @@ export async function preflightRedirects(url: string, fetchFn: HeadFetch, opts: 
 // ---------------------------------------------------------------------------------------
 // Staging, verification and placement (TODO 4.5.2)
 
-/** A run's staging folder under a model root. */
-export function stagingDirOf(root: string, runId: string): string {
-  return join(root, STAGING_DIR, runId);
+/**
+ * The name a run stages a file under, next to its destination: `<file>.architect-<run id>`.
+ * Throws if it would end in a model extension (it can't with run ids as Architect makes them;
+ * the check keeps it so).
+ */
+export function stagedNameOf(file: string, runId: string): string {
+  const name = `${file}.architect-${runId}`;
+  const lower = name.toLowerCase();
+  if (MODEL_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext))) throw new Error(`the staged name ${name} would look like a model file`);
+  return name;
 }
 
 /** Whether `child` is `parent` or inside it, by path. */
@@ -349,42 +358,6 @@ function within(parent: string, child: string): boolean {
 export interface StepRefusal {
   ok: false;
   message: string;
-}
-
-/**
- * Create `<root>/.architect-staging/<run id>/` (mode 0700) and check it: both levels real
- * directories, not symbolic links (lstat), and the run's folder resolving to the same path
- * under the root's real path, so nothing redirects the staged bytes (SEC T9).
- */
-export async function prepareStaging(fs: AcquisitionFs, root: string, runId: string): Promise<{ ok: true; dir: string } | StepRefusal> {
-  if (!isAbsolute(root)) return { ok: false, message: `the model root ${root} isn't absolute` };
-  const levels = [join(root, STAGING_DIR), stagingDirOf(root, runId)];
-  for (const dir of levels) {
-    try {
-      await fs.mkdir(dir, 0o700);
-    } catch (err) {
-      if (errnoOf(err) !== "EEXIST") return { ok: false, message: `couldn't create the staging folder ${dir}: ${messageOf(err)}` };
-    }
-    let st: Awaited<ReturnType<AcquisitionFs["lstat"]>>;
-    try {
-      st = await fs.lstat(dir);
-    } catch (err) {
-      return { ok: false, message: `couldn't read the staging folder ${dir}: ${messageOf(err)}` };
-    }
-    if (st.isSymbolicLink() || !st.isDirectory()) {
-      return { ok: false, message: `the staging folder ${dir} is ${st.isSymbolicLink() ? "a symbolic link" : "not a directory"}; refusing to stage through it` };
-    }
-  }
-  try {
-    const realRoot = await fs.realpath(root);
-    const real = await fs.realpath(levels[1]);
-    if (real !== join(realRoot, STAGING_DIR, runId)) {
-      return { ok: false, message: `the staging folder ${levels[1]} resolves to ${real}, outside ${realRoot}` };
-    }
-  } catch (err) {
-    return { ok: false, message: `couldn't resolve the staging folder ${levels[1]}: ${messageOf(err)}` };
-  }
-  return { ok: true, dir: levels[1] };
 }
 
 /** What a check of a staged file found. */
@@ -451,9 +424,13 @@ export type PlaceResult =
 
 /**
  * Place a verified staged file as `<root>/<folder>/<file>` with `link` and `unlink`, so the
- * destination is created only if it doesn't exist. Refused: a staging folder or file that is
- * a symbolic link, and a destination whose parent's real path isn't inside the root's (SEC
- * T9). `verified` is the device and inode of the handle that was hashed: the staged file
+ * destination is created only if it doesn't exist. The staged file must sit in the same
+ * folder as the destination. Refused: a staged file that is a symbolic link, and a folder
+ * whose real path isn't inside the real path of the root upstream reported for it (SEC
+ * T9). That root is the folder's parent, also when an extra model path moves the category:
+ * upstream then resolves the configured category directory, and its parent holds it, so
+ * the check is on the folder alone. A category directory that is itself a link out of its
+ * parent is refused (fail closed). `verified` is the device and inode of the handle that was hashed: the staged file
  * must still be that inode just before the link, and the new destination must be it just
  * after; otherwise only the link just made is removed and placement fails, so a file
  * swapped in after hashing never stays in a model folder. When the destination exists, it
@@ -471,27 +448,28 @@ export async function placeStaged(
     try {
       await fs.unlink(stagedPath);
     } catch {
-      // Already gone, or left for the staging folder's removal; it is never placed unverified.
+      // Already gone; it is never placed unverified either way.
     }
   };
+  const parent = dirname(dest);
+  if (dirname(stagedPath) !== parent) {
+    await removeStaged();
+    return { ok: false, message: `the staged ${stagedPath} isn't in the destination folder ${parent}; nothing was placed` };
+  }
   try {
-    for (const p of [dirname(stagedPath), stagedPath]) {
-      const st = await fs.lstat(p);
-      if (st.isSymbolicLink()) return { ok: false, message: `the staged ${p} is a symbolic link; nothing was placed` };
+    const st = await fs.lstat(stagedPath);
+    if (st.isSymbolicLink()) {
+      await removeStaged();
+      return { ok: false, message: `the staged ${stagedPath} is a symbolic link; nothing was placed` };
     }
   } catch (err) {
     return { ok: false, message: `couldn't read the staged file ${stagedPath}: ${messageOf(err)}` };
-  }
-  const parent = dirname(dest);
-  try {
-    await fs.mkdir(parent, 0o755);
-  } catch (err) {
-    if (errnoOf(err) !== "EEXIST") return { ok: false, message: `couldn't create the model folder ${parent}: ${messageOf(err)}` };
   }
   try {
     const realRoot = await fs.realpath(root);
     const realParent = await fs.realpath(parent);
     if (!within(realRoot, realParent) || realParent === realRoot) {
+      await removeStaged();
       return { ok: false, message: `the model folder ${parent} resolves to ${realParent}, outside ${realRoot}; nothing was placed` };
     }
   } catch (err) {
@@ -528,7 +506,7 @@ export async function placeStaged(
     }
   } catch (err) {
     if (errnoOf(err) !== "EEXIST") {
-      return { ok: false, message: `couldn't place ${dest}: ${messageOf(err)} (the staging folder must be on the model folder's filesystem)` };
+      return { ok: false, message: `couldn't place ${dest}: ${messageOf(err)}` };
     }
     // Someone else's file, or the pinned one installed meanwhile: hash it, never replace it.
     let existing: HashedFile;
@@ -553,35 +531,6 @@ export async function placeStaged(
   return { ok: true, path: dest, preexisting: false };
 }
 
-/** Remove a run's staging folder and, when empty, the staging root; errors are reported, not thrown. */
-export async function removeStaging(fs: AcquisitionFs, root: string, runId: string, files: readonly string[]): Promise<string[]> {
-  const problems: string[] = [];
-  const dir = stagingDirOf(root, runId);
-  for (const f of files) {
-    try {
-      await fs.unlink(join(dir, f));
-    } catch (err) {
-      if (errnoOf(err) !== "ENOENT") problems.push(`couldn't delete ${join(dir, f)}: ${messageOf(err)}`);
-    }
-  }
-  for (const d of [dir, join(root, STAGING_DIR)]) {
-    try {
-      const st = await fs.lstat(d);
-      if (st.isSymbolicLink()) {
-        problems.push(`${d} is a symbolic link; it was left as it is`);
-        break;
-      }
-      await fs.rmdir(d);
-    } catch (err) {
-      const code = errnoOf(err);
-      // Another run's files keep the staging root; a folder never created needs no removal.
-      if (code === "ENOENT" || (d !== dir && (code === "ENOTEMPTY" || code === "EEXIST"))) continue;
-      problems.push(`couldn't remove ${d}: ${messageOf(err)}`);
-    }
-  }
-  return problems;
-}
-
 // ---------------------------------------------------------------------------------------
 // Free disk (GAPS Q25: at least 50 GB stays free)
 
@@ -600,7 +549,7 @@ async function remainingBytes(io: AcquisitionIo, rec: AcquisitionRecord): Promis
 /**
  * Whether downloading `files` leaves at least `minFreeBytes` free on every disk it writes:
  * the model root's, and upstream's download cache's when that is another device (upstream
- * writes the file into its cache first, then links it into the staging folder on the same
+ * writes the file into its cache first, then links it into the destination folder on the same
  * device or copies it on another, so a file counts once per device it lands on). The
  * unfinished downloads of other runs count as reserved on their devices. A disk that can't
  * be read is refused, not passed (spec §7.3). Undefined when every disk has room.
@@ -814,26 +763,32 @@ export class ModelAcquirer {
     const shortfall = await diskShortfall(io, this.deps.store, [rec], effect.minFreeBytes, { exceptRunId: run.id });
     if (shortfall) return void fail(`${shortfall}; nothing was downloaded`);
 
-    const staging = await prepareStaging(io.fs, rec.destinationRoot, run.id);
-    if (!staging.ok) return void fail(staging.message);
-    const stagedPath = join(staging.dir, rec.file);
-    // A file left by an earlier attempt isn't verified and isn't trusted: it goes.
+    // The staged name is resolved by the same upstream call as the destination, so both land
+    // in the folder upstream resolves for the category, wherever its extra model paths put
+    // it. The destination must still be the approved one.
+    const stagedName = stagedNameOf(rec.file, run.id);
+    let stagedPath: string;
+    try {
+      const dest = await io.facade.resolveModelDestination(rec.folder, rec.file);
+      const staged = await io.facade.resolveModelDestination(rec.folder, stagedName);
+      const approved = join(rec.destinationRoot, rec.folder, rec.file);
+      if (resolve(dest.path) !== resolve(approved)) {
+        return void fail(`upstream now resolves ${rec.folder}/${rec.file} to ${dest.path}, not to the approved ${approved}`);
+      }
+      if (dirname(resolve(staged.path)) !== dirname(resolve(dest.path)) || basename(staged.path) !== stagedName) {
+        return void fail(`upstream would stage ${rec.file} at ${staged.path}, not next to its destination ${dest.path}`);
+      }
+      stagedPath = resolve(staged.path);
+    } catch (err) {
+      return void fail(`upstream can't resolve where ${rec.folder}/${rec.file} would go: ${messageOf(err)}`);
+    }
+    // A file left under this run's staged name by an earlier attempt isn't verified and isn't
+    // trusted: it goes. Only that exact name; nothing else in the folder is touched.
     try {
       await io.fs.unlink(stagedPath);
       this.note(run, rec, `removed an unverified staged file left by an earlier attempt`);
     } catch (err) {
       if (errnoOf(err) !== "ENOENT") return void fail(`couldn't remove the earlier staged file ${stagedPath}: ${messageOf(err)}`);
-    }
-    // Upstream's resolver must put the staged file exactly here: under the same root as the
-    // destination, so `link` places it without a copy, and in the folder checked above.
-    const subfolder = `${STAGING_DIR}/${run.id}`;
-    try {
-      const target = await io.facade.resolveModelDestination(subfolder, rec.file);
-      if (resolve(target.path) !== resolve(stagedPath)) {
-        return void fail(`upstream would stage ${rec.file} at ${target.path}, not at ${stagedPath}`);
-      }
-    } catch (err) {
-      return void fail(`upstream can't resolve the staging folder: ${messageOf(err)}`);
     }
     if (await io.facade.downloadRoutesToManager()) {
       return void fail("upstream would hand this download to ComfyUI-Manager, whose file can't be checked before placement");
@@ -849,7 +804,7 @@ export class ModelAcquirer {
     }
     let jobId: string;
     try {
-      ({ jobId } = await io.facade.startDownload({ url, subfolder, filename: rec.file }));
+      ({ jobId } = await io.facade.startDownload({ url, subfolder: rec.folder, filename: stagedName }));
     } catch (err) {
       this.note(run, rec, `download attempt ${attempt}: upstream didn't start the download: ${messageOf(err)}`, { attempt });
       return;
@@ -909,8 +864,8 @@ export class ModelAcquirer {
       }
       case "done": {
         if (status.path !== undefined && rec.stagedPath !== undefined && resolve(status.path) !== resolve(rec.stagedPath)) {
-          // Never touched: it isn't in the staging folder, so it isn't Architect's to delete.
-          return void fail(`upstream reports the file at ${status.path}, not at the staging path ${rec.stagedPath}; nothing was placed`);
+          // Never touched: it isn't the staged name, so it isn't Architect's to delete.
+          return void fail(`upstream reports the file at ${status.path}, not at the staged path ${rec.stagedPath}; nothing was placed`);
         }
         const verifying = this.move(run, rec, "verifying", {}, `job ${rec.jobId ?? "?"} finished`);
         if (verifying) await this.verifyAndPlace(run, verifying, true);
@@ -1095,15 +1050,20 @@ export class ModelAcquirer {
     return undefined;
   }
 
-  /** Remove the run's staging folders once every acquisition is final. */
+  /**
+   * Once every acquisition is final, delete the run's staged files that weren't placed, each
+   * by its exact staged name for this run (nothing else in a model folder is touched).
+   */
   private async cleanup(run: RunRecord, records: readonly AcquisitionRecord[]): Promise<void> {
     if (!records.every((r) => FINAL_ACQUISITION_STATES.includes(r.state))) return;
-    const roots = [...new Set(records.map((r) => r.destinationRoot))];
-    for (const root of roots) {
-      const files = records.filter((r) => r.destinationRoot === root).map((r) => r.file);
-      const problems = await removeStaging(this.deps.io.fs, root, run.id, files);
-      for (const p of problems) {
-        this.deps.store.appendRunEvent({ runId: run.id, kind: "note", principal: "controller", reason: p, at: this.deps.now() });
+    for (const r of records) {
+      const staged = r.stagedPath ?? join(r.destinationRoot, r.folder, stagedNameOf(r.file, run.id));
+      try {
+        await this.deps.io.fs.unlink(staged);
+      } catch (err) {
+        if (errnoOf(err) !== "ENOENT") {
+          this.deps.store.appendRunEvent({ runId: run.id, kind: "note", principal: "controller", reason: `couldn't delete the staged ${staged}: ${messageOf(err)}`, at: this.deps.now() });
+        }
       }
     }
   }
@@ -1113,7 +1073,7 @@ export class ModelAcquirer {
     try {
       await this.deps.io.fs.unlink(rec.stagedPath);
     } catch {
-      // Gone already, or removed with the staging folder; never placed unverified either way.
+      // Gone already, or removed by the cleanup; never placed unverified either way.
     }
   }
 

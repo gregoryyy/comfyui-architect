@@ -1,4 +1,5 @@
-// Milestone 4, part B (TODO 4.5, 4.5.2, 4.5.3, 4.6): the redirect preflight, staging,
+// Milestone 4, part B (TODO 4.5, 4.5.2, 4.5.3, 4.6): the redirect preflight, staging next
+// to the destination,
 // verification and placement; the controller's downloads in PREPARING, their cancellation
 // and restart; the acquire_models effect at prepare and start; and the run's lineage. A fake
 // downloader writes into temporary model folders; a fake Hugging Face answers the HEADs.
@@ -17,11 +18,10 @@ import {
   MAX_DOWNLOAD_ATTEMPTS,
   ModelAcquirer,
   NODE_ACQUISITION_FS,
-  STAGING_DIR,
+  stagedNameOf,
   pinnedUrl,
   placeStaged,
   preflightRedirects,
-  prepareStaging,
   verifyStaged,
 } from "../../services/architect/acquisition.js";
 import { MIN_FREE_DISK_BYTES, formatBytes } from "../../services/architect/acquisition-policy.js";
@@ -180,13 +180,18 @@ describe("staging, verification and placement", () => {
     return { dev: st.dev, ino: st.ino };
   }
 
+  /** A file staged next to its destination, as upstream's download leaves it for run-1. */
   async function staged(root: string, bytes = BYTES): Promise<string> {
-    const s = await prepareStaging(fs, root, "run-1");
-    if (!s.ok) throw new Error(s.message);
-    const p = join(s.dir, MISSING);
+    const p = join(root, "checkpoints", stagedNameOf(MISSING, "run-1"));
     writeFileSync(p, bytes);
     return p;
   }
+
+  it("stages under a name no loader lists, next to the destination", () => {
+    expect(stagedNameOf(MISSING, "run-1")).toBe(`${MISSING}.architect-run-1`);
+    expect(() => stagedNameOf("x", "run-a.safetensors")).toThrow(/would look like a model file/);
+    expect(() => stagedNameOf("x", "run-a.PT")).toThrow(/would look like a model file/);
+  });
 
   it("places a staged file whose sha256 and size are the pinned ones, and the staged file is gone", async () => {
     const root = modelRoot();
@@ -228,12 +233,11 @@ describe("staging, verification and placement", () => {
 
   it("never reads a staged symbolic link as the file", async () => {
     const root = modelRoot();
-    const s = await prepareStaging(fs, root, "run-1");
-    if (!s.ok) throw new Error(s.message);
+    const p = join(root, "checkpoints", stagedNameOf(MISSING, "run-1"));
     const elsewhere = join(tempDir("architect-elsewhere-"), "real.safetensors");
     writeFileSync(elsewhere, BYTES);
-    symlinkSync(elsewhere, join(s.dir, MISSING));
-    const v = await verifyStaged(fs, join(s.dir, MISSING), SOURCE);
+    symlinkSync(elsewhere, p);
+    const v = await verifyStaged(fs, p, SOURCE);
     expect(v.kind === "mismatch" && v.message).toMatch(/symbolic link/);
     expect(existsSync(elsewhere)).toBe(true);
   });
@@ -257,29 +261,26 @@ describe("staging, verification and placement", () => {
     expect(readFileSync(join(root, "checkpoints", MISSING))).toEqual(theirs);
   });
 
-  it("refuses a model folder that resolves outside the root (path escape)", async () => {
+  it("refuses a model folder that resolves outside the root (path escape), and removes only its staged file", async () => {
     const root = tempDir("architect-models-");
     const outside = tempDir("architect-outside-");
+    writeFileSync(join(outside, "theirs.safetensors"), Buffer.from("someone's"));
     symlinkSync(outside, join(root, "checkpoints"));
     const p = await staged(root);
     const r = await placeStaged(fs, { root, folder: "checkpoints", file: MISSING, stagedPath: p, source: SOURCE, verified: await identity(p) });
     expect(r.ok).toBe(false);
     expect(!r.ok && r.message).toMatch(/outside/);
-    expect(readdirSync(outside)).toEqual([]);
+    expect(readdirSync(outside)).toEqual(["theirs.safetensors"]);
   });
 
-  it("refuses a symlinked staging folder, at either level", async () => {
+  it("refuses a staged path that isn't in the destination folder", async () => {
     const root = modelRoot();
-    const outside = tempDir("architect-outside-");
-    symlinkSync(outside, join(root, STAGING_DIR));
-    const r = await prepareStaging(fs, root, "run-1");
-    expect(r.ok).toBe(false);
-    expect(!r.ok && r.message).toMatch(/symbolic link/);
-    rmSync(join(root, STAGING_DIR));
-    mkdirSync(join(root, STAGING_DIR));
-    symlinkSync(outside, join(root, STAGING_DIR, "run-1"));
-    expect((await prepareStaging(fs, root, "run-1")).ok).toBe(false);
-    expect(readdirSync(outside)).toEqual([]);
+    mkdirSync(join(root, "vae"));
+    const p = join(root, "vae", stagedNameOf(MISSING, "run-1"));
+    writeFileSync(p, BYTES);
+    const r = await placeStaged(fs, { root, folder: "checkpoints", file: MISSING, stagedPath: p, source: SOURCE, verified: await identity(p) });
+    expect(!r.ok && r.message).toMatch(/isn't in the destination folder/);
+    expect(readdirSync(join(root, "checkpoints"))).toEqual([]);
   });
 
   it("refuses a staged file replaced after it was hashed, and places nothing", async () => {
@@ -314,16 +315,17 @@ describe("staging, verification and placement", () => {
     expect(readdirSync(join(root, "checkpoints"))).toEqual([]);
   });
 
-  it("refuses to place from a staging folder swapped for a link after verification", async () => {
+  it("refuses to place into a model folder swapped for a link after verification", async () => {
     const root = modelRoot();
     const p = await staged(root);
+    const verified = await identity(p);
     const outside = tempDir("architect-outside-");
-    writeFileSync(join(outside, MISSING), BYTES);
-    rmSync(dirname(p), { recursive: true });
-    symlinkSync(outside, dirname(p));
-    const r = await placeStaged(fs, { root, folder: "checkpoints", file: MISSING, stagedPath: p, source: SOURCE, verified: await identity(p) });
+    writeFileSync(join(outside, stagedNameOf(MISSING, "run-1")), BYTES);
+    renameSync(join(root, "checkpoints"), join(root, "checkpoints-moved"));
+    symlinkSync(outside, join(root, "checkpoints"));
+    const r = await placeStaged(fs, { root, folder: "checkpoints", file: MISSING, stagedPath: p, source: SOURCE, verified });
     expect(r.ok).toBe(false);
-    expect(readdirSync(join(root, "checkpoints"))).toEqual([]);
+    expect(existsSync(join(outside, MISSING))).toBe(false);
   });
 });
 
@@ -414,15 +416,16 @@ describe("a run that acquires model files", () => {
   }
 
   const acq = (store: ArchitectStore, run: RunRecord) => store.listAcquisitions(run.id);
-  const stagingOf = (root: string, run: RunRecord) => join(root, STAGING_DIR, run.id);
+  /** Where a run stages its one file: next to the destination, under the run's staged name. */
+  const stagedOf = (root: string, run: RunRecord) => join(root, "checkpoints", stagedNameOf(MISSING, run.id));
 
-  it("downloads into the staging folder, verifies, places, revalidates on a fresh snapshot, then submits", async () => {
+  it("downloads next to the destination under the staged name, verifies, places, revalidates on a fresh snapshot, then submits", async () => {
     const h = harness();
     let r = await h.controller.advance(h.run.id);
     expect(r.state).toBe("PREPARING");
-    expect(h.downloads.started).toEqual([{ url: pinnedUrl(SOURCE), subfolder: `${STAGING_DIR}/${h.run.id}`, filename: MISSING }]);
+    expect(h.downloads.started).toEqual([{ url: pinnedUrl(SOURCE), subfolder: "checkpoints", filename: stagedNameOf(MISSING, h.run.id) }]);
     expect(h.hf.calls.map((c) => c.url)[0]).toBe(pinnedUrl(SOURCE));
-    expect(acq(h.store, h.run)[0]).toMatchObject({ state: "downloading", jobId: "job-1", stagedPath: join(stagingOf(h.root, h.run), MISSING) });
+    expect(acq(h.store, h.run)[0]).toMatchObject({ state: "downloading", jobId: "job-1", stagedPath: stagedOf(h.root, h.run) });
     expect(h.revalidate).not.toHaveBeenCalled();
 
     // Still downloading: the poll changes nothing and holds no lock while it waits.
@@ -435,14 +438,14 @@ describe("a run that acquires model files", () => {
     const [placed] = acq(h.store, h.run);
     expect(placed).toMatchObject({ state: "placed", placedPath: join(h.root, "checkpoints", MISSING), observedSha256: SHA, observedBytes: BYTES.length });
     expect(readFileSync(join(h.root, "checkpoints", MISSING))).toEqual(BYTES);
-    expect(existsSync(join(h.root, STAGING_DIR))).toBe(false);
+    expect(readdirSync(join(h.root, "checkpoints")).filter((f) => f.includes(".architect-"))).toEqual([]);
     expect(h.downloads.forgot).toBe(1);
     expect(h.revalidate).toHaveBeenCalledTimes(1);
     const notes = h.store.listRunEvents(h.run.id).filter((e) => e.kind === "note").map((e) => e.data?.acquisitionTo);
     expect(notes.filter((x) => x !== undefined)).toEqual(["downloading", "verifying", "placed"]);
   });
 
-  it("a hash mismatch fails the run and leaves nothing in the model folder or the staging folder", async () => {
+  it("a hash mismatch fails the run and leaves nothing in the model folder, staged file included", async () => {
     const h = harness();
     await h.controller.advance(h.run.id);
     const wrong = Buffer.from(BYTES);
@@ -453,7 +456,7 @@ describe("a run that acquires model files", () => {
     expect(r.error?.code).toBe("DEPENDENCY_UNAVAILABLE");
     expect(r.error?.message).toMatch(/sha256 mismatch: expected/);
     expect(readdirSync(join(h.root, "checkpoints"))).toEqual([]);
-    expect(existsSync(join(h.root, STAGING_DIR))).toBe(false);
+    expect(readdirSync(join(h.root, "checkpoints")).filter((f) => f.includes(".architect-"))).toEqual([]);
     expect(acq(h.store, h.run)[0]).toMatchObject({ state: "failed", observedSha256: expect.any(String) });
     expect(h.submitted).toEqual([]);
   });
@@ -523,10 +526,30 @@ describe("a run that acquires model files", () => {
     expect(readFileSync(join(h.root, "checkpoints", MISSING))).toEqual(theirs);
   });
 
-  it("refuses when upstream would stage the file somewhere other than the run's staging folder", async () => {
+  it("stages next to a destination an extra model path moves to another root (the reference target's layout)", async () => {
+    // Upstream redirects a model category to the directory the server's
+    // --extra-model-paths-config names for it, and leaves any other subfolder under the
+    // primary root (model-resolver.ts, resolveModelSubfolderWithLiveRoot).
+    const primary = modelRoot();
+    const shared = modelRoot();
+    const downloads = new FakeDownloads(shared);
+    downloads.resolveTo = (sub, file) =>
+      sub === "checkpoints" ? { root: shared, path: join(shared, "checkpoints", file) } : { root: primary, path: join(primary, sub, file) };
+    const h = harness({ root: shared, downloads });
+    await h.controller.advance(h.run.id);
+    expect(acq(h.store, h.run)[0]).toMatchObject({ state: "downloading", stagedPath: join(shared, "checkpoints", stagedNameOf(MISSING, h.run.id)) });
+    downloads.finish("job-1");
+    expect((await h.controller.reconcile(h.run.id)).state).toBe("QUEUED");
+    expect(readFileSync(join(shared, "checkpoints", MISSING))).toEqual(BYTES);
+    expect(readdirSync(join(shared, "checkpoints"))).toEqual([MISSING]);
+    expect(readdirSync(primary)).toEqual(["checkpoints"]);
+    expect(readdirSync(join(primary, "checkpoints"))).toEqual([]);
+  });
+
+  it("refuses when upstream would stage the file somewhere other than next to its destination", async () => {
     const root = modelRoot();
     const downloads = new FakeDownloads(root);
-    downloads.resolveTo = (_sub, file) => ({ root, path: join(root, "elsewhere", file) });
+    downloads.resolveTo = (sub, file) => ({ root, path: file === MISSING ? join(root, sub, file) : join(root, "elsewhere", file) });
     const h = harness({ root, downloads });
     const r = await h.controller.advance(h.run.id);
     expect(r.state).toBe("FAILED");
@@ -556,13 +579,13 @@ describe("a run that acquires model files", () => {
     await h.controller.advance(h.run.id);
     const ours = acq(h.store, h.run)[0].jobId;
     expect(ours).toBeDefined();
-    writeFileSync(join(stagingOf(h.root, h.run), MISSING), BYTES.subarray(0, 5));
+    writeFileSync(stagedOf(h.root, h.run), BYTES.subarray(0, 5));
     const r = await h.controller.cancel(h.run.id, "agent");
     expect(r.state).toBe("CANCELLED");
     expect(h.downloads.cancelled).toEqual([ours]);
     expect(h.downloads.jobs.get(theirs)?.status).toBe("downloading");
     expect(acq(h.store, h.run)[0].state).toBe("cancelled");
-    expect(existsSync(join(h.root, STAGING_DIR))).toBe(false);
+    expect(readdirSync(join(h.root, "checkpoints")).filter((f) => f.includes(".architect-"))).toEqual([]);
     expect(readdirSync(join(h.root, "checkpoints"))).toEqual([]);
   });
 
@@ -572,7 +595,7 @@ describe("a run that acquires model files", () => {
     const first = harness({ root, store });
     await first.controller.advance(first.run.id);
     // The process stops; the file had landed, but the job's record is lost with it.
-    writeFileSync(join(stagingOf(root, first.run), MISSING), BYTES);
+    writeFileSync(stagedOf(root, first.run), BYTES);
     const downloads = new FakeDownloads(root);
     const second = harness({ root, store, seed: false, downloads });
     const [r] = await second.controller.resumeAll();
@@ -588,7 +611,7 @@ describe("a run that acquires model files", () => {
     const store = openStore();
     const first = harness({ root, store });
     await first.controller.advance(first.run.id);
-    writeFileSync(join(stagingOf(root, first.run), MISSING), BYTES.subarray(0, 100));
+    writeFileSync(stagedOf(root, first.run), BYTES.subarray(0, 100));
     const downloads = new FakeDownloads(root);
     const second = harness({ root, store, seed: false, downloads });
     await second.controller.resumeAll();
@@ -919,6 +942,14 @@ describe("prepare and start with downloads", () => {
     expect((await approvalError(s.execution.prepare({ planId: s.planId }))).message).toMatch(/not into a checkpoints folder/);
   });
 
+  it("refuses at prepare when upstream wouldn't stage a file next to its destination", async () => {
+    const s = await acquirable();
+    s.downloads.resolveTo = (sub, file) => ({ root: s.root, path: file === MISSING ? join(s.root, sub, file) : join(s.root, "other", file) });
+    const err = await approvalError(s.execution.prepare({ planId: s.planId }));
+    expect(err.code).toBe("DEPENDENCY_UNAVAILABLE");
+    expect(err.message).toMatch(/not next to its destination/);
+  });
+
   it("refuses a remote target at prepare and at start", async () => {
     const s = await acquirable();
     const r = await s.execution.prepare({ planId: s.planId });
@@ -1033,7 +1064,7 @@ describe("prepare and start with downloads", () => {
     const status = await execution.status({ runId: run.id });
     expect(status.acquisitions).toEqual([expect.objectContaining({ file: `checkpoints/${MISSING}`, state: "downloading", sizeBytes: BYTES.length })]);
 
-    // Upstream lands the file in staging; ComfyUI lists it once it is placed.
+    // Upstream lands the file under its staged name; ComfyUI lists it once it is placed.
     s.downloads.finish("job-1");
     s.install();
     expect((await controller.reconcile(run.id)).state).toBe("QUEUED");
