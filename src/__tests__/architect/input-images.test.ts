@@ -9,6 +9,7 @@ import { join } from "node:path";
 import type { ObjectInfo } from "../../comfyui/types.js";
 import { ApprovalError, describeActionPlan, issueGrant, requireInputsUnchanged } from "../../services/architect/admission.js";
 import { compileRecipe } from "../../services/architect/compile.js";
+import { sha256Hex } from "../../services/architect/hash.js";
 import { ArchitectExecution, type RunDriver } from "../../services/architect/execution.js";
 import { deriveAcquisition } from "../../services/architect/acquisition-policy.js";
 import { planCandidates } from "../../services/architect/planner.js";
@@ -344,7 +345,16 @@ async function inputSetup(inputs: TaskInput[], opts: { mask?: boolean; reader?: 
     isPaidNode: () => false,
   } as Pick<UpstreamFacade, "comfyuiBaseUrl" | "systemStats" | "objectInfo" | "installedModels" | "isPaidNode">;
   const service = new ArchitectService({ upstream: upstream as UpstreamFacade, now, newId });
-  const planning = new ArchitectPlanning({ store, service, upstream, dataDir, sources: [source], now, newId });
+  // Input sizes for the mask check: every fixture file decodes as 1024x768, the source's and the mask's alike.
+  const inputFiles = {
+    readInputFile: async (name: string) => {
+      const bytes = files.get(name);
+      if (!bytes) throw new Error(`ComfyUI /view returned 404 for "${name}" (input)`);
+      return { bytes };
+    },
+    decodeImage: async () => ({ width: 1024, height: 768 }),
+  };
+  const planning = new ArchitectPlanning({ store, service, upstream, dataDir, sources: [source], now, newId, inputFiles });
   const prepared = await planning.prepare({
     task: { intent: "Scale it.", media: { kind: "image", operation: opts.mask ? "inpaint" : "upscale", output: { width: 1024, height: 768 } }, inputs },
   });
@@ -475,17 +485,41 @@ describe("action plans bind each input's content", () => {
     issueGrant(s, { requestId: r.approvalRequest.id, channel: "terminal", issuer: "terminal", confirmHash: r.shortHash });
     const { run } = await s.execution.start({ actionPlanId: r.actionPlan.id });
     s.store.transitionRun({ runId: run.id, from: "PREPARING", to: "FAILED", principal: "controller", reason: "test", patch: { error: { code: "INTERNAL_ERROR", message: "test" } }, at: s.now() });
-    const out = s.execution.finalize({ runId: run.id });
+    s.files.set("mask.png", Buffer.from("a mask painted after the run"));
+    const out = await s.execution.finalize({ runId: run.id });
     const written = JSON.parse(readFileSync(out.files[0], "utf-8"));
     const lock = JSON.parse(readFileSync(out.files.find((f) => f.endsWith("dependencies.lock.json")) ?? "", "utf-8"));
+    // The hash the grant bound stays; the read after the run says whether the file still is it.
     const expected = [
-      { assetId: "comfyui-input:pets/cat.png", sha256: expect.stringMatching(/^[0-9a-f]{64}$/), sizeBytes: CAT.length },
-      { assetId: "comfyui-input:mask.png", sha256: expect.stringMatching(/^[0-9a-f]{64}$/), sizeBytes: MASK.length },
+      { assetId: "comfyui-input:pets/cat.png", sha256: expect.stringMatching(/^[0-9a-f]{64}$/), sizeBytes: CAT.length, verifiedAfterRun: true },
+      {
+        assetId: "comfyui-input:mask.png",
+        sha256: sha256Hex(MASK),
+        sizeBytes: MASK.length,
+        verifiedAfterRun: false,
+        observedAfterRun: { sha256: sha256Hex(Buffer.from("a mask painted after the run")), sizeBytes: 28 },
+      },
     ];
     expect(written.lineage.inputs).toEqual(expected);
     expect(lock.inputs).toEqual(expected);
     expect(JSON.stringify(written.lineage.inputs)).not.toContain("/Users");
     expect(JSON.stringify(lock.inputs)).not.toContain(s.dataDir);
+  });
+});
+
+describe("inputs read again after the run", () => {
+  it("records verifiedAfterRun unknown, with the reason, when the file can't be read", async () => {
+    const s = await inputSetup([{ assetId: "comfyui-input:pets/cat.png", role: "source_image" }]);
+    const r = await s.execution.prepare({ planId: s.planId });
+    issueGrant(s, { requestId: r.approvalRequest.id, channel: "terminal", issuer: "terminal", confirmHash: r.shortHash });
+    const { run } = await s.execution.start({ actionPlanId: r.actionPlan.id });
+    s.store.transitionRun({ runId: run.id, from: "PREPARING", to: "FAILED", principal: "controller", reason: "test", patch: { error: { code: "INTERNAL_ERROR", message: "test" } }, at: s.now() });
+    s.files.delete("pets/cat.png");
+    const out = await s.execution.finalize({ runId: run.id });
+    const written = JSON.parse(readFileSync(out.files[0], "utf-8"));
+    expect(written.lineage.inputs).toEqual([
+      { assetId: "comfyui-input:pets/cat.png", sha256: sha256Hex(CAT), sizeBytes: CAT.length, verifiedAfterRun: "unknown", reason: expect.stringContaining("404") },
+    ]);
   });
 });
 

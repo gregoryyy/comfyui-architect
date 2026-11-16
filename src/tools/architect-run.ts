@@ -201,7 +201,7 @@ export function registerArchitectRunTool(server: McpServer, context: () => RunTo
             return envelope(r.userVerdict === "none" ? "partial" : "ok", `Run ${r.run.id}: user verdict ${r.userVerdict}; acceptance ${r.run.acceptance}.`, r);
           }
           case "finalize": {
-            const r = x.finalize({ runId: need(args.runId, "runId", "finalize") });
+            const r = await x.finalize({ runId: need(args.runId, "runId", "finalize") });
             return envelope("ok", `Wrote ${r.files.length} files to ${r.dir}.`, r, { artifacts: r.files });
           }
         }

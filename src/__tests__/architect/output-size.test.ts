@@ -16,6 +16,9 @@ import {
   outputSizeChecks,
   readInputSizes,
 } from "../../services/architect/output-size.js";
+import { ApprovalError, describeActionPlan } from "../../services/architect/admission.js";
+import { ArchitectExecution, type RunDriver } from "../../services/architect/execution.js";
+import { sha256Hex } from "../../services/architect/hash.js";
 import { ArchitectPlanning, type RecipeSource, candidateSummary } from "../../services/architect/planning.js";
 import { Recipe, type TaskInput } from "../../services/architect/schemas.js";
 import { ArchitectService } from "../../services/architect/service.js";
@@ -293,12 +296,12 @@ describe("planning reads the sizes before it validates", () => {
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   });
 
-  async function propose(width: number, reader: boolean) {
+  async function propose(width: number, reader: boolean, opts: { recipe?: Recipe; operation?: "upscale" | "image_edit"; height?: number; source?: [number, number] } = {}) {
     const dataDir = mkdtempSync(join(tmpdir(), "architect-output-size-"));
     dirs.push(dataDir);
     const recipeDir = join(dataDir, "recipes");
     mkdirSync(recipeDir);
-    writeFileSync(join(recipeDir, "scale.recipe.json"), JSON.stringify(scaleByRecipe(2)));
+    writeFileSync(join(recipeDir, "scale.recipe.json"), JSON.stringify(opts.recipe ?? scaleByRecipe(2)));
     const source: RecipeSource = { id: "source-test", kind: "fixture", dir: recipeDir, trust: "test" };
     const store = ArchitectStore.open(dataDir);
     stores.push(store);
@@ -319,17 +322,22 @@ describe("planning reads the sizes before it validates", () => {
     const inputFiles = {
       readInputFile: async (name: string) => {
         reads.push(name);
-        return { bytes: pngHeader(1024, 1024) };
+        return { bytes: pngHeader(...(opts.source ?? [1024, 1024])) };
       },
-      decodeImage: async () => ({ width: 1024, height: 1024 }),
+      // Decodes the size the PNG header gives, so the bytes served decide it.
+      decodeImage: async (bytes: Buffer) => ({ width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) }),
     };
     const service = new ArchitectService({ upstream: upstream as UpstreamFacade, now, newId });
     const planning = new ArchitectPlanning({ store, service, upstream, dataDir, sources: [source], now, newId, ...(reader ? { inputFiles } : {}) });
     const prepared = await planning.prepare({
-      task: { intent: "Upscale it.", media: { kind: "image", operation: "upscale", output: { width, height: width } }, inputs: [{ assetId: "comfyui-input:blue_poppies_field.png", role: "source_image" }] },
+      task: {
+        intent: "Upscale it.",
+        media: { kind: "image", operation: opts.operation ?? "upscale", output: { width, height: opts.height ?? width } },
+        inputs: [{ assetId: "comfyui-input:blue_poppies_field.png", role: "source_image" }],
+      },
     });
     const proposed = await planning.propose({ planId: prepared.plan.id });
-    return { proposed, reads, planning, planId: prepared.plan.id };
+    return { proposed, reads, planning, planId: prepared.plan.id, store, now, newId, dataDir };
   }
 
   it("makes the candidate feasible when the input times the factor is the task's size", async () => {
@@ -339,6 +347,67 @@ describe("planning reads the sizes before it validates", () => {
     // validate reads them again: a replaced file is seen.
     await planning.validate({ planId, candidateId: proposed.candidates[0].id });
     expect(reads).toEqual(["blue_poppies_field.png", "blue_poppies_field.png"]);
+  });
+
+  it("prepare hashes and size-checks each input from one read, and an input the read shows at another size refuses the plan", async () => {
+    const p = await propose(2048, true);
+    p.planning.select({ planId: p.planId, candidateId: p.proposed.candidates[0].id });
+    p.reads.length = 0;
+    let served = pngHeader(1024, 1024);
+    const runReads: string[] = [];
+    const driver: RunDriver = { advance: vi.fn(), reconcile: vi.fn(), cancel: vi.fn() };
+    const execution = new ArchitectExecution({
+      store: p.store,
+      planning: p.planning,
+      baseUrl: () => "http://127.0.0.1:8188",
+      now: p.now,
+      newId: p.newId,
+      driver,
+      dataDir: p.dataDir,
+      dependencyLock: (candidateId, t) => p.planning.dependencyLock(candidateId, t),
+      readInputFile: async (name: string) => {
+        runReads.push(name);
+        return { bytes: served };
+      },
+    });
+    const prepared = await execution.prepare({ planId: p.planId });
+    expect(runReads).toEqual(["blue_poppies_field.png"]);
+    // The validation decoded the bytes the plan hashed; planning's own reader wasn't used.
+    expect(p.reads).toEqual([]);
+    expect(prepared.actionPlan.effects.find((e) => e.kind === "local_render")).toMatchObject({ inputs: [{ sha256: sha256Hex(served) }] });
+    served = pngHeader(1000, 1000);
+    const decodeFromHeader = await execution.prepare({ planId: p.planId }).then(
+      () => "prepared",
+      (err: unknown) => (err instanceof ApprovalError ? err.code : String(err)),
+    );
+    expect(decodeFromHeader).toBe("APPROVAL_INVALIDATED");
+  });
+
+  it("shows a recipe's notices and a failed soft check with the candidate and in the approval text", async () => {
+    const notice = "Redraws detail with a fixed prompt, so content changes.";
+    const recipe = Recipe.parse({ ...fitRecipe(), notices: [notice] });
+    const p = await propose(1024, true, { recipe, operation: "image_edit", height: 1024, source: [2912, 1632] });
+    const c = p.proposed.candidates[0];
+    expect(c.status).toBe("feasible");
+    expect(c.ranking).toContain(`note: ${notice}`);
+    expect(c.softFailures?.[0]).toMatch(/stretched/);
+    p.planning.select({ planId: p.planId, candidateId: c.id });
+    const driver: RunDriver = { advance: vi.fn(), reconcile: vi.fn(), cancel: vi.fn() };
+    const execution = new ArchitectExecution({
+      store: p.store,
+      planning: p.planning,
+      baseUrl: () => "http://127.0.0.1:8188",
+      now: p.now,
+      newId: p.newId,
+      driver,
+      dataDir: p.dataDir,
+      dependencyLock: (candidateId, t) => p.planning.dependencyLock(candidateId, t),
+      readInputFile: async () => ({ bytes: pngHeader(2912, 1632) }),
+    });
+    const prepared = await execution.prepare({ planId: p.planId });
+    const text = describeActionPlan(p.store, prepared.actionPlan, () => ({ known: false, reason: "test" }));
+    expect(text).toContain(`Note: ${notice}`);
+    expect(text).toMatch(/Soft check failed: .*stretched/);
   });
 
   it("blocks it when the sizes differ, and leaves it diagnostic without a reader", async () => {

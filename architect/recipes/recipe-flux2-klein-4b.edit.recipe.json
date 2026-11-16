@@ -3,7 +3,7 @@
   "id": "recipe-flux2-klein-4b.edit",
   "revision": 1,
   "title": "FLUX.2 Klein 4B: edit an image from an instruction",
-  "description": "Edits a source image as the prompt instructs (\"make the sky stormy\", \"change the bag to blue\") with the distilled FLUX.2 Klein 4B: the source, scaled to the task's width and height, is encoded and attached to the instruction's conditioning with ReferenceLatent, and a new image of that size is sampled in 4 steps at CFG 1.0 (Flux2Scheduler, euler). The output has the task's size: the graph scales the source to it, and a soft check reports when the aspect ratios differ, since the source would be stretched; a task size with the source's aspect ratio avoids that. Width and height should be multiples of 16, which the latent rounds down to. ComfyUI's template scales the source to one megapixel instead and takes the output size from it; here the task sets the size.",
+  "description": "Edits a source image as the prompt instructs (\"make the sky stormy\", \"change the bag to blue\") with the distilled FLUX.2 Klein 4B: the source, scaled to the task's width and height, is encoded and attached to the instruction's conditioning with ReferenceLatent, and a new image of that size is sampled in 4 steps at CFG 1.0 (Flux2Scheduler, euler). The output has the task's size: the graph scales the source to it, and a soft check reports when the aspect ratios differ, since the source would be stretched; a task size with the source's aspect ratio avoids that. Width and height must be multiples of 16, which the latent rounds down to; the contract check refuses a task size off it. ComfyUI's template scales the source to one megapixel instead and takes the output size from it; here the task sets the size.",
   "kind": "image",
   "operations": [
     "image_edit"
@@ -340,7 +340,8 @@
       "node": "19",
       "format": "png",
       "count": 1,
-      "scalesInputToTask": "inputs.source_image"
+      "scalesInputToTask": "inputs.source_image",
+      "multipleOf": 16
     }
   ],
   "dependencies": {

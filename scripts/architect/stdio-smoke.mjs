@@ -36,7 +36,8 @@
 //                   standing in for the mask when the smoke mask isn't in the input folder
 //   --upload-mask   with --recipes: before the session, UPLOADS architect-smoke-mask.png (1024x1024,
 //                   a white rectangle in the centre on black) into the target's input folder with
-//                   upstream's client; without it (and outside --dry) inpaint recipes are skipped
+//                   upstream's client, never over an existing file of that name; without it (and
+//                   outside --dry) inpaint recipes are skipped unless the file is already there
 //   --downloads     with --recipes: approve action plans that DOWNLOAD the candidate's pinned files
 //                   INTO THE TARGET'S MODEL FOLDERS before rendering
 // The target comes from the usual environment (COMFYUI_URL, COMFYUI_HOST/PORT, ...).
@@ -551,9 +552,17 @@ async function recipeRun(client, label, recipe, task, downloads) {
 }
 
 if (uploadMask) {
-  // Before the session, so the server's first node-schema read lists the file.
+  // Before the session, so the server's first node-schema read lists the file. A file of
+  // that name already in the input folder may be someone's: the upload is refused rather
+  // than replace it, and ComfyUI is asked not to overwrite either.
   const { uploadImageHttp } = await import("../../dist/comfyui/client.js");
-  const uploaded = await uploadImageHttp(MASK_NAME, maskPng(), "image/png", true);
+  const { createUpstreamFacade } = await import("../../dist/services/architect/upstream.js");
+  const existing = await fetch(`${createUpstreamFacade().comfyuiBaseUrl().replace(/\/$/, "")}/view?type=input&filename=${encodeURIComponent(MASK_NAME)}`);
+  if (existing.status !== 404) {
+    console.error(`${MASK_NAME} is already in the target's input folder (or /view answered ${existing.status}); refusing to upload over it. Remove it, or run without --upload-mask to use it`);
+    process.exit(2);
+  }
+  const uploaded = await uploadImageHttp(MASK_NAME, maskPng(), "image/png", false);
   console.log(`uploaded ${MASK_NAME} (1024x1024 mask) into the target's input folder: ${JSON.stringify(uploaded)}`);
 }
 

@@ -108,6 +108,19 @@ function taskFieldChecks(recipe: Recipe, task: TaskSpec): CheckResult[] {
   for (const dim of primary.scaleOfInput ? [] : (["width", "height"] as const)) {
     const path = `media.output.${dim}`;
     const divisor = divisors.get(path);
+    const step = primary.multipleOf;
+    if (consumed.has(path) && step !== undefined && media.output[dim] % step !== 0) {
+      // The latent rounds the side down, so the image would miss the task's size (spec §4.3).
+      out.push(
+        check(
+          `contract.task.${dim}`,
+          "fail",
+          true,
+          `the task's ${dim} ${media.output[dim]} isn't a multiple of ${step}: this recipe's graph writes ${Math.floor(media.output[dim] / step) * step}; choose a ${dim} that is a multiple of ${step}`,
+        ),
+      );
+      continue;
+    }
     out.push(
       consumed.has(path)
         ? check(

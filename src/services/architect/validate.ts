@@ -448,7 +448,17 @@ function familyCheck(
   }
   if (rule === undefined) return unverified(`no family rule for ${family} applies to ${slot.modelFolder}, so its header can't be checked`);
   if (observation.outcome === "matched") {
-    return c(id, "pass", true, `slot ${slot.id}: the header of ${file} matches family rule ${rule.id} (${seen})`, slot.target.node);
+    const twins = rule.indistinguishableFrom ?? [];
+    if (twins.length === 0) {
+      return c(id, "pass", true, `slot ${slot.id}: the header of ${file} matches family rule ${rule.id} (${seen})`, slot.target.node);
+    }
+    // The header confirms the architecture, not which variant the file is: the recipe's
+    // author named the default, so it passes with the limit stated; another file of the same
+    // architecture could be the other variant, which the recipe wasn't written for (GAPS Q14).
+    const limit = `the header can't tell ${rule.id} from ${twins.join(", ")}`;
+    return file === String(slot.default)
+      ? c(id, "pass", true, `slot ${slot.id}: the header of ${file}, the recipe's file, matches family rule ${rule.id}; ${limit} (${seen})`, slot.target.node)
+      : c(id, "unknown", true, `slot ${slot.id}: the header of ${file} matches family rule ${rule.id}, but ${limit}, and ${file} isn't the recipe's file (${seen})`, slot.target.node);
   }
   if (observation.outcome === "ambiguous") {
     return c(id, "unknown", true, `slot ${slot.id}: the header of ${file} matches more than one family rule (${observation.matches.join(", ")}), so its family isn't decided (${seen})`, slot.target.node);

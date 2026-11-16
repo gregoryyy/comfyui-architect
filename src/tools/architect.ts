@@ -88,7 +88,13 @@ function defaultPlanningFactory(service: ArchitectService, upstream: UpstreamFac
       now,
       newId: () => randomUUID(),
       isPaidNode: (def) => upstream.isPaidNode(def),
-      families: new FamilyObserver({ store, locate: (folder, file) => upstream.locateModelFile(folder, file), rules: loaded.rules, now }),
+      families: new FamilyObserver({
+        store,
+        locate: (folder, file) => upstream.locateModelFile(folder, file),
+        rootsKey: () => upstream.modelRootsKey(),
+        rules: loaded.rules,
+        now,
+      }),
       // Input sizes for recipes whose output follows an input image (ARCH 2026-11-16, output size).
       inputFiles: upstream,
       familyRuleErrors: [
@@ -161,8 +167,9 @@ function defaultRunContext(planning: PlanningFactory, upstream: UpstreamFacade):
       // against a fresh snapshot before it's submitted, and its input files are read again:
       // one changed since start invalidates the approval (GAPS Q33).
       revalidate: async (run) => {
-        await requireFeasible(p, run.planId, run.candidateId);
-        await requireInputsUnchanged({ store, readInputFile: (name) => upstream.readInputFile(name) }, run);
+        // The inputs first: the validation's size check decodes the bytes just compared.
+        const bytes = await requireInputsUnchanged({ store, readInputFile: (name) => upstream.readInputFile(name) }, run);
+        await requireFeasible(p, run.planId, run.candidateId, bytes);
       },
       acquirer,
     });

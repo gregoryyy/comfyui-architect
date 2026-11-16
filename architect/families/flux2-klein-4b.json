@@ -16,6 +16,7 @@
     "*img_in.weight": [3072, 128],
     "*txt_in.weight": [3072, 7680]
   },
+  "indistinguishableFrom": ["flux2-klein-base-4b"],
   "provenance": [
     {
       "source": "safetensors header of split_files/diffusion_models/flux-2-klein-4b.safetensors (7751105712 bytes) in Comfy-Org/Flux-2-Klein-4B at commit 5b3abca5c0dc1ecd4eaf3340868d09063fc1c965, read with HTTP Range requests for the 8-byte length and the 16552-byte header from https://huggingface.co/Comfy-Org/Flux-2-Klein-4B/resolve/5b3abca5c0dc1ecd4eaf3340868d09063fc1c965/split_files/diffusion_models/flux-2-klein-4b.safetensors; no weights were read",

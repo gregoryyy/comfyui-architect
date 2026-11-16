@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "id": "recipe-zimage-turbo.t2i-upscale2x",
-  "revision": 1,
+  "revision": 2,
   "title": "Z-Image Turbo: text to image, upscaled 2x",
-  "description": "Text to image with Z-Image Turbo at half the task's width and height, then a 4x upscale model (RealESRGAN x4plus) and a lanczos downscale by 0.5, so the saved image has the task's size at twice the generated resolution. The Z-Image part is recipe-zimage-turbo.t2i: 10 steps at CFG 1.0, the zeroed positive as negative. The generated sides should be divisible by 16, so the task's by 32; a task size that isn't even fails the contract check.",
+  "description": "Text to image with Z-Image Turbo at half the task's width and height, then a 4x upscale model (RealESRGAN x4plus) and a lanczos downscale by 0.5, so the saved image has the task's size at twice the generated resolution. The Z-Image part is recipe-zimage-turbo.t2i: 10 steps at CFG 1.0, the zeroed positive as negative. The generated sides are multiples of 16, so the task's must be multiples of 32; the contract check refuses a task size off it.",
   "kind": "image",
   "operations": [
     "text_to_image"
@@ -284,7 +284,8 @@
       "role": "image",
       "node": "12",
       "format": "png",
-      "count": 1
+      "count": 1,
+      "multipleOf": 32
     }
   ],
   "dependencies": {

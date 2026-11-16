@@ -1095,7 +1095,7 @@ describe("prepare and start with downloads", () => {
     expect(["AWAITING_REVIEW", "COMPLETED"]).toContain(after.state);
     expect(s.store.getCandidate(run.candidateId)?.status).toBe("feasible");
 
-    const written = execution.finalize({ runId: run.id });
+    const written = await execution.finalize({ runId: run.id });
     const lock = JSON.parse(readFileSync(join(written.dir, "dependencies.lock.json"), "utf-8"));
     expect(lock.acquired).toEqual([
       {

@@ -6,7 +6,7 @@
 // on export, files under `ARCHITECT_DATA_DIR/artifacts/`. Nothing here downloads, installs,
 // submits a prompt or touches the canvas (milestone 2's exit, spec §20).
 
-import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import type { ComfyUINodeDef, ObjectInfo } from "../../comfyui/types.js";
 import { FORK_IDENTITY, UPSTREAM_BASELINE } from "../../fork-identity.js";
@@ -117,7 +117,8 @@ export class ArchitectPlanning {
     const result: CatalogSyncResult = { loaded: 0, errors: [], missingSources: [] };
     const current: Recipe[] = [];
     for (const src of sources) {
-      const loaded = loadRecipeDir(src.dir);
+      // The package's own recipes are held to the tier rule; a user's or a test's aren't.
+      const loaded = loadRecipeDir(src.dir, { shipped: src.kind === "bundled" });
       if (!loaded.dirFound) {
         result.missingSources.push(src.id);
         continue;
@@ -169,10 +170,22 @@ export class ArchitectPlanning {
    * once for this validation (ARCH 2026-11-16, output size). Undefined without a reader or
    * when no recipe needs one, which leaves those checks unknown.
    */
-  private async inputSizes(recipes: readonly Recipe[], task: TaskSpec): Promise<InputSizes | undefined> {
+  private async inputSizes(recipes: readonly Recipe[], task: TaskSpec, inputBytes?: ReadonlyMap<string, Buffer>): Promise<InputSizes | undefined> {
     const names = inputNamesToSize(recipes, task);
-    if (!this.deps.inputFiles || names.length === 0) return undefined;
-    return readInputSizes(this.deps.inputFiles, names);
+    const files = this.deps.inputFiles;
+    if (!files || names.length === 0) return undefined;
+    // Bytes the caller already read and hashed (admission) are decoded as they are, so the
+    // size check and the grant see one version of each file; others are read here.
+    const reader = inputBytes
+      ? {
+          readInputFile: async (name: string) => {
+            const bytes = inputBytes.get(name);
+            return bytes ? { bytes } : files.readInputFile(name);
+          },
+          decodeImage: (bytes: Buffer) => files.decodeImage(bytes),
+        }
+      : files;
+    return readInputSizes(reader, names);
   }
 
   /**
@@ -416,7 +429,7 @@ export class ArchitectPlanning {
   }
 
   /** Validate one candidate again against a fresh snapshot and the live node schemas. */
-  async validate(request: { planId: string; candidateId: string }) {
+  async validate(request: { planId: string; candidateId: string; inputBytes?: ReadonlyMap<string, Buffer> }) {
     const { store, now } = this.deps;
     const { plan, task } = this.requirePlan(request.planId);
     const candidate = this.requireCandidate(plan, request.candidateId);
@@ -429,7 +442,7 @@ export class ArchitectPlanning {
         return s.valueType === "model_file" && typeof file === "string" && snapshot.installedModels?.folders[folder]?.includes(file) ? [{ folder, file }] : [];
       }),
     );
-    const inputSizes = await this.inputSizes([recipe], task);
+    const inputSizes = await this.inputSizes([recipe], task, request.inputBytes);
     const outcome = validateGraph({
       graph,
       recipe,
@@ -521,8 +534,9 @@ export class ArchitectPlanning {
   private lockFor(candidate: PlanCandidate, recipe: Recipe, graph: ApiGraph, fingerprint: string, task: TaskSpec) {
     const env = this.deps.store.getSnapshot(candidate.environmentId);
     return {
-      // The task's input files by asset id; their content hashes are read when a run is
-      // prepared and go into the run's lock, since planning reads no input file (GAPS Q33).
+      // The task's input files by asset id. Planning reads some of them for their size, but
+      // keeps no hash: the hash the grant binds is read when a run is prepared, and the run's
+      // lock carries it with the check after the run (GAPS Q33).
       ...(task.inputs.length > 0 ? { inputs: task.inputs.map((i) => ({ role: i.role, assetId: i.assetId })) } : {}),
       // An acquirable candidate's files aren't on the target yet: the lock lists them with
       // the pinned source each would come from (ARCH 2026-11-16, sources).
@@ -585,6 +599,23 @@ export class ArchitectPlanning {
       "validation.json": candidate.validation,
       "dependencies.lock.json": lock,
     };
+    if (!ui.ok) {
+      // A UI graph an earlier export of this plan wrote would sit next to an API graph it
+      // no longer matches. Only that name in this plan's folder is removed; unlink removes
+      // a link itself and never follows it, and anything but a file or a link is left.
+      const stale = join(dir, "workflow.ui.json");
+      let kind: "file" | "link" | "other" | "none" = "none";
+      try {
+        const st = lstatSync(stale);
+        kind = st.isSymbolicLink() ? "link" : st.isFile() ? "file" : "other";
+      } catch (err) {
+        // Only a missing file means there is nothing to remove; any other failure leaves
+        // the old file's state unknown, and the export stops rather than leave it behind.
+        if (!(err instanceof Error && "code" in err && err.code === "ENOENT")) throw err;
+        kind = "none";
+      }
+      if (kind === "file" || kind === "link") unlinkSync(stale);
+    }
     const written: string[] = [];
     for (const [name, value] of Object.entries(files)) {
       const path = join(dir, name);

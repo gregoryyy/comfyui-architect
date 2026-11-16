@@ -18,7 +18,6 @@ import { z } from "zod";
 import { canonicalJson, sha256Hex } from "./hash.js";
 import { FamilyRule, type ModelObservation } from "./schemas.js";
 import type { ArchitectStore } from "./store.js";
-import type { UpstreamFacade } from "./upstream.js";
 import { type FamilyEvidence, observationKey } from "./validate.js";
 
 /** `architect/families/` at the package root: three levels up from src/ and from dist/. */
@@ -190,7 +189,9 @@ export function classifyHeader(rules: readonly FamilyRule[], tensors: TensorShap
 export interface FamilyObserverDeps {
   store: Pick<ArchitectStore, "getModelObservation" | "putModelObservation">;
   /** Upstream's resolver for an installed file (the facade's `locateModelFile`). */
-  locate: UpstreamFacade["locateModelFile"];
+  locate: (folder: string, file: string) => Promise<{ path: string; sizeBytes: number; mtimeMs: number; root?: string }>;
+  /** The facade's `modelRootsKey`; absent, a cached location is trusted while the file is unchanged. */
+  rootsKey?: () => string;
   rules: readonly FamilyRule[];
   now: () => Date;
   /** A file's size and modification time now; `fs.stat` by default. */
@@ -255,7 +256,11 @@ export class FamilyObserver {
 
   private async observeUncached(folder: string, file: string, allowLocate: boolean): Promise<ModelObservation | Unobserved> {
     const statFile = this.deps.statFile ?? ((p: string) => stat(p));
-    const stored = this.deps.store.getModelObservation(folder, file);
+    const rootsKey = this.deps.rootsKey?.();
+    const found = this.deps.store.getModelObservation(folder, file);
+    // A location cached under other model roots may point at a file upstream no longer
+    // resolves the name to (another target, another ComfyUI path): locate it again.
+    const stored = found && (rootsKey === undefined || found.rootsKey === rootsKey) ? found : undefined;
     if (stored) {
       try {
         const info = await statFile(stored.path);
@@ -265,7 +270,7 @@ export class FamilyObserver {
       }
     }
     if (!allowLocate) return { folder, file, reason: "not located in this call: the time for locating files ran out; validate again to read it" };
-    let located: { path: string; sizeBytes: number; mtimeMs: number };
+    let located: { path: string; sizeBytes: number; mtimeMs: number; root?: string };
     try {
       located = await this.deps.locate(folder, file);
     } catch (err) {
@@ -281,6 +286,8 @@ export class FamilyObserver {
       sizeBytes: located.sizeBytes,
       mtimeMs: located.mtimeMs,
       path: located.path,
+      ...(located.root ? { root: located.root } : {}),
+      ...(rootsKey !== undefined ? { rootsKey } : {}),
       rulesDigest: this.digest,
       observedAt: this.deps.now().toISOString(),
     };

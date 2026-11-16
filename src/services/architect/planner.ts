@@ -304,7 +304,8 @@ export function planCandidates(input: PlanningInput): PlanningOutput {
           explanation:
             `${recipe.certification} recipe ${recipe.id} r${recipe.revision}; ` +
             `${report.dependencyDelta.missingModels.length} missing model(s), ` +
-            `${report.dependencyDelta.missingNodeClasses.length} missing node class(es)${scaleNote}${acquisitionNote}`,
+            `${report.dependencyDelta.missingNodeClasses.length} missing node class(es)${scaleNote}${acquisitionNote}` +
+            (recipe.notices && recipe.notices.length > 0 ? `; note: ${recipe.notices.join("; ")}` : ""),
         },
         status: verdict.status,
         ...(verdict.acquisition ? { acquisition: verdict.acquisition } : {}),

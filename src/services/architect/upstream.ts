@@ -26,7 +26,7 @@ import { resolveOllamaHost, warmOllama } from "../ollama-vram.js";
 import { type CancelQueuedResult, cancelQueuedJob } from "../queue-manager.js";
 import { WorkflowExecutionError } from "../../utils/errors.js";
 import { resolveToolSurfacePolicy, toolAllowed } from "../../tools/tool-surface-filter.js";
-import { config, getComfyUIBaseUrl, isOwnHostAddress } from "../../config.js";
+import { config, getComfyUIBaseUrl, isCloudMode, isLoopbackHost, isOwnHostAddress } from "../../config.js";
 import { sharpUnavailableMessage, tryLoadSharp } from "../sharp-loader.js";
 import { basename, dirname, join } from "node:path";
 import { z } from "zod";
@@ -109,13 +109,19 @@ export interface UpstreamFacade {
    * containment-checked. Throws when it isn't found, isn't a file, or no local ComfyUI path
    * is configured. Slow: the resolver may probe the running server on each call.
    */
-  locateModelFile(folder: string, file: string): Promise<{ path: string; sizeBytes: number; mtimeMs: number }>;
+  locateModelFile(folder: string, file: string): Promise<{ path: string; sizeBytes: number; mtimeMs: number; root: string }>;
+  /**
+   * A key that changes when the inputs of upstream's model-root resolution change: the
+   * ComfyUI target and the configured ComfyUI path. A cached location made under another
+   * key may point into roots upstream no longer resolves to.
+   */
+  modelRootsKey(): string;
   /**
    * Decode an image fully with sharp and return its pixel size. Throws when the data
    * doesn't decode (a truncated or corrupt file); throws ImageDecoderUnavailableError when
    * sharp can't be loaded, which says nothing about the file.
    */
-  decodeImage(bytes: Buffer): Promise<{ width: number; height: number }>;
+  decodeImage(bytes: Buffer): Promise<{ width: number; height: number; channels?: number }>;
   /**
    * Whether a host is this machine: loopback, or an address of one of its interfaces
    * (upstream's `isOwnHostAddress`). False also for a name, which it doesn't resolve.
@@ -318,6 +324,27 @@ export function presetWithholds(preset: string, toolName: string): boolean {
  */
 export const MAX_INPUT_FILE_BYTES = MAX_PREVIEW_SOURCE_BYTES;
 
+/** A response body, refused past `maxBytes` (by its length header, then as it streams). */
+async function readBounded(res: Response, maxBytes: number, name: string): Promise<Buffer> {
+  const declared = Number(res.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > maxBytes) throw new Error(`input "${name}" is ${declared} bytes, over the ${maxBytes}-byte bound`);
+  if (!res.body) throw new Error(`ComfyUI /view sent no body for "${name}"`);
+  const chunks: Buffer[] = [];
+  let total = 0;
+  const reader = res.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error(`input "${name}" is over the ${maxBytes}-byte bound`);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks);
+}
+
 /** `sub/dir/name.png` as /view takes it: subfolder `sub/dir`, filename `name.png`. */
 export function splitInputName(name: string): { subfolder: string; filename: string } {
   const cut = name.lastIndexOf("/");
@@ -369,20 +396,33 @@ export function createUpstreamFacade(): UpstreamFacade {
       return { bytes: Buffer.from(r.base64, "base64"), mimeType: r.mimeType };
     },
     readInputFile: async (name) => {
+      // A direct GET on the configured target only. Upstream's fetchImage would go to Comfy
+      // Cloud in cloud mode and, after a transport failure, to a panel origin or the panel
+      // relay; an input whose hash a grant binds must come from the local ComfyUI the
+      // render runs on (GAPS Q33), so those routes are refused rather than taken.
+      if (isCloudMode()) throw new Error("input files are read only from a local ComfyUI; this server is in cloud mode");
+      const base = getComfyUIBaseUrl().replace(/\/+$/, "");
+      const host = new URL(base).hostname;
+      if (!isLoopbackHost(host)) throw new Error(`input files are read only from a loopback ComfyUI; the target ${host} isn't one`);
       const { subfolder, filename } = splitInputName(name);
-      const r = await fetchImage(filename, "input", subfolder, { maxBytes: MAX_INPUT_FILE_BYTES });
-      return { bytes: Buffer.from(r.base64, "base64") };
+      const url = `${base}/view?${new URLSearchParams({ filename, type: "input", subfolder }).toString()}`;
+      const res = await comfyuiFetch(url, { redirect: "manual" });
+      if (res.status !== 200) throw new Error(`ComfyUI /view returned ${res.status} for "${name}" (input)`);
+      return { bytes: await readBounded(res, MAX_INPUT_FILE_BYTES, name) };
     },
     locateModelFile: async (folder, file) => {
       const found = await resolveExistingModelFile(`${folder}/${file}`, { mode: "read" });
       if (!found.info.isFile()) throw new Error(`${folder}/${file} is not a file under ${found.root}`);
-      return { path: found.path, sizeBytes: found.info.size, mtimeMs: found.info.mtimeMs };
+      return { path: found.path, sizeBytes: found.info.size, mtimeMs: found.info.mtimeMs, root: found.root };
     },
+    modelRootsKey: () => JSON.stringify({ target: getComfyUIBaseUrl(), comfyuiPath: config.comfyuiPath ?? null }),
     decodeImage: async (bytes) => {
       const loaded = await tryLoadSharp();
       if (!loaded.ok) throw new ImageDecoderUnavailableError(sharpUnavailableMessage("Image decoding", loaded.err));
       const { info } = await loaded.sharp(bytes).raw().toBuffer({ resolveWithObject: true });
-      return { width: info.width, height: info.height };
+      // The decoded buffer is converted to sRGB; the file's own channel count is the header's.
+      const meta = await loaded.sharp(bytes).metadata();
+      return { width: info.width, height: info.height, ...(meta.channels !== undefined ? { channels: meta.channels } : {}) };
     },
     isOwnHostAddress: (host) => isOwnHostAddress(host),
     ollamaHost: () => resolveOllamaHost(),

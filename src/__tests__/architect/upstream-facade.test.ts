@@ -160,8 +160,10 @@ describe("decodeImage", () => {
 
   const png = () => sharp({ create: { width: 640, height: 480, channels: 3, background: { r: 0, g: 90, b: 200 } } }).png().toBuffer();
 
-  it("returns the decoded size of a whole image", async () => {
-    expect(await createUpstreamFacade().decodeImage(await png())).toEqual({ width: 640, height: 480 });
+  it("returns the decoded size and channel count of a whole image", async () => {
+    expect(await createUpstreamFacade().decodeImage(await png())).toEqual({ width: 640, height: 480, channels: 3 });
+    const gray = await sharp(Buffer.alloc(64 * 32, 255), { raw: { width: 64, height: 32, channels: 1 } }).toColourspace("b-w").png().toBuffer();
+    expect(await createUpstreamFacade().decodeImage(gray)).toEqual({ width: 64, height: 32, channels: 1 });
   });
 
   it("throws for a PNG whose header is whole but whose data is truncated", async () => {

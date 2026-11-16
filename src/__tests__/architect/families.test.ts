@@ -318,7 +318,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-function observerSetup(opts: { rules?: FamilyRule[]; budgetMs?: number } = {}) {
+function observerSetup(opts: { rules?: FamilyRule[]; budgetMs?: number; rootsKey?: () => string } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "architect-observe-"));
   dirs.push(dir);
   const store = ArchitectStore.open(dir);
@@ -334,13 +334,14 @@ function observerSetup(opts: { rules?: FamilyRule[]; budgetMs?: number } = {}) {
     rules: opts.rules ?? SHIPPED,
     now: () => new Date(clock),
     locateBudgetMs: opts.budgetMs,
+    ...(opts.rootsKey ? { rootsKey: opts.rootsKey } : {}),
     locate: async (folder, file) => {
       calls.locate += 1;
       clock += 5_000; // each locate costs seconds on the reference machine
       const path = `/models/${folder}/${file}`;
       const f = files.get(path);
       if (!f) throw new Error(`Model file not found: ${folder}/${file}`);
-      return { path, sizeBytes: f.size, mtimeMs: f.mtimeMs };
+      return { path, sizeBytes: f.size, mtimeMs: f.mtimeMs, root: "/models" };
     },
     statFile: async (path) => {
       const f = files.get(path);
@@ -367,6 +368,19 @@ describe("FamilyObserver", () => {
     const again = await s.observer.observe("diffusion_models", "z.safetensors");
     expect(again).toEqual(first);
     expect(s.calls).toEqual({ locate: 1, read: 1 });
+  });
+
+  it("locates the file again when the model roots changed, and keeps the root it was found under", async () => {
+    let key = JSON.stringify({ target: "http://127.0.0.1:8188", comfyuiPath: "/a" });
+    const s = observerSetup({ rootsKey: () => key });
+    const first = await s.observer.observe("diffusion_models", "z.safetensors");
+    expect(first).toMatchObject({ root: "/models", rootsKey: key });
+    await s.observer.observe("diffusion_models", "z.safetensors");
+    expect(s.calls.locate).toBe(1);
+    key = JSON.stringify({ target: "http://127.0.0.1:8188", comfyuiPath: "/b" });
+    const again = await s.observer.observe("diffusion_models", "z.safetensors");
+    expect(s.calls.locate).toBe(2);
+    expect(again).toMatchObject({ rootsKey: key });
   });
 
   it("reads again when the file changed or the rules changed", async () => {
@@ -432,9 +446,12 @@ describe("FamilyObserver", () => {
 // The family check in validation (GAPS Q14)
 
 /** The fixture t2i recipe with its checkpoint slot annotated for a shipped family. */
-function familyRecipe(family: string, folder = "checkpoints"): Recipe {
+function familyRecipe(family: string, folder = "checkpoints", defaultFile?: string): Recipe {
   const r = fixtureRecipe("t2i-basic");
-  return Recipe.parse({ ...r, slots: r.slots.map((s) => (s.id === "checkpoint" ? { ...s, modelFamily: family, modelFolder: folder } : s)) });
+  return Recipe.parse({
+    ...r,
+    slots: r.slots.map((s) => (s.id === "checkpoint" ? { ...s, modelFamily: family, modelFolder: folder, ...(defaultFile ? { default: defaultFile } : {}) } : s)),
+  });
 }
 
 function observation(file: string, outcome: ModelObservation["outcome"], matches: string[], folder = "checkpoints"): ModelObservation {
@@ -477,9 +494,28 @@ describe("validation's family check", () => {
   });
 
   it("passes through an alias the recipe uses", () => {
-    const r = familyRecipe("z-image-vae", "vae");
+    const r = familyRecipe("z-image-vae", "vae", "ae.safetensors");
     const obs = observation("ae.safetensors", "matched", ["flux-ae"], "vae");
-    expect(familyCheck(r, { checkpoint: "ae.safetensors" }, obs).check.verdict).toBe("pass");
+    expect(familyCheck(r, {}, obs).check.verdict).toBe("pass");
+  });
+
+  it("for a rule that can't separate variants, passes the recipe's file with the limit stated and keeps another file a hard unknown", () => {
+    expect(rule("z-image-turbo").indistinguishableFrom).toEqual(["z-image-base"]);
+    expect(rule("flux-ae").indistinguishableFrom).toEqual(["sd3-vae"]);
+    expect(rule("flux2-klein-4b").indistinguishableFrom).toEqual(["flux2-klein-base-4b"]);
+    const r = familyRecipe("z-image-turbo", "diffusion_models", "z_image_turbo_bf16.safetensors");
+    const own = familyCheck(r, {}, observation("z_image_turbo_bf16.safetensors", "matched", ["z-image-turbo"], "diffusion_models")).check;
+    expect(own).toMatchObject({ verdict: "pass", hard: true });
+    expect(own.message).toContain("can't tell z-image-turbo from z-image-base");
+    const base = "z_image_base_bf16.safetensors";
+    const other = familyCheck(r, { checkpoint: base }, observation(base, "matched", ["z-image-turbo"], "diffusion_models"));
+    expect(other.check).toMatchObject({ verdict: "unknown", hard: true });
+    expect(other.check.message).toContain("isn't the recipe's file");
+  });
+
+  it("keeps a recipe's default file whose header matches no rule a soft unknown", () => {
+    const r = familyRecipe("z-image-turbo", "diffusion_models", "z_image_turbo_bf16.safetensors");
+    expect(familyCheck(r, {}, observation("z_image_turbo_bf16.safetensors", "no_match", [], "diffusion_models")).check).toMatchObject({ verdict: "unknown", hard: false });
   });
 
   it("fails, hard, naming the family the header matches instead, even for the recipe's default", () => {

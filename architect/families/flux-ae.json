@@ -11,6 +11,7 @@
     "encoder.conv_out.weight": [32, 512, 3, 3],
     "decoder.conv_in.weight": [512, 16, 3, 3]
   },
+  "indistinguishableFrom": ["sd3-vae"],
   "provenance": [
     {
       "source": "safetensors header of vae/ae.safetensors (335304388 bytes, Comfy-Org/Z-Image-Turbo split_files/vae) on the reference target (ComfyUI Desktop 0.44.0 on port 8188, GAPS Q17)",

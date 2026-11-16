@@ -139,6 +139,18 @@ describe("the round trip catches what doesn't survive", () => {
     ]);
   });
 
+  it("counts a required input the graph left out as a difference even when it comes back holding the schema's default", () => {
+    const objectInfo = desktopObjectInfo();
+    const graph = compiled(recipe());
+    const unet = Object.entries(graph).find(([, n]) => n.class_type === "UNETLoader")?.[0] ?? "";
+    // weight_dtype is required; its first choice, "default", is what it held.
+    expect(Object.hasOwn(objectInfo.UNETLoader.input.required ?? {}, "weight_dtype")).toBe(true);
+    delete graph[unet].inputs.weight_dtype;
+    expect(uiRoundTrip(graph, objectInfo).differences).toEqual([
+      expect.objectContaining({ node: unet, input: "weight_dtype", problem: expect.stringContaining("was added") }),
+    ]);
+  });
+
   it("ignores _meta, which ComfyUI doesn't execute", () => {
     const objectInfo = desktopObjectInfo();
     const graph = compiled(recipe());

@@ -6,10 +6,12 @@
 // never written by hand.
 
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
 import type { ObjectInfo as ComfyObjectInfo } from "../../comfyui/types.js";
-import { SHIPPED_RECIPES_DIR, loadRecipeDir } from "../../services/architect/catalog.js";
+import { SHIPPED_RECIPES_DIR, loadRecipeDir, shippedTierProblem } from "../../services/architect/catalog.js";
 import { compileRecipe } from "../../services/architect/compile.js";
 import { candidateStatus } from "../../services/architect/planner.js";
 import { EnvironmentSnapshot, type Recipe, TaskSpec } from "../../services/architect/schemas.js";
@@ -137,7 +139,7 @@ function schemaProblems(recipe: Recipe, info: ObjectInfo): string[] {
   return problems;
 }
 
-const loaded = loadRecipeDir(SHIPPED_RECIPES_DIR);
+const loaded = loadRecipeDir(SHIPPED_RECIPES_DIR, { shipped: true });
 
 /** Every shipped recipe: the five of milestones 2 to 4 and the eleven of GAPS Q24's set (TODO 5.4). */
 const SHIPPED_IDS = [
@@ -174,11 +176,8 @@ describe("shipped recipes", () => {
   });
 
   it("ships a recipe as curated only with the owner's review on record, else as proposed (spec §8.4)", () => {
-    for (const { recipe } of loaded.recipes) {
-      // A review covers the revision it looked at (EvidenceRef.revision).
-      const reviewed = recipe.evidence.some((e) => e.kind === "maintainer_review" && e.revision === recipe.revision);
-      expect(recipe.certification, recipe.id).toBe(reviewed ? "curated" : "proposed");
-    }
+    // The catalog enforces the rule when it loads shipped recipes (shippedTierProblem).
+    for (const { recipe } of loaded.recipes) expect(shippedTierProblem(recipe), recipe.id).toBeUndefined();
     expect(shipped("recipe-flux1-schnell.ckpt-t2i").certification).toBe("proposed");
     // Reviewed at revision 3; revision 4 added pinned sources, so it waits for a new review.
     expect(shipped("recipe-zimage-turbo.t2i")).toMatchObject({ revision: 5, certification: "proposed" });
@@ -188,6 +187,41 @@ describe("shipped recipes", () => {
     expect(shipped("recipe-zimage-turbo.img2img")).toMatchObject({ revision: 5, certification: "proposed" });
     for (const id of SHIPPED_IDS.filter((i) => i !== "recipe-flux1-schnell.t2i")) {
       expect(shipped(id).certification, id).toBe("proposed");
+    }
+  });
+
+  it("refuses, when loading shipped recipes, a curated one without a review of its revision; other sources aren't held to it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "architect-tier-"));
+    try {
+      const r = shipped("recipe-flux1-schnell.t2i");
+      // Its review carries no revision, which counts as GAPS Q12's review of revision 3.
+      expect(r.evidence.find((e) => e.kind === "maintainer_review")?.revision).toBeUndefined();
+      writeFileSync(join(dir, "a.recipe.json"), JSON.stringify({ ...r, revision: 4 }));
+      writeFileSync(join(dir, "b.recipe.json"), JSON.stringify({ ...shipped("recipe-zimage-turbo.t2i"), certification: "curated" }));
+      writeFileSync(join(dir, "c.recipe.json"), JSON.stringify({ ...r, certification: "proposed" }));
+      const strict = loadRecipeDir(dir, { shipped: true });
+      expect(strict.recipes).toEqual([]);
+      expect(strict.errors.map((e) => e.message)).toEqual([
+        "recipe-flux1-schnell.t2i r4 is curated without a maintainer review of revision 4",
+        "recipe-zimage-turbo.t2i r5 is curated without a maintainer review of revision 5",
+        "recipe-flux1-schnell.t2i r3 has a maintainer review of this revision but is marked proposed",
+      ]);
+      expect(loadRecipeDir(dir).recipes).toHaveLength(3);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps every recipe revision that main ships byte for byte in content, so a stored revision never conflicts", () => {
+    // A database written by main holds these (id, revision) with these content hashes; the
+    // store refuses a changed recipe under a revision it holds (StoreConflictError).
+    const MainHashes = z.object({ recipes: z.array(z.object({ id: z.string(), revision: z.number(), contentHash: z.string() })) });
+    const main = MainHashes.parse(JSON.parse(readFileSync(new URL("./fixtures/main-recipe-hashes.json", import.meta.url), "utf-8")));
+    expect(main.recipes.length).toBeGreaterThan(0);
+    for (const m of main.recipes) {
+      const here = loaded.recipes.find((l) => l.recipe.id === m.id && l.recipe.revision === m.revision);
+      if (here) expect(here.contentHash, `${m.id} r${m.revision}`).toBe(m.contentHash);
+      else expect(shipped(m.id).revision, `${m.id} moved past r${m.revision}`).toBeGreaterThan(m.revision);
     }
   });
 

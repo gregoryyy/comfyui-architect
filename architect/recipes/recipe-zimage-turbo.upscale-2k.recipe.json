@@ -3,7 +3,7 @@
   "id": "recipe-zimage-turbo.upscale-2k",
   "revision": 1,
   "title": "Z-Image Turbo: 2x upscale with a refining pass",
-  "description": "Upscales a source image 2x: RealESRGAN x4plus, a lanczos downscale by 0.5, then a Z-Image Turbo pass at denoise 0.33 (5 steps of dpmpp_2m_sde, beta, CFG 1.0) that refines detail. The output is twice the source image's size; the VAE encode crops to multiples of 8, so the source's sides must be multiples of 4, which the contract check holds it to. ComfyUI's template first scales the source to one megapixel, which gives an output of about 2048x2048 whatever the source; this recipe leaves that step out, so the output size follows the source exactly, and a source of about one megapixel gives the template's result. The prompt is the template's fixed quality prompt; the task's intent isn't used.",
+  "description": "Upscales a source image 2x: RealESRGAN x4plus, a lanczos downscale by 0.5, then a Z-Image Turbo pass at denoise 0.33 (5 steps of dpmpp_2m_sde, beta, CFG 1.0) with a fixed prompt that redraws detail, so textures and small content change: the result isn't a faithful enlargement of the source. The output is twice the source image's size; the VAE encode crops to multiples of 8, so the source's sides must be multiples of 4, which the contract check holds it to. ComfyUI's template first scales the source to one megapixel, which gives an output of about 2048x2048 whatever the source; this recipe leaves that step out, so the output size follows the source exactly, and a source of about one megapixel gives the template's result. The prompt is the template's fixed quality prompt; the task's intent isn't used.",
   "kind": "image",
   "operations": [
     "upscale"
@@ -355,5 +355,8 @@
       "observedAt": "2026-11-16T10:02:07+01:00",
       "note": "RealESRGAN_x4plus.safetensors pinned as in recipe-zimage-turbo.t2i-upscale2x: Comfy-Org/Real-ESRGAN at commit 5fd49b7b, BSD-3-Clause per the repository card; the Z-Image files as in recipe-zimage-turbo.t2i."
     }
+  ],
+  "notices": [
+    "Redraws the upscaled image with Z-Image Turbo at denoise 0.33 and the fixed prompt \"masterpiece, 8k\": textures and small details change, so the result isn't a faithful enlargement of the source."
   ]
 }

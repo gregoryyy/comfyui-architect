@@ -15,7 +15,7 @@ import type { UpstreamFacade } from "./upstream.js";
 
 /** An input image's pixel size, or why it isn't known. */
 export type InputDimensions =
-  | { ok: true; width: number; height: number; sizeBytes: number }
+  | { ok: true; width: number; height: number; sizeBytes: number; channels?: number }
   | { ok: false; reason: string };
 
 /** Input file name (as in `comfyui-input:<name>`) to what was read of its size. */
@@ -27,15 +27,24 @@ export const MAX_DECODED_SIDE = 16384;
 /** Aspect ratios further apart than this, relatively, get the soft stretch check. */
 export const ASPECT_TOLERANCE = 0.01;
 
-/** The input paths whose size a recipe's outputs depend on. */
-export function sizedInputPaths(recipe: Pick<Recipe, "outputs">): string[] {
+/** Whether a recipe takes a mask and a source image, whose sizes must then agree. */
+function takesMask(recipe: Pick<Recipe, "slots">): boolean {
+  const paths = recipe.slots.filter((s) => s.valueType === "input_image").map((s) => s.fromTask);
+  return paths.includes("inputs.mask") && paths.includes("inputs.source_image");
+}
+
+/** The input paths whose size a recipe's checks depend on: its output's, and a mask's with its source. */
+export function sizedInputPaths(recipe: Pick<Recipe, "outputs" | "slots">): string[] {
   return [
-    ...new Set(recipe.outputs.flatMap((o) => [...(o.scaleOfInput ? [o.scaleOfInput.input] : []), ...(o.scalesInputToTask ? [o.scalesInputToTask] : [])])),
+    ...new Set([
+      ...recipe.outputs.flatMap((o) => [...(o.scaleOfInput ? [o.scaleOfInput.input] : []), ...(o.scalesInputToTask ? [o.scalesInputToTask] : [])]),
+      ...(takesMask(recipe) ? ["inputs.source_image", "inputs.mask"] : []),
+    ]),
   ];
 }
 
 /** The input file names of `task` whose sizes `recipes` need, without duplicates. */
-export function inputNamesToSize(recipes: readonly Pick<Recipe, "outputs">[], task: Pick<TaskSpec, "inputs">): string[] {
+export function inputNamesToSize(recipes: readonly Pick<Recipe, "outputs" | "slots">[], task: Pick<TaskSpec, "inputs">): string[] {
   const paths = new Set(recipes.flatMap(sizedInputPaths));
   const names = new Set<string>();
   for (const { path, input } of taskInputPaths(task.inputs)) {
@@ -82,8 +91,8 @@ async function decodeSize(facade: Pick<UpstreamFacade, "decodeImage">, name: str
     return { ok: false, reason: `${name} is ${header.width}×${header.height}, over the ${MAX_DECODED_SIDE}-pixel side bound; it wasn't decoded` };
   }
   try {
-    const { width, height } = await facade.decodeImage(bytes);
-    return { ok: true, width, height, sizeBytes: bytes.length };
+    const { width, height, channels } = await facade.decodeImage(bytes);
+    return { ok: true, width, height, sizeBytes: bytes.length, ...(channels !== undefined ? { channels } : {}) };
   } catch (err) {
     return { ok: false, reason: `couldn't decode ${name} (${bytes.length} bytes): ${messageOf(err)}` };
   }
@@ -113,7 +122,7 @@ function inputAt(task: TaskSpec, path: string): { name: string } | { problem: st
  * wasn't read. For `scalesInputToTask`: a soft `contract.input_aspect` check. Empty for a
  * recipe whose size comes from the task alone; the compiler checks that.
  */
-export function outputSizeChecks(recipe: Pick<Recipe, "outputs">, task: TaskSpec, sizes: InputSizes | undefined): CheckResult[] {
+export function outputSizeChecks(recipe: Pick<Recipe, "outputs" | "slots">, task: TaskSpec, sizes: InputSizes | undefined): CheckResult[] {
   if (task.media.kind !== "image") return [];
   const want = task.media.output;
   const primary = recipe.outputs[0];
@@ -183,5 +192,43 @@ export function outputSizeChecks(recipe: Pick<Recipe, "outputs">, task: TaskSpec
       );
     }
   }
+  out.push(...maskChecks(recipe, task, sizes));
+  return out;
+}
+
+/**
+ * A mask is read at the source image's pixels: one of another size would be stretched over
+ * it, and the repainted area wouldn't be the one the user drew, so the sizes must be equal
+ * (a hard check). The mask loaders read one channel; a file the decoder reports with one
+ * channel holds the mask unambiguously, while a colour file's red channel is read as it is,
+ * which a soft check says (GAPS Q33).
+ */
+export function maskChecks(recipe: Pick<Recipe, "slots">, task: TaskSpec, sizes: InputSizes | undefined): CheckResult[] {
+  if (!takesMask(recipe)) return [];
+  const source = inputAt(task, "inputs.source_image");
+  const mask = inputAt(task, "inputs.mask");
+  // A missing input fails its slot check; there is nothing to compare.
+  if ("problem" in source || "problem" in mask) return [];
+  const s = sizes?.get(source.name);
+  const m = sizes?.get(mask.name);
+  const out: CheckResult[] = [];
+  if (s === undefined || m === undefined || !s.ok || !m.ok) {
+    const why = [s, m].flatMap((d, i) => (d === undefined ? [`${i === 0 ? source.name : mask.name}'s size wasn't read`] : d.ok ? [] : [d.reason])).join("; ");
+    out.push(check("contract.mask_size", "unknown", true, `whether mask ${mask.name} has the size of source ${source.name} isn't known: ${why}`));
+  } else if (s.width === m.width && s.height === m.height) {
+    out.push(check("contract.mask_size", "pass", true, `mask ${mask.name} has the source's size, ${s.width}×${s.height}`));
+  } else {
+    out.push(check("contract.mask_size", "fail", true, `mask ${mask.name} is ${m.width}×${m.height}, source ${source.name} is ${s.width}×${s.height}; the mask would be stretched over the image, so give a mask of the source's size`));
+  }
+  out.push(
+    m?.ok === true && m.channels === 1
+      ? check("contract.mask_channels", "pass", false, `mask ${mask.name} has one channel`)
+      : check(
+          "contract.mask_channels",
+          "unknown",
+          false,
+          `mask channels unverified: ${mask.name} ${m?.ok === true && m.channels !== undefined ? `has ${m.channels} channels` : "wasn't decoded to a channel count"}; the graph reads its red channel as the mask (white repaints)`,
+        ),
+  );
   return out;
 }

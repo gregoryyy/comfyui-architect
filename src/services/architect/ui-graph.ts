@@ -7,9 +7,11 @@
 // is something the frontend writes or drops on its own, so it doesn't change what runs:
 //
 // - `_meta` on any node: titles and layout hints, which ComfyUI doesn't execute.
-// - An input the API graph leaves out that comes back holding the node schema's default
-//   (its `default`, else a COMBO's first choice): the frontend writes every widget when it
-//   queues, so the default is what an omitted widget runs with from the canvas.
+// - An OPTIONAL input the API graph leaves out that comes back holding the node schema's
+//   default (its `default`, else a COMBO's first choice): the frontend writes every widget
+//   when it queues, and ComfyUI runs an omitted optional input with that default. A required
+//   input has no such fallback, so it must come back exactly as written; a recipe writes
+//   every required input.
 // - The form of a link: `["4", 0]` and `[4, 0]` name the same output.
 //
 // Every other change is a difference, named by node and input.
@@ -33,10 +35,9 @@ export interface RoundTrip {
   differences: RoundTripDifference[];
 }
 
-/** The default a node schema declares for an input: `default`, else a COMBO's first choice. */
-function schemaDefault(objectInfo: ObjectInfo, classType: string, input: string): { value: unknown } | undefined {
-  const def = objectInfo[classType];
-  const spec = def?.input.optional?.[input] ?? def?.input.required?.[input];
+/** The default a node schema declares for an optional input: `default`, else a COMBO's first choice. */
+function optionalDefault(objectInfo: ObjectInfo, classType: string, input: string): { value: unknown } | undefined {
+  const spec = objectInfo[classType]?.input.optional?.[input];
   if (!spec) return undefined;
   const [type, options] = spec;
   if (options && "default" in options) return { value: options.default };
@@ -80,7 +81,7 @@ export function uiRoundTrip(graph: ApiGraph, objectInfo: ObjectInfo): RoundTrip 
       if (had && !has) {
         differences.push({ node: id, input, problem: `${node.class_type}.${input} was dropped` });
       } else if (!had && has) {
-        const d = schemaDefault(objectInfo, node.class_type, input);
+        const d = optionalDefault(objectInfo, node.class_type, input);
         if (!d || normalised(d.value) !== normalised(other.inputs[input])) {
           differences.push({ node: id, input, problem: `${node.class_type}.${input} was added as ${normalised(other.inputs[input])}` });
         }

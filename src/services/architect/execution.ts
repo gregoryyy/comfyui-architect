@@ -35,6 +35,7 @@ import {
   type RunPrincipal,
   type RunRecord,
   type TaskSpec,
+  parseAssetId,
 } from "./schemas.js";
 import type { ArchitectStore } from "./store.js";
 
@@ -379,7 +380,7 @@ export class ArchitectExecution {
    * Write the run's record, its evaluations and its dependency lock next to the plan's
    * exported files (spec §15.1, FR-11), without following a symbolic link (SEC T9).
    */
-  finalize(request: { runId: string }) {
+  async finalize(request: { runId: string }) {
     const { store, dataDir } = this.deps;
     const run = this.requireRun(request.runId);
     if (!FINAL_RUN_STATES.includes(run.state) && run.state !== "AWAITING_REVIEW") {
@@ -401,7 +402,11 @@ export class ArchitectExecution {
     const acquired = acquisitions.filter((a) => a.state === "placed").map(acquiredLockEntry);
     // The input files the grant bound, with the content hash read at start (GAPS Q33): asset
     // id, sha256 and size, never a path on this machine.
-    const inputs = actionPlan?.effects.find((e): e is LocalRenderEffect => e.kind === "local_render")?.inputs;
+    const approvedInputs = actionPlan?.effects.find((e): e is LocalRenderEffect => e.kind === "local_render")?.inputs;
+    // Each input is read once more after the run: the hash the grant bound stays as it was,
+    // and `verifiedAfterRun` says whether the file is still that content (GAPS Q33). A read
+    // that fails says nothing about the file, so it is "unknown" with the reason (#796).
+    const inputs = approvedInputs ? await this.verifyInputsAfterRun(approvedInputs) : undefined;
     const baseLock = task ? this.deps.dependencyLock(run.candidateId, task) : undefined;
     const lockFields = LockObject.safeParse(baseLock);
     const lock =
@@ -460,6 +465,34 @@ export class ArchitectExecution {
       written.push(path);
     }
     return { dir, files: written };
+  }
+
+  private async verifyInputsAfterRun(approved: NonNullable<LocalRenderEffect["inputs"]>) {
+    const read = this.deps.readInputFile;
+    const out = [];
+    for (const input of approved) {
+      const parsed = parseAssetId(input.assetId);
+      if (!parsed.ok) {
+        out.push({ ...input, verifiedAfterRun: "unknown" as const, reason: parsed.problem });
+        continue;
+      }
+      if (!read) {
+        out.push({ ...input, verifiedAfterRun: "unknown" as const, reason: "this server can't read the target's input folder" });
+        continue;
+      }
+      try {
+        const { bytes } = await read(parsed.name);
+        const sha256 = sha256Hex(bytes);
+        out.push(
+          sha256 === input.sha256 && bytes.length === input.sizeBytes
+            ? { ...input, verifiedAfterRun: true as const }
+            : { ...input, verifiedAfterRun: false as const, observedAfterRun: { sha256, sizeBytes: bytes.length } },
+        );
+      } catch (err) {
+        out.push({ ...input, verifiedAfterRun: "unknown" as const, reason: `couldn't read it again: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+    return out;
   }
 
   /** Whether the run's job was ever submitted (an attempt is recorded before the POST). */

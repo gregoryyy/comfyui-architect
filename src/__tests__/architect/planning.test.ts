@@ -217,6 +217,30 @@ describe("ArchitectPlanning, prepare to export", () => {
     expect(existsSync(join(exported.dir, "workflow.api.json"))).toBe(true);
   });
 
+  it("removes the UI graph an earlier export of the plan wrote once the round trip fails, and nothing else", async () => {
+    const info = fixtureObjectInfo();
+    const { planning } = setup({ objectInfo: async () => info });
+    const prepared = await planning.prepare({ task: TASK });
+    const best = (await planning.propose({ planId: prepared.plan.id })).candidates[0];
+    planning.select({ planId: prepared.plan.id, candidateId: best.id });
+    const first = await planning.export({ planId: prepared.plan.id });
+    expect(existsSync(join(first.dir, "workflow.ui.json"))).toBe(true);
+    info.KSampler.input.required = { ...info.KSampler.input.required, sampler_name: [["other_sampler"]] };
+    const second = await planning.export({ planId: prepared.plan.id });
+    expect(second.uiGraph.exported).toBe(false);
+    expect(existsSync(join(second.dir, "workflow.ui.json"))).toBe(false);
+    expect(existsSync(join(second.dir, "workflow.api.json"))).toBe(true);
+
+    // A link left in its place is removed as a link; the file it points to stays.
+    const target = join(mkdtempSync(join(tmpdir(), "architect-ui-target-")), "keep.json");
+    dirs.push(dirname(target));
+    writeFileSync(target, "{}");
+    symlinkSync(target, join(second.dir, "workflow.ui.json"));
+    await planning.export({ planId: prepared.plan.id });
+    expect(existsSync(join(second.dir, "workflow.ui.json"))).toBe(false);
+    expect(readFileSync(target, "utf-8")).toBe("{}");
+  });
+
   it("plans only with the recipes the catalog holds now, and warns about files it couldn't load", async () => {
     const dir = mkdtempSync(join(tmpdir(), "architect-recipes-"));
     dirs.push(dir);

@@ -558,6 +558,12 @@ export const Recipe = z
              * aspect ratio stretches it, which a soft check reports before selection.
              */
             scalesInputToTask: z.string().regex(INPUT_IMAGE_PATH).optional(),
+            /**
+             * For an output sized from the task: the graph writes each side rounded down to
+             * this multiple (the step of its latent node), so a task side off it fails
+             * rather than coming out a few pixels short.
+             */
+            multipleOf: z.number().int().min(2).max(64).optional(),
           })
           .strict(),
       )
@@ -572,6 +578,13 @@ export const Recipe = z
     certification: Certification,
     evidence: z.array(EvidenceRef),
     license: z.string().optional(),
+    /**
+     * What the result does that the task doesn't say and a user might not expect (a refining
+     * pass that changes content): shown with the candidate and in the approval, so it is
+     * disclosed before the user selects or approves (spec §4.3). Optional, so recipes without
+     * notices keep their content hash.
+     */
+    notices: z.array(z.string().min(1).max(500)).max(5).optional(),
   })
   .strict()
   .superRefine((r, ctx) => {
@@ -605,7 +618,7 @@ export type Recipe = z.infer<typeof Recipe>;
  * the two would have to agree and nothing would make them.
  */
 function outputSizeIssues(
-  r: { outputs: readonly { role: string; scaleOfInput?: { input: string }; scalesInputToTask?: string }[]; slots: readonly RecipeSlot[] },
+  r: { outputs: readonly { role: string; scaleOfInput?: { input: string }; scalesInputToTask?: string; multipleOf?: number }[]; slots: readonly RecipeSlot[] },
   issue: (message: string) => void,
 ): void {
   const takes = (path: string) => r.slots.some((s) => s.valueType === "input_image" && s.fromTask === path);
@@ -615,6 +628,7 @@ function outputSizeIssues(
       if (!takes(o.scaleOfInput.input)) issue(`output ${o.role}: scaleOfInput names ${o.scaleOfInput.input}, which no input_image slot takes`);
       if (sizedFromTask) issue(`output ${o.role}: scaleOfInput sizes the output from an input, but a slot also takes the size from the task`);
       if (o.scalesInputToTask !== undefined) issue(`output ${o.role}: scaleOfInput and scalesInputToTask exclude each other`);
+      if (o.multipleOf !== undefined) issue(`output ${o.role}: multipleOf is for a size from the task; scaleOfInput carries its own`);
     }
     if (o.scalesInputToTask !== undefined) {
       if (!takes(o.scalesInputToTask)) issue(`output ${o.role}: scalesInputToTask names ${o.scalesInputToTask}, which no input_image slot takes`);
@@ -1334,6 +1348,13 @@ export const FamilyRule = z
     requiredTensors: z.array(TensorPattern).min(1),
     forbiddenTensors: z.array(TensorPattern).optional(),
     shapes: z.record(TensorPattern, z.array(z.number().int().nonnegative())).optional(),
+    /**
+     * Variants whose files have the same header, so a match can't tell them apart (Z-Image
+     * Turbo and Z-Image Base). A match then confirms the architecture only: it passes for the
+     * file a recipe names as its default, whose author chose it, and stays a hard unknown for
+     * any other file (GAPS Q14).
+     */
+    indistinguishableFrom: z.array(FamilyId).optional(),
     provenance: z
       .array(z.object({ source: z.string().min(1), observedAt: Timestamp, note: z.string().min(1) }).strict())
       .min(1),
@@ -1357,6 +1378,13 @@ export const ModelObservation = z
     mtimeMs: z.number().nonnegative(),
     /** Where upstream's resolver found the file, so the next check needs only a stat. */
     path: AbsolutePath,
+    /** The model root the resolver found it under. */
+    root: AbsolutePath.optional(),
+    /**
+     * The facade's `modelRootsKey` when the file was located: under another key (another
+     * target or ComfyUI path) the cached path isn't trusted and the file is located again.
+     */
+    rootsKey: z.string().min(1).optional(),
     rulesDigest: Sha256,
     outcome: z.enum(["matched", "no_match", "ambiguous", "unreadable"]),
     /** The one rule matched, exactly when `outcome` is `matched`. */

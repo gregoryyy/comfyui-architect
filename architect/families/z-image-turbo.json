@@ -15,6 +15,7 @@
     "cap_embedder.1.weight": [3840, 2560],
     "x_embedder.weight": [3840, 64]
   },
+  "indistinguishableFrom": ["z-image-base"],
   "provenance": [
     {
       "source": "safetensors header of diffusion_models/z_image_turbo_bf16.safetensors (12309866400 bytes, Comfy-Org/Z-Image-Turbo) on the reference target (ComfyUI Desktop 0.44.0 on port 8188, GAPS Q17)",

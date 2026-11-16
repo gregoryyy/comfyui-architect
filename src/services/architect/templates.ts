@@ -622,8 +622,8 @@ function annotate(graph: ApiGraph, objectInfo: ObjectInfo, report: Report, slug:
     if (id === prompt) continue;
     report.needsMaintainer.push(
       prompt === undefined
-        ? `node ${id} (CLIPTextEncode): which text encoder takes the task's prompt isn't clear; its text is left as written`
-        : `node ${id} (CLIPTextEncode): not the prompt slot; its text (a negative or second prompt) is left as written`,
+        ? `node ${id} (CLIPTextEncode): which text encoder takes the task's prompt isn't clear; its text is blanked`
+        : `node ${id} (CLIPTextEncode): not the prompt slot; its text (a negative or second prompt) is blanked`,
     );
   }
 
@@ -657,6 +657,26 @@ function annotate(graph: ApiGraph, objectInfo: ObjectInfo, report: Report, slug:
       outputs.push({ role: outputs.length === 0 ? "image" : `image_${outputs.length + 1}`, node: id, format: "png" });
     } else if (objectInfo[node.class_type]?.output_node === true) {
       report.needsMaintainer.push(`node ${id} (${node.class_type}): an output node other than SaveImage; not recorded as an output`);
+    }
+  }
+
+  // Template text is data (SEC T2): every free-text widget is blanked, the negative prompt
+  // and any other text encoder's as well as the prompt slot's, so no sentence of the template
+  // reaches the draft or a render; a maintainer writes what a widget should hold. COMBO
+  // values (sampler names, model files) are choices the target lists, not free text, and the
+  // output prefix was set above.
+  const slotted = new Set(slots.map((x) => `${x.target.node}\u0000${x.target.input}`));
+  for (const id of ids) {
+    const node = graph[id];
+    for (const [input, value] of Object.entries(node.inputs)) {
+      if (typeof value !== "string" || value.length === 0 || slotted.has(`${id}\u0000${input}`)) continue;
+      if (node.class_type === "SaveImage" && input === "filename_prefix") continue;
+      const spec = inputSpec(objectInfo, node.class_type, input);
+      if (isCombo(spec)) continue;
+      node.inputs[input] = "";
+      if (node.class_type !== "CLIPTextEncode") {
+        report.needsMaintainer.push(`node ${id} (${node.class_type}).${input}: a text widget; its template text is blanked`);
+      }
     }
   }
 

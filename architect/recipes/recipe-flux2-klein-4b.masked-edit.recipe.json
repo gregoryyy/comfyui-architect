@@ -3,7 +3,7 @@
   "id": "recipe-flux2-klein-4b.masked-edit",
   "revision": 1,
   "title": "FLUX.2 Klein 4B: edit inside a mask",
-  "description": "Edits the masked area of a source image as the prompt instructs, with the distilled FLUX.2 Klein 4B: the source, scaled to the task's width and height, is encoded, given to the instruction as a ReferenceLatent and used as the sampling latent with the mask as its noise mask, so only the masked area is sampled anew (4 steps, CFG 1.0); ImageCompositeMasked then puts the result over the scaled source, so the pixels outside the mask are the source's. The output has the task's size; a soft check reports when the aspect ratios differ, since source and mask would be stretched. The mask is a separate image in ComfyUI's input folder, white where the image is repainted, read from its red channel by LoadImageMask. No Klein template has a mask: the masked path is this recipe's, after the inpaint pattern of upstream's comfyui-core skill.",
+  "description": "Edits the masked area of a source image as the prompt instructs, with the distilled FLUX.2 Klein 4B: the source, scaled to the task's width and height, is encoded, given to the instruction as a ReferenceLatent and used as the sampling latent with the mask as its noise mask, so only the masked area is sampled anew (4 steps, CFG 1.0); ImageCompositeMasked then puts the result over the scaled source, so the pixels outside the mask are the source's. The output has the task's size; a soft check reports when the aspect ratios differ, since source and mask would be stretched. The mask is a separate image in ComfyUI's input folder, white where the image is repainted, read from its red channel by LoadImageMask. Width and height must be multiples of 16, the FLUX.2 latent's step, or the composite would leave an edge strip unedited; the contract check refuses a task size off it. No Klein template has a mask: the masked path is this recipe's, after the inpaint pattern of upstream's comfyui-core skill.",
   "kind": "image",
   "operations": [
     "inpaint"
@@ -383,7 +383,8 @@
       "node": "21",
       "format": "png",
       "count": 1,
-      "scalesInputToTask": "inputs.source_image"
+      "scalesInputToTask": "inputs.source_image",
+      "multipleOf": 16
     }
   ],
   "dependencies": {

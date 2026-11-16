@@ -1,0 +1,30 @@
+{
+  "source": "architect/recipes/*.recipe.json on main at 1868179c (git show main:<file>), hashed as the catalog hashes a parsed recipe (sha256 of its canonical JSON)",
+  "recipes": [
+    {
+      "id": "recipe-flux1-schnell.ckpt-t2i",
+      "revision": 1,
+      "contentHash": "819ecbf4192c62b989e76ff87e83a741b0bd2188ca70798b47cb5ec041fc96ea"
+    },
+    {
+      "id": "recipe-flux1-schnell.t2i",
+      "revision": 3,
+      "contentHash": "733e6fcbdba10adeba6b8acc1baec1395288e2389814410d52e99f80c12aed03"
+    },
+    {
+      "id": "recipe-zimage-turbo.img2img",
+      "revision": 4,
+      "contentHash": "e5c6d16a6aa9d9a99bb759fbcc5f540a81ff0ef15bf58a01580a8e8b3521bb39"
+    },
+    {
+      "id": "recipe-zimage-turbo.t2i-upscale2x",
+      "revision": 1,
+      "contentHash": "7dfc97c7dd18ccc8fdcaf6bfd89f4d737c18d75785612dc1827568c00123b919"
+    },
+    {
+      "id": "recipe-zimage-turbo.t2i",
+      "revision": 4,
+      "contentHash": "93e252665ba504c5ddbe2492fba4ab132da51739ec21febddf5be21bc332f470"
+    }
+  ]
+}

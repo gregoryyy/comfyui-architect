@@ -132,8 +132,9 @@ export interface AdmissionDeps {
  * hash stays what it was before inputs existed. A file that can't be read refuses the plan:
  * the user would otherwise approve a render whose input nobody has seen (spec §14.2).
  */
-async function readRenderInputs(deps: Pick<AdmissionDeps, "readInputFile">, task: TaskSpec): Promise<RenderInput[] | undefined> {
-  if (task.inputs.length === 0) return undefined;
+async function readRenderInputs(deps: Pick<AdmissionDeps, "readInputFile">, task: TaskSpec): Promise<{ inputs: RenderInput[] | undefined; bytes: InputBytes }> {
+  const bytesByName = new Map<string, Buffer>();
+  if (task.inputs.length === 0) return { inputs: undefined, bytes: bytesByName };
   const read = deps.readInputFile;
   if (!read) {
     throw new ApprovalError("MISSING_INPUT", "this server can't read the task's input files from the target", "Plan a task without input images, or use a server set up with the target.");
@@ -154,10 +155,18 @@ async function readRenderInputs(deps: Pick<AdmissionDeps, "readInputFile">, task
         "Check that the file is still in ComfyUI's input folder, then call architect_run prepare again.",
       );
     }
+    bytesByName.set(parsed.name, bytes);
     out.push({ assetId: input.assetId, sha256: sha256Hex(bytes), sizeBytes: bytes.length });
   }
-  return out;
+  return { inputs: out, bytes: bytesByName };
 }
+
+/**
+ * Input file name to the bytes one read gave, so the validation that checks an input's size
+ * decodes the same bytes the plan hashes: one read per input, and the size check and the
+ * grant can't see two versions of a file that changed between reads.
+ */
+export type InputBytes = ReadonlyMap<string, Buffer>;
 
 /** What the action plan binds, built from a selected candidate (everything the hash covers). */
 function binding(
@@ -201,7 +210,10 @@ function binding(
  */
 export async function prepareActionPlan(deps: AdmissionDeps, planId: string): Promise<{ actionPlan: ActionPlan; request: ApprovalRequest }> {
   const { store, now, newId } = deps;
-  const ctx = await freshSelection(deps, planId, { allowAcquirable: true });
+  // The input files are read and hashed first, and validation decodes their sizes from the
+  // same bytes, so the grant binds the content the size check saw (GAPS Q33).
+  const { inputs, bytes } = await readRenderInputs(deps, deps.planning.selectedForRun(planId, { allowAcquirable: true }).task);
+  const ctx = await freshSelection(deps, planId, { allowAcquirable: true }, bytes);
   const created = now();
   const expiresAt = new Date(created.getTime() + (deps.actionPlanTtlMs ?? DEFAULT_ACTION_PLAN_TTL_MS)).toISOString();
   const baseUrl = deps.baseUrl();
@@ -214,8 +226,6 @@ export async function prepareActionPlan(deps: AdmissionDeps, planId: string): Pr
     requireLocalCapableTarget(store, baseUrl, ctx.candidate.environmentId);
     acquire = await acquireEffectFor(deps, ctx.task, ctx.candidate, { checkDisk: true });
   }
-  // The input files are read and hashed now, so the grant binds their content (GAPS Q33).
-  const inputs = await readRenderInputs(deps, ctx.task);
   // The models to unload are read now and shown in the approval, so the user is asked
   // before any of them is unloaded (GAPS Q23).
   const bound = binding(ctx, baseUrl, await deps.releasable?.(baseUrl), acquire, inputs);
@@ -248,8 +258,9 @@ export async function requireFeasible(
   planning: Pick<AdmissionDeps["planning"], "validate" | "store">,
   planId: string,
   candidateId: string,
+  inputBytes?: InputBytes,
 ): Promise<void> {
-  await requireAdmissible(planning, planId, candidateId);
+  await requireAdmissible(planning, planId, candidateId, inputBytes ? { inputBytes } : {});
 }
 
 /**
@@ -263,11 +274,12 @@ export async function requireFeasible(
 export async function requireInputsUnchanged(
   deps: { store: Pick<ArchitectStore, "getActionPlan">; readInputFile?: AdmissionDeps["readInputFile"] },
   run: Pick<RunRecord, "id" | "actionPlanId">,
-): Promise<void> {
+): Promise<InputBytes> {
+  const readBytes: Map<string, Buffer> = new Map();
   const actionPlan = deps.store.getActionPlan(run.actionPlanId);
   if (!actionPlan) throw new ApprovalError("APPROVAL_INVALIDATED", `run ${run.id}'s action plan ${run.actionPlanId} is not stored`, "Prepare the run again.");
   const approved = actionPlan.effects.find((e): e is Extract<Effect, { kind: "local_render" }> => e.kind === "local_render")?.inputs;
-  if (approved === undefined || approved.length === 0) return;
+  if (approved === undefined || approved.length === 0) return readBytes;
   const read = deps.readInputFile;
   if (!read) {
     throw new ApprovalError("APPROVAL_INVALIDATED", `run ${run.id}'s input files can't be read again before submission here`, "Prepare the run again on a server set up with the target.");
@@ -293,7 +305,9 @@ export async function requireInputsUnchanged(
         "Prepare the run again; the user approves the plan with the new input.",
       );
     }
+    readBytes.set(parsed.name, bytes);
   }
+  return readBytes;
 }
 
 /**
@@ -306,9 +320,9 @@ export async function requireAdmissible(
   planning: Pick<AdmissionDeps["planning"], "validate" | "store">,
   planId: string,
   candidateId: string,
-  options: { allowAcquirable?: boolean } = {},
+  options: { allowAcquirable?: boolean; inputBytes?: InputBytes } = {},
 ): Promise<PlanCandidate> {
-  const checked = await planning.validate({ planId, candidateId });
+  const checked = await planning.validate({ planId, candidateId, ...(options.inputBytes ? { inputBytes: options.inputBytes } : {}) });
   const status = checked.candidate.status;
   if (status !== "feasible" && !(status === "acquirable" && options.allowAcquirable === true)) {
     throw new ApprovalError(
@@ -327,9 +341,9 @@ export async function requireAdmissible(
   return stored;
 }
 
-async function freshSelection(deps: AdmissionDeps, planId: string, options: { allowAcquirable: boolean }) {
+async function freshSelection(deps: AdmissionDeps, planId: string, options: { allowAcquirable: boolean }, inputBytes?: InputBytes) {
   const before = deps.planning.selectedForRun(planId, options);
-  await requireAdmissible(deps.planning, planId, before.candidate.id, options);
+  await requireAdmissible(deps.planning, planId, before.candidate.id, { ...options, ...(inputBytes ? { inputBytes } : {}) });
   // Read again: validation stored a fresh report and environment for the candidate.
   return deps.planning.selectedForRun(planId, options);
 }
@@ -535,6 +549,10 @@ export function describeActionPlan(store: ArchitectStore, actionPlan: ActionPlan
     ...(candidate?.ranking.tier === "proposed" && actionPlan.effects.some((e) => e.kind === "acquire_models")
       ? ["Note: this recipe is proposed: an agent wrote it and pinned its download sources, and no maintainer has reviewed it yet"]
       : []),
+    // What the recipe's result does beyond the task, and the soft checks that failed (a
+    // stretched source), so the approval discloses them as the candidate did (spec §4.3).
+    ...(candidate ? (store.getRecipe(candidate.recipeId, candidate.recipeRevision)?.notices ?? []).map((n) => `Note: ${n}`) : []),
+    ...(candidate ? candidate.validation.checks.filter((c) => !c.hard && c.verdict === "fail").map((c) => `Soft check failed: ${c.message}`) : []),
     ...(candidate ? [`Models: ${Object.entries(candidate.bindings).filter(([, v]) => typeof v === "string" && /\.(safetensors|ckpt|pt|pth|bin|gguf)$/i.test(String(v))).map(([k, v]) => `${k}=${String(v)}`).join(", ") || "none"}`] : []),
     // One line per entry: `printable` turns a newline inside a line into a visible mark.
     ...actionPlan.effects.flatMap((e) => describeEffect(e, freeDisk).split("\n")),
@@ -588,7 +606,9 @@ export async function admitEffect(
   // A plan that acquires files was approved for an acquirable candidate, which stays
   // acquirable until the files are placed; every other plan needs a feasible one.
   const approvedAcquire = actionPlan.effects.find((e): e is AcquireModelsEffect => e.kind === "acquire_models");
-  const ctx = await freshSelection(deps, actionPlan.planId, { allowAcquirable: approvedAcquire !== undefined });
+  // One read per input, for the hash below and the size check of the validation (GAPS Q33).
+  const { inputs, bytes } = await readRenderInputs(deps, deps.planning.selectedForRun(actionPlan.planId, { allowAcquirable: approvedAcquire !== undefined }).task);
+  const ctx = await freshSelection(deps, actionPlan.planId, { allowAcquirable: approvedAcquire !== undefined }, bytes);
   requireLocalCapableTarget(store, baseUrl, ctx.candidate.environmentId);
   // The downloads are rebuilt from the candidate's fresh acquisition and upstream's current
   // destinations, without the free-disk reading (it isn't part of the hash; the controller
@@ -605,9 +625,8 @@ export async function admitEffect(
     }
     acquire = await acquireEffectFor(deps, ctx.task, ctx.candidate, { checkDisk: false });
   }
-  // The input files are read again: one changed since the approval gives another hash, and
+  // The input files were read again above: one changed since the approval gives another hash, and
   // the user approves the new content; one that vanished refuses the start (GAPS Q33).
-  const inputs = await readRenderInputs(deps, ctx.task);
   // The residency effect is the one the user approved, not a fresh reading: a model that
   // left Ollama since doesn't invalidate the approval, and one that arrived since isn't
   // unloaded (the controller blocks on it).

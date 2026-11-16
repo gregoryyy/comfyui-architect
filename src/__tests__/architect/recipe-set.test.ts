@@ -12,7 +12,7 @@ import { SHIPPED_RECIPES_DIR, loadRecipeDir } from "../../services/architect/cat
 import { compileRecipe } from "../../services/architect/compile.js";
 import type { InputDimensions } from "../../services/architect/output-size.js";
 import { candidateStatus } from "../../services/architect/planner.js";
-import { EnvironmentSnapshot, type Recipe, TaskSpec, type TaskInput } from "../../services/architect/schemas.js";
+import { EnvironmentSnapshot, Recipe, TaskSpec, type TaskInput } from "../../services/architect/schemas.js";
 import { validateGraph } from "../../services/architect/validate.js";
 
 const T = "2026-11-16T10:00:00.000Z";
@@ -126,7 +126,7 @@ describe("the recipe set against the capture", () => {
     // The soft checks a feasible candidate may carry: the family of a default file not yet
     // observed (GAPS Q14), and a stretch when the aspect ratios differ.
     for (const c of out.report.checks.filter((x) => !x.hard && (x.verdict === "unknown" || x.verdict === "fail"))) {
-      expect(c.id, c.message).toMatch(/^semantic_types\.model_family\./);
+      expect(c.id, c.message).toMatch(/^semantic_types\.model_family\.|^contract\.mask_channels$/);
     }
   });
 
@@ -182,7 +182,9 @@ describe("the recipe set against the capture", () => {
       expect(failing(out.report.checks), id).toEqual(["contract.task.width"]);
       expect(out.report.checks.find((c) => c.id === "contract.task.width")?.message).toMatch(/would be 1016/);
     }
-    // The inpaint recipes composite onto the source, so its size comes through unrounded.
+    // The inpaint recipes composite onto the source, so its size comes through unrounded
+    // (with a mask of the same size).
+    odd.set("medusa_poster.png", { ok: true, width: 1020, height: 1024, sizeBytes: 1 });
     const r = recipe("recipe-zimage-turbo.inpaint");
     const out = validateGraph({ recipe: r, task: taskFor("recipe-zimage-turbo.inpaint", [1020, 1024]), bindings: {}, objectInfo: offering(r), snapshot: snapshot(defaults(r)), inputSizes: odd });
     expect(out.report.overall).toBe("pass");
@@ -198,12 +200,59 @@ describe("the recipe set against the capture", () => {
     }
   });
 
+  it("refuses a task size off the latent's step for the recipes sized from the task, with the reason", () => {
+    const steps: Record<string, number> = {
+      "recipe-zimage-turbo.t2i": 16,
+      "recipe-flux1-schnell.ckpt-t2i": 16,
+      "recipe-zimage-turbo.t2i-upscale2x": 32,
+      "recipe-flux2-klein-4b.edit": 16,
+      "recipe-flux2-klein-4b.reference": 16,
+      "recipe-flux2-klein-4b.masked-edit": 16,
+    };
+    for (const [id, step] of Object.entries(steps)) {
+      const r = recipe(id);
+      expect(r.outputs[0].multipleOf, id).toBe(step);
+      const op = r.operations[0];
+      const inputs = CASES[id]?.inputs ?? [];
+      const t = TaskSpec.parse({ ...taskFor(Object.keys(CASES)[0]), media: { kind: "image", operation: op, output: { width: 1024 + step / 2, height: 1024 } }, inputs });
+      const c = compileRecipe(r, t, {}).checks.find((x) => x.id === "contract.task.width");
+      expect(c, id).toMatchObject({ verdict: "fail", hard: true });
+      expect(c?.message, id).toContain(`isn't a multiple of ${step}`);
+      const ok = TaskSpec.parse({ ...t, media: { ...t.media, output: { width: 1024, height: 1024, count: 1, format: "png" } } });
+      expect(compileRecipe(r, ok, {}).checks.find((x) => x.id === "contract.task.width")?.verdict, id).toBe("pass");
+    }
+    expect(Recipe.safeParse({ ...recipe("recipe-realesrgan.upscale-4x"), outputs: [{ ...recipe("recipe-realesrgan.upscale-4x").outputs[0], multipleOf: 8 }] }).success).toBe(false);
+  });
+
   it("takes exactly two references for the Klein reference recipe: one is missing an input, three is unsupported", () => {
     const id = "recipe-flux2-klein-4b.reference";
     const one = compileRecipe(recipe(id), taskFor(id, undefined, [ref("blue_poppies_field.png")]), {});
     expect(one.checks.find((c) => c.id === "contract.slot.reference_image_2")).toMatchObject({ verdict: "fail" });
     const three = compileRecipe(recipe(id), taskFor(id, undefined, [ref("blue_poppies_field.png"), ref("medusa_poster.png"), ref("egyptian_queen.png")]), {});
     expect(three.checks.find((c) => c.id === "contract.task.inputs.reference_image.3")?.message).toMatch(/unsupported/);
+  });
+
+  it("fails a mask of another size than the source, hard, and leaves its channels a soft unknown unless it has one", () => {
+    for (const id of ["recipe-zimage-turbo.inpaint", "recipe-flux1-schnell.ckpt-inpaint", "recipe-flux2-klein-4b.masked-edit"]) {
+      const r = recipe(id);
+      const sizes = new Map(SIZES);
+      sizes.set("medusa_poster.png", { ok: true, width: 512, height: 512, sizeBytes: 1, channels: 1 });
+      const out = validateGraph({ recipe: r, task: taskFor(id), bindings: {}, objectInfo: offering(r), snapshot: snapshot(defaults(r)), inputSizes: sizes });
+      const size = out.report.checks.find((c) => c.id === "contract.mask_size");
+      expect(size, id).toMatchObject({ verdict: "fail", hard: true });
+      expect(size?.message).toMatch(/512×512.*1024×1024/);
+      expect(out.report.checks.find((c) => c.id === "contract.mask_channels"), id).toMatchObject({ verdict: "pass", hard: false });
+      const unread = validateGraph({ recipe: r, task: taskFor(id), bindings: {}, objectInfo: offering(r), snapshot: snapshot(defaults(r)) });
+      expect(unread.report.checks.find((c) => c.id === "contract.mask_size"), id).toMatchObject({ verdict: "unknown", hard: true });
+      const colour = validateGraph({ recipe: r, task: taskFor(id), bindings: {}, objectInfo: offering(r), snapshot: snapshot(defaults(r)), inputSizes: SIZES });
+      expect(colour.report.checks.find((c) => c.id === "contract.mask_channels")?.message, id).toMatch(/^mask channels unverified/);
+    }
+  });
+
+  it("discloses that the 2K upscaler redraws content, in a notice and its description", () => {
+    const r = recipe("recipe-zimage-turbo.upscale-2k");
+    expect(r.notices?.[0]).toMatch(/denoise 0\.33.*fixed prompt.*change/);
+    expect(r.description).toMatch(/fixed prompt that redraws detail/);
   });
 
   it("refuses an inpaint task without a mask and a mask the edit recipes have no slot for", () => {

@@ -3,7 +3,7 @@
   "id": "recipe-flux2-klein-4b.reference",
   "revision": 1,
   "title": "FLUX.2 Klein 4B: generate from two reference images",
-  "description": "Generates a new image from the prompt and two reference images (\"the person from image 1 holding the bag from image 2\") with the distilled FLUX.2 Klein 4B. Each reference is scaled to about one megapixel, encoded, and attached to the prompt's conditioning and its zeroed negative by a chain of ReferenceLatent nodes; the image is sampled at the task's width and height in 4 steps at CFG 1.0. The references don't set the output size, so their aspect ratios don't matter. Exactly two references: a task with one has a required input missing, and a task with a third gives an input no slot takes; both fail the contract check, and no reference is dropped or invented. Width and height should be multiples of 16, which the latent rounds down to.",
+  "description": "Generates a new image from the prompt and two reference images (\"the person from image 1 holding the bag from image 2\") with the distilled FLUX.2 Klein 4B. Each reference is scaled to about one megapixel, encoded, and attached to the prompt's conditioning and its zeroed negative by a chain of ReferenceLatent nodes; the image is sampled at the task's width and height in 4 steps at CFG 1.0. The references don't set the output size, so their aspect ratios don't matter. Exactly two references: a task with one has a required input missing, and a task with a third gives an input no slot takes; both fail the contract check, and no reference is dropped or invented. Width and height must be multiples of 16, which the latent rounds down to; the contract check refuses a task size off it.",
   "kind": "image",
   "operations": [
     "reference_guided"
@@ -415,7 +415,8 @@
       "role": "image",
       "node": "25",
       "format": "png",
-      "count": 1
+      "count": 1,
+      "multipleOf": 16
     }
   ],
   "dependencies": {

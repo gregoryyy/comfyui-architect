@@ -312,7 +312,7 @@ describe("verdicts (AT-08)", () => {
     mkdirSync(outside, { recursive: true });
     mkdirSync(join(s.dataDir, "artifacts", run.taskId), { recursive: true });
     symlinkSync(outside, join(s.dataDir, "artifacts", run.taskId, run.planId));
-    expect(() => s.execution.finalize({ runId })).toThrow(/not a plain directory/);
+    await expect(s.execution.finalize({ runId })).rejects.toThrow(/not a plain directory/);
     expect(existsSync(join(outside, "runs"))).toBe(false);
   });
 
@@ -320,7 +320,7 @@ describe("verdicts (AT-08)", () => {
     const s = await setup();
     const runId = await runAwaitingReview(s, ["pass"]);
     recordUserVerdict(s, { runId, verdict: "accept", channel: "terminal", issuer: "terminal" });
-    const r = s.execution.finalize({ runId });
+    const r = await s.execution.finalize({ runId });
     expect(r.files.map((f) => f.split("/").pop())).toEqual(["run.json", "evaluation.json", "dependencies.lock.json"]);
     const written = JSON.parse(readFileSync(r.files[0], "utf-8"));
     expect(written.lineage).toMatchObject({
