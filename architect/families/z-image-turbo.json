@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "z-image-turbo",
+  "title": "Z-Image Turbo diffusion model (S3-DiT, 30 layers, Qwen 3 4B captions)",
+  "folders": ["diffusion_models", "unet"],
+  "requiredTensors": [
+    "cap_embedder.1.weight",
+    "x_embedder.weight",
+    "noise_refiner.0.attention.qkv.weight",
+    "context_refiner.0.attention.qkv.weight",
+    "layers.29.attention.qkv.weight"
+  ],
+  "forbiddenTensors": ["layers.30.*", "*double_blocks.*"],
+  "shapes": {
+    "cap_embedder.1.weight": [3840, 2560],
+    "x_embedder.weight": [3840, 64]
+  },
+  "indistinguishableFrom": ["z-image-base"],
+  "provenance": [
+    {
+      "source": "safetensors header of diffusion_models/z_image_turbo_bf16.safetensors (12309866400 bytes, Comfy-Org/Z-Image-Turbo) on the reference target (ComfyUI Desktop 0.44.0 on port 8188, GAPS Q17)",
+      "observedAt": "2026-11-16T09:07:17+01:00",
+      "note": "453 tensors under cap_embedder, x_embedder, t_embedder, noise_refiner (2 blocks), context_refiner (2 blocks), layers (0 to 29) and final_layer; cap_embedder.1.weight is [3840, 2560], the 2560-wide Qwen 3 4B hidden state projected to 3840. No tensor is prefixed. The header doesn't tell Turbo from Z-Image Base, which shares the architecture; FLUX's double_blocks are forbidden so a FLUX file can't match."
+    }
+  ]
+}

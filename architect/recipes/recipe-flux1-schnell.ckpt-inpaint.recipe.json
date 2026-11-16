@@ -1,0 +1,306 @@
+{
+  "schemaVersion": 1,
+  "id": "recipe-flux1-schnell.ckpt-inpaint",
+  "revision": 1,
+  "title": "FLUX.1-schnell: inpainting with a latent noise mask",
+  "description": "Repaints the masked area of a source image from the prompt with FLUX.1-schnell from the all-in-one checkpoint. Schnell isn't a fill model (FLUX.1 Fill has a mask-conditioned input; schnell has none), so the mask works only as a latent noise mask: SetLatentNoiseMask limits sampling to the masked area (4 steps, CFG 1.0, euler, simple) and the model sees the rest only through the latent; at the default denoise 1.0 the masked area is generated anew, lower keeps more of the source there. ImageCompositeMasked puts the result over the source, so the pixels outside the mask are the source's and the output has the source image's size. The mask is a separate image in ComfyUI's input folder, white where the image is repainted, read from its red channel by LoadImageMask. The checkpoint has to be in checkpoints/ (GAPS Q13).",
+  "kind": "image",
+  "operations": [
+    "inpaint"
+  ],
+  "graph": {
+    "1": {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": {
+        "ckpt_name": "flux1-schnell-fp8.safetensors"
+      },
+      "_meta": {
+        "title": "FLUX.1-schnell checkpoint"
+      }
+    },
+    "2": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "1",
+          1
+        ],
+        "text": ""
+      },
+      "_meta": {
+        "title": "Positive"
+      }
+    },
+    "3": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "1",
+          1
+        ],
+        "text": ""
+      },
+      "_meta": {
+        "title": "Negative (ignored at CFG 1)"
+      }
+    },
+    "4": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      },
+      "_meta": {
+        "title": "Source image"
+      }
+    },
+    "5": {
+      "class_type": "LoadImageMask",
+      "inputs": {
+        "image": "",
+        "channel": "red"
+      },
+      "_meta": {
+        "title": "Mask (white repaints)"
+      }
+    },
+    "6": {
+      "class_type": "VAEEncode",
+      "inputs": {
+        "pixels": [
+          "4",
+          0
+        ],
+        "vae": [
+          "1",
+          2
+        ]
+      }
+    },
+    "7": {
+      "class_type": "SetLatentNoiseMask",
+      "inputs": {
+        "samples": [
+          "6",
+          0
+        ],
+        "mask": [
+          "5",
+          0
+        ]
+      }
+    },
+    "8": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "positive": [
+          "2",
+          0
+        ],
+        "negative": [
+          "3",
+          0
+        ],
+        "latent_image": [
+          "7",
+          0
+        ],
+        "seed": 0,
+        "steps": 4,
+        "cfg": 1,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "denoise": 1
+      }
+    },
+    "9": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "8",
+          0
+        ],
+        "vae": [
+          "1",
+          2
+        ]
+      }
+    },
+    "10": {
+      "class_type": "ImageCompositeMasked",
+      "inputs": {
+        "destination": [
+          "4",
+          0
+        ],
+        "source": [
+          "9",
+          0
+        ],
+        "x": 0,
+        "y": 0,
+        "resize_source": false,
+        "mask": [
+          "5",
+          0
+        ]
+      },
+      "_meta": {
+        "title": "Repainted area over the source"
+      }
+    },
+    "11": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "10",
+          0
+        ],
+        "filename_prefix": "architect/flux1-schnell-ckpt-inpaint"
+      }
+    }
+  },
+  "slots": [
+    {
+      "id": "checkpoint",
+      "label": "FLUX.1-schnell all-in-one checkpoint",
+      "valueType": "model_file",
+      "target": {
+        "node": "1",
+        "input": "ckpt_name"
+      },
+      "required": true,
+      "default": "flux1-schnell-fp8.safetensors",
+      "modelFolder": "checkpoints",
+      "modelFamily": "flux1-schnell"
+    },
+    {
+      "id": "prompt",
+      "label": "Prompt",
+      "valueType": "string",
+      "target": {
+        "node": "2",
+        "input": "text"
+      },
+      "required": true,
+      "fromTask": "intent"
+    },
+    {
+      "id": "source_image",
+      "label": "Source image (file name in ComfyUI's input folder)",
+      "valueType": "input_image",
+      "target": {
+        "node": "4",
+        "input": "image"
+      },
+      "required": true,
+      "fromTask": "inputs.source_image"
+    },
+    {
+      "id": "mask",
+      "label": "Mask (file name in ComfyUI's input folder; white repaints)",
+      "valueType": "input_image",
+      "target": {
+        "node": "5",
+        "input": "image"
+      },
+      "required": true,
+      "fromTask": "inputs.mask"
+    },
+    {
+      "id": "denoise",
+      "label": "Denoise inside the mask (1 generates it anew)",
+      "valueType": "float",
+      "target": {
+        "node": "8",
+        "input": "denoise"
+      },
+      "required": true,
+      "default": 1,
+      "min": 0,
+      "max": 1
+    },
+    {
+      "id": "seed",
+      "label": "Seed",
+      "valueType": "seed",
+      "target": {
+        "node": "8",
+        "input": "seed"
+      },
+      "required": true,
+      "default": 0
+    }
+  ],
+  "outputs": [
+    {
+      "role": "image",
+      "node": "11",
+      "format": "png",
+      "count": 1,
+      "scaleOfInput": {
+        "input": "inputs.source_image",
+        "factor": 1
+      }
+    }
+  ],
+  "dependencies": {
+    "nodeClasses": [
+      "CheckpointLoaderSimple",
+      "CLIPTextEncode",
+      "LoadImage",
+      "LoadImageMask",
+      "VAEEncode",
+      "SetLatentNoiseMask",
+      "KSampler",
+      "VAEDecode",
+      "ImageCompositeMasked",
+      "SaveImage"
+    ]
+  },
+  "modelSources": [
+    {
+      "folder": "checkpoints",
+      "file": "flux1-schnell-fp8.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Flux-1-Schnell",
+        "revision": "d31e04067066d92c55ece2b01748dcc337725d7a",
+        "path": "flux1-schnell-fp8.safetensors",
+        "sha256": "ead426278b49030e9da5df862994f25ce94ab2ee4df38b556ddddb3db093bf72",
+        "sizeBytes": 17236328572,
+        "license": "apache-2.0"
+      }
+    }
+  ],
+  "certification": "proposed",
+  "evidence": [
+    {
+      "kind": "upstream_pack",
+      "source": "plugin/skills/comfyui-core/SKILL.md at fork baseline 707474d2 (blob f7bb340d)",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "The inpaint pattern: LoadImage into VAEEncode, a mask from a loader, SetLatentNoiseMask (samples, mask) into KSampler's latent. ImageCompositeMasked after the decode is this recipe's addition, after packs/z-image-turbo-inpainting, so the unmasked pixels stay the source's."
+    },
+    {
+      "kind": "documentation",
+      "source": "ComfyUI workflow template flux_schnell (comfyui-workflow-templates 0.11.103, GET http://127.0.0.1:8188/templates/flux_schnell.json, sha256 912fe178607a2c0e1ff12688703d22b34866949c9669ecc2739d19971e916b96)",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "Loader and sampler as in the template: CheckpointLoaderSimple flux1-schnell-fp8.safetensors (MODEL 0, CLIP 1, VAE 2), positive and empty negative CLIPTextEncode, KSampler 4 steps, CFG 1, euler, simple, VAEDecode with the checkpoint's VAE. The template is text to image; the source image path replaces its EmptySD3LatentImage."
+    },
+    {
+      "kind": "documentation",
+      "source": "GET http://127.0.0.1:8188/object_info, ComfyUI Desktop 0.44.0; the classes used captured in src/__tests__/architect/fixtures/object-info-desktop-0.44.0.json",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "LoadImageMask (image, channel red), SetLatentNoiseMask (samples, mask), ImageCompositeMasked and the checkpoint classes are in the live schema."
+    },
+    {
+      "kind": "documentation",
+      "source": "Hugging Face API: /api/models/<repo>/revision/main and /api/models/<repo>/tree/<commit>, read by scripts/architect/pin-source.mjs",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "flux1-schnell-fp8.safetensors pinned from Comfy-Org/Flux-1-Schnell (requested as Comfy-Org/flux1-schnell, renamed) at commit d31e0406, 17236328572 bytes as the installed file, licence apache-2.0 per the repository card. It is the fp8 all-in-one checkpoint recipe-flux1-schnell.ckpt-t2i and ComfyUI's flux_schnell template load, installed on the reference target; the precision rule (ARCH 2026-11-16) names the FLUX.2 Klein and SeedVR2 downloads."
+    }
+  ]
+}

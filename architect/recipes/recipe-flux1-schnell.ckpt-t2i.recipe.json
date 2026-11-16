@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "id": "recipe-flux1-schnell.ckpt-t2i",
-  "revision": 1,
+  "revision": 2,
   "title": "FLUX.1-schnell: text to image from the all-in-one checkpoint",
-  "description": "Text to image with FLUX.1-schnell from Comfy-Org's all-in-one checkpoint, which holds the diffusion model, the T5-XXL and CLIP-L text encoders and the VAE; CheckpointLoaderSimple loads all four, as ComfyUI's own flux_schnell template does. Schnell is timestep-distilled: 4 steps at CFG 1.0, so the negative prompt is ignored; the template's empty negative CLIPTextEncode is kept. Width and height are multiples of 16 for EmptySD3LatentImage, about one megapixel. The checkpoint has to be in checkpoints/, where CheckpointLoaderSimple looks (GAPS Q13).",
+  "description": "Text to image with FLUX.1-schnell from Comfy-Org's all-in-one checkpoint, which holds the diffusion model, the T5-XXL and CLIP-L text encoders and the VAE; CheckpointLoaderSimple loads all four, as ComfyUI's own flux_schnell template does. Schnell is timestep-distilled: 4 steps at CFG 1.0, so the negative prompt is ignored; the template's empty negative CLIPTextEncode is kept. Width and height must be multiples of 16, EmptySD3LatentImage's step, about one megapixel; the contract check refuses a task size off it. The checkpoint has to be in checkpoints/, where CheckpointLoaderSimple looks (GAPS Q13).",
   "kind": "image",
   "operations": [
     "text_to_image"
@@ -185,7 +185,8 @@
       "role": "image",
       "node": "7",
       "format": "png",
-      "count": 1
+      "count": 1,
+      "multipleOf": 16
     }
   ],
   "dependencies": {
@@ -217,6 +218,21 @@
       "source": "GET http://127.0.0.1:8188/object_info/<class>, ComfyUI Desktop 0.44.0, after linking the checkpoint into checkpoints/ (GAPS Q13)",
       "observedAt": "2026-11-15T18:49:40+01:00",
       "note": "CheckpointLoaderSimple offers flux1-schnell-fp8.safetensors; every class, input and COMBO value is in the live schema; EmptySD3LatentImage bounds width and height to 16..16384."
+    }
+  ],
+  "modelSources": [
+    {
+      "folder": "checkpoints",
+      "file": "flux1-schnell-fp8.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Flux-1-Schnell",
+        "revision": "d31e04067066d92c55ece2b01748dcc337725d7a",
+        "path": "flux1-schnell-fp8.safetensors",
+        "sha256": "ead426278b49030e9da5df862994f25ce94ab2ee4df38b556ddddb3db093bf72",
+        "sizeBytes": 17236328572,
+        "license": "apache-2.0"
+      }
     }
   ]
 }

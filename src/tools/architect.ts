@@ -18,10 +18,12 @@ import { z } from "zod";
 import { ARCHITECT_SCHEMA_VERSION } from "../fork-identity.js";
 import { ModelAcquirer, defaultAcquisitionIo } from "../services/architect/acquisition.js";
 import { formatBytes } from "../services/architect/acquisition-policy.js";
-import { requireFeasible } from "../services/architect/admission.js";
+import { requireFeasible, requireInputsUnchanged } from "../services/architect/admission.js";
 import { ARCHITECT_RESIDENCY_ENV, architectEnabled } from "../services/architect/config.js";
 import { RunController } from "../services/architect/controller.js";
 import { ArchitectExecution } from "../services/architect/execution.js";
+import { FamilyObserver, loadFamilyRules } from "../services/architect/families.js";
+import { ensureBuiltInSources } from "../services/architect/sources.js";
 import { ResourceCoordinator } from "../services/architect/resources.js";
 import { registerArchitectRunTool, type RunToolContext } from "./architect-run.js";
 import { ArchitectPlanning, PlanningError, SHIPPED_SOURCE } from "../services/architect/planning.js";
@@ -70,15 +72,35 @@ export type PlanningFactory = () => ArchitectPlanning;
 function defaultPlanningFactory(service: ArchitectService, upstream: UpstreamFacade): PlanningFactory {
   let planning: ArchitectPlanning | undefined;
   return () => {
-    planning ??= new ArchitectPlanning({
-      store: ArchitectStore.open(),
+    if (planning) return planning;
+    const store = ArchitectStore.open();
+    const now = () => new Date();
+    // The built-in sources are written when the store opens (GAPS Q32); a failure is
+    // reported by capabilities, which writes them again.
+    ensureBuiltInSources(store, upstream.comfyuiBaseUrl());
+    const loaded = loadFamilyRules();
+    planning = new ArchitectPlanning({
+      store,
       service,
       upstream,
       dataDir: architectDataDir(),
       sources: [SHIPPED_SOURCE],
-      now: () => new Date(),
+      now,
       newId: () => randomUUID(),
       isPaidNode: (def) => upstream.isPaidNode(def),
+      families: new FamilyObserver({
+        store,
+        locate: (folder, file) => upstream.locateModelFile(folder, file),
+        rootsKey: () => upstream.modelRootsKey(),
+        rules: loaded.rules,
+        now,
+      }),
+      // Input sizes for recipes whose output follows an input image (ARCH 2026-11-16, output size).
+      inputFiles: upstream,
+      familyRuleErrors: [
+        ...loaded.errors.map((e) => `family rule file ${e.file}: ${e.message}`),
+        ...(loaded.dirFound ? [] : ["the family rules folder architect/families/ wasn't found: model families stay unverified"]),
+      ],
     });
     return planning;
   };
@@ -142,8 +164,13 @@ function defaultRunContext(planning: PlanningFactory, upstream: UpstreamFacade):
         return task;
       },
       // A run that waited for its resources, or acquired model files, is validated again
-      // against a fresh snapshot before it's submitted.
-      revalidate: (run) => requireFeasible(p, run.planId, run.candidateId),
+      // against a fresh snapshot before it's submitted, and its input files are read again:
+      // one changed since start invalidates the approval (GAPS Q33).
+      revalidate: async (run) => {
+        // The inputs first: the validation's size check decodes the bytes just compared.
+        const bytes = await requireInputsUnchanged({ store, readInputFile: (name) => upstream.readInputFile(name) }, run);
+        await requireFeasible(p, run.planId, run.candidateId, bytes);
+      },
       acquirer,
     });
     const execution = new ArchitectExecution({
@@ -159,6 +186,8 @@ function defaultRunContext(planning: PlanningFactory, upstream: UpstreamFacade):
       releasable: (baseUrl) => resources.releasable(baseUrl),
       acquisitionIo,
       acquirer,
+      // The task's input images, read from the target's input folder and hashed into the plan (GAPS Q33).
+      readInputFile: (name) => upstream.readInputFile(name),
     });
     ctx = { execution, store, now, newId };
     processRunContext = ctx;
@@ -201,11 +230,13 @@ export function registerArchitectTools(
       "fields are absent; an unanswered folder is listed in `unanswered`: treat both as " +
       'unknown, never as empty. action:"capabilities" lists the recipe catalog: each recipe\'s ' +
       "operations, evidence tier and model slots, and how many of those slots the target's " +
-      "installed files could fill. No downloads, installs or executions.",
+      "installed files could fill; and the source registry: each source's adapter, root, " +
+      "allowed operations, trust and state (unavailable is not empty). No downloads, installs " +
+      "or executions.",
     {
       action: z
         .enum(["environment", "capabilities"])
-        .describe('"environment": the target\'s versions, hardware, node classes and model files. "capabilities": the recipe catalog and its fit.'),
+        .describe('"environment": the target\'s versions, hardware, node classes and model files. "capabilities": the recipe catalog and its fit, and the source registry.'),
     },
     async ({ action }) => {
       if (action === "environment") return reply(await service.inspectEnvironmentEnvelope());
@@ -214,8 +245,12 @@ export function registerArchitectTools(
         const warnings = [
           ...caps.catalog.errors.map((e) => `recipe file ${e.file}: ${e.message}`),
           ...caps.catalog.missingSources.map((s) => `recipe source ${s} not found: its recipes are unknown`),
+          ...caps.sourceErrors,
+          ...caps.sources.filter((s) => s.state === "unavailable").map((s) => `source ${s.id} is unavailable: ${s.unavailableReason ?? "no reason recorded"}; its contents are unknown, not empty`),
         ];
-        return reply(okEnvelope(`${caps.recipes.length} recipe(s) in the catalog; environment ${caps.environmentId}.`, caps, warnings));
+        return reply(
+          okEnvelope(`${caps.recipes.length} recipe(s) in the catalog, ${caps.sources.length} source(s); environment ${caps.environmentId}.`, caps, warnings),
+        );
       } catch (err) {
         return reply(errorEnvelope(err));
       }
@@ -237,7 +272,8 @@ export function registerArchitectTools(
       "or acquirable candidate and authorizes nothing (acquirable: only model files with a pinned " +
       "source are missing; architect_run downloads them once the user approves); " +
       'action:"export" with `planId` writes the selected ' +
-      "candidate's graph, task, plan, validation and dependency lock to files. Every check is " +
+      "candidate's API graph, task, plan, validation and dependency lock to files, and its UI " +
+      "graph (workflow.ui.json) when that loads back to the same API graph. Every check is " +
       "pass, fail, unknown or not_applicable: unknown is not pass. Don't invent node names, " +
       "model files, URLs or measurements; report blockers instead.",
     {
@@ -247,6 +283,11 @@ export function registerArchitectTools(
       planId: z.string().optional().describe("propose, get, validate, select, export: the plan."),
       candidateId: z.string().optional().describe("validate, select: a candidate of the plan."),
       proposals: z.array(Proposal).max(24).optional().describe("propose: bindings you choose for recipes' slots."),
+      recipeIds: z
+        .array(z.string())
+        .max(8)
+        .optional()
+        .describe("propose: build candidates only from these recipes (IDs from prepare's `recipes`), e.g. when the user asks for one."),
       graphOf: z.string().optional().describe("get: a candidate ID whose compiled API graph to include."),
     },
     async (args) => {
@@ -264,12 +305,17 @@ export function registerArchitectTools(
             return reply(okEnvelope(`Task ${r.task.id} r${r.task.revision}, plan ${r.plan.id} (${r.plan.state}); ${r.recipes.length} fitting recipe(s).`, r, warnings));
           }
           case "propose": {
-            const r = await p.propose({ planId: need(args.planId, "planId", "propose"), ...(args.proposals ? { proposals: args.proposals } : {}) });
+            const r = await p.propose({
+              planId: need(args.planId, "planId", "propose"),
+              ...(args.proposals ? { proposals: args.proposals } : {}),
+              ...(args.recipeIds ? { recipeIds: args.recipeIds } : {}),
+            });
             const feasible = r.candidates.filter((c) => c.status === "feasible").length;
             const acquirable = r.candidates.filter((c) => c.status === "acquirable");
             const warnings = [
               ...r.readiness.reasons.map((x) => `environment: ${x}`),
               ...(r.truncated ? [`enumeration stopped at ${r.expanded} candidates`] : []),
+              ...(r.familiesUnobserved ?? []).map((u) => `model family of ${u.folder}/${u.file} not read: ${u.reason}`),
               ...p.catalogWarnings(),
             ];
             if (feasible === 0 && acquirable.length > 0) {
@@ -311,8 +357,9 @@ export function registerArchitectTools(
             return reply(okEnvelope(`Plan ${r.id}: candidate ${r.selectedCandidateId} selected. Nothing was run.`, { plan: r }));
           }
           case "export": {
-            const r = p.export({ planId: need(args.planId, "planId", "export") });
-            return reply(okEnvelope(`Exported ${r.files.length} files to ${r.dir}.`, r, [], r.files));
+            const r = await p.export({ planId: need(args.planId, "planId", "export") });
+            const warnings = r.uiGraph.exported ? [] : [`workflow.ui.json not written: ${r.uiGraph.reason}`];
+            return reply(okEnvelope(`Exported ${r.files.length} files to ${r.dir}.`, r, warnings, r.files));
           }
         }
       } catch (err) {

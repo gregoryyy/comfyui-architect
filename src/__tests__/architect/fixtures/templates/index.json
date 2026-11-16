@@ -1,0 +1,68 @@
+[
+  {
+    "moduleName": "default",
+    "category": "Foundation",
+    "title": "Image",
+    "type": "image",
+    "templates": [
+      {
+        "name": "api_nano_banana_2_1_t2i",
+        "title": "Nano Banana 2.1: Text to Image",
+        "description": "Generate images from text prompts using Nano Banana 2.1, Google's fast Gemini-based image model, delivering one finished image with no input files required. Ideal for brand marketing posters, e-commerce product visuals, and IP character series.",
+        "mediaType": "image",
+        "tags": [
+          "Text to Image",
+          "API",
+          "Image"
+        ],
+        "models": [
+          "Nano Banana"
+        ],
+        "date": "2026-10-06",
+        "size": 0,
+        "openSource": false
+      },
+      {
+        "name": "image_z_image_turbo",
+        "title": "Z-Image-Turbo: Text to Image",
+        "description": "An Efficient Image Generation Foundation Model with Single-Stream Diffusion Transformer, supports English & Chinese.",
+        "mediaType": "image",
+        "tags": [
+          "Image",
+          "Text to Image"
+        ],
+        "models": [
+          "Z-Image-Turbo"
+        ],
+        "date": "2025-11-27",
+        "size": 20830591386,
+        "openSource": true
+      }
+    ]
+  },
+  {
+    "moduleName": "default",
+    "category": "Foundation",
+    "title": "Video",
+    "type": "video",
+    "templates": [
+      {
+        "name": "video_minimax_h3_i2v",
+        "title": "MiniMax H3: Image to Video",
+        "description": "Turn a starting image into a short, high-quality video clip with MiniMax H3, a unified multimodal model that generates visuals and synchronized audio in a single pass. The workflow takes 1 input image and produces 1 video output, with optional text or reference media to steer motion, style, or sound. Ideal for rapid concept visualization, character-driven animation tests, and creating shareable social media clips with built-in sound design.",
+        "mediaType": "image",
+        "tags": [
+          "Image to Video",
+          "Int8",
+          "Video"
+        ],
+        "models": [
+          "MiniMax H3"
+        ],
+        "date": "2026-08-02",
+        "size": 44452911514,
+        "openSource": true
+      }
+    ]
+  }
+]

@@ -6,7 +6,7 @@
 // on export, files under `ARCHITECT_DATA_DIR/artifacts/`. Nothing here downloads, installs,
 // submits a prompt or touches the canvas (milestone 2's exit, spec §20).
 
-import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import type { ComfyUINodeDef, ObjectInfo } from "../../comfyui/types.js";
 import { FORK_IDENTITY, UPSTREAM_BASELINE } from "../../fork-identity.js";
@@ -15,7 +15,10 @@ import { compileRecipe } from "./compile.js";
 import { planningReadiness } from "./environment.js";
 import { canonicalJson, sha256Hex } from "./hash.js";
 import { deriveAcquisition, formatBytes } from "./acquisition-policy.js";
-import { MAX_PRESENTED_CANDIDATES, candidateStatus, missingTaskFields, planCandidates, type ProposedBinding } from "./planner.js";
+import type { FamilyObserver, Unobserved } from "./families.js";
+import { type InputSizes, inputNamesToSize, readInputSizes } from "./output-size.js";
+import { MAX_PRESENTED_CANDIDATES, boundModelFiles, candidateStatus, missingTaskFields, planCandidates, type ProposedBinding } from "./planner.js";
+import { ensureBuiltInSources, sourceView } from "./sources.js";
 import {
   type ApiGraph,
   type EnvironmentSnapshot,
@@ -29,7 +32,8 @@ import {
 import type { ArchitectService } from "./service.js";
 import type { ArchitectStore } from "./store.js";
 import type { UpstreamFacade } from "./upstream.js";
-import { overallVerdict, validateGraph } from "./validate.js";
+import { exportUiGraph } from "./ui-graph.js";
+import { type FamilyEvidence, overallVerdict, validateGraph } from "./validate.js";
 
 /** A recipe source the catalog loads: the shipped folder, and in tests a fixture folder. */
 export interface RecipeSource {
@@ -51,6 +55,18 @@ export interface PlanningDeps {
   newId: () => string;
   /** Upstream's paid-node rule when available; the validator's own otherwise. */
   isPaidNode?: (def: ComfyUINodeDef) => boolean;
+  /**
+   * Reads bound model files' families (TODO 5.3). Absent, family checks stay unknown as
+   * before (GAPS Q14), so planning runs without a local ComfyUI path.
+   */
+  families?: Pick<FamilyObserver, "observeAll">;
+  /** Problems loading the family rules, carried as warnings like the catalog's. */
+  familyRuleErrors?: readonly string[];
+  /**
+   * Reads the task's input files whose size a recipe's output follows (output-size.ts; the
+   * facade's `readInputFile` and `decodeImage`). Absent, those size checks stay hard unknowns.
+   */
+  inputFiles?: Pick<UpstreamFacade, "readInputFile" | "decodeImage">;
 }
 
 /** A refusal with a stable code (spec §16.4), for the tool to put into the envelope. */
@@ -101,7 +117,8 @@ export class ArchitectPlanning {
     const result: CatalogSyncResult = { loaded: 0, errors: [], missingSources: [] };
     const current: Recipe[] = [];
     for (const src of sources) {
-      const loaded = loadRecipeDir(src.dir);
+      // The package's own recipes are held to the tier rule; a user's or a test's aren't.
+      const loaded = loadRecipeDir(src.dir, { shipped: src.kind === "bundled" });
       if (!loaded.dirFound) {
         result.missingSources.push(src.id);
         continue;
@@ -134,7 +151,53 @@ export class ArchitectPlanning {
     return [
       ...sync.errors.map((e) => `recipe file ${e.file}: ${e.message}`),
       ...sync.missingSources.map((src) => `recipe source ${src} not found: its recipes are unknown`),
+      ...(this.deps.familyRuleErrors ?? []),
     ];
+  }
+
+  /**
+   * Read the families of the files candidates would bind, from the cache where it's current
+   * (TODO 5.3). Files the observer couldn't read in this call stay unknown and are listed.
+   */
+  private async observeFamilies(files: readonly { folder: string; file: string }[]): Promise<{ evidence?: FamilyEvidence; unobserved: Unobserved[] }> {
+    if (!this.deps.families || files.length === 0) return { unobserved: [] };
+    const { evidence, unobserved } = await this.deps.families.observeAll(files);
+    return { evidence, unobserved };
+  }
+
+  /**
+   * The sizes of the task's input files that these recipes size their output from, read
+   * once for this validation (ARCH 2026-11-16, output size). Undefined without a reader or
+   * when no recipe needs one, which leaves those checks unknown.
+   */
+  private async inputSizes(recipes: readonly Recipe[], task: TaskSpec, inputBytes?: ReadonlyMap<string, Buffer>): Promise<InputSizes | undefined> {
+    const names = inputNamesToSize(recipes, task);
+    const files = this.deps.inputFiles;
+    if (!files || names.length === 0) return undefined;
+    // Bytes the caller already read and hashed (admission) are decoded as they are, so the
+    // size check and the grant see one version of each file; others are read here.
+    const reader = inputBytes
+      ? {
+          readInputFile: async (name: string) => {
+            const bytes = inputBytes.get(name);
+            return bytes ? { bytes } : files.readInputFile(name);
+          },
+          decodeImage: (bytes: Buffer) => files.decodeImage(bytes),
+        }
+      : files;
+    return readInputSizes(reader, names);
+  }
+
+  /**
+   * The source registry (spec §8.5): the built-in entries written for the configured target,
+   * then every registered entry with its state.
+   */
+  sources() {
+    const ensured = ensureBuiltInSources(this.deps.store, this.deps.upstream.comfyuiBaseUrl());
+    return {
+      sources: this.deps.store.listSources().map(sourceView),
+      errors: ensured.errors.map((e) => `source ${e.id}: ${e.message}`),
+    };
   }
 
   /** A snapshot fit for planning: the given one if still usable, else a new one, stored. */
@@ -166,7 +229,8 @@ export class ArchitectPlanning {
         installedFit: fit ? { ...fit.installedOverlap, unknownFolders: fit.unknownFolders } : undefined,
       };
     });
-    return { environmentId: snapshot.id, recipes, catalog: sync };
+    const sources = this.sources();
+    return { environmentId: snapshot.id, recipes, catalog: sync, sources: sources.sources, sourceErrors: sources.errors };
   }
 
   /** Store a task (a new one, or the next revision of `taskId`) and start a plan for it. */
@@ -243,7 +307,7 @@ export class ArchitectPlanning {
   }
 
   /** Build, validate and rank candidates for a prepared plan (spec §9.2). */
-  async propose(request: { planId: string; proposals?: ProposedBinding[] }) {
+  async propose(request: { planId: string; proposals?: ProposedBinding[]; recipeIds?: string[] }) {
     const { store, now, newId } = this.deps;
     const { plan, task } = this.requirePlan(request.planId);
     if (plan.state === "NEEDS_INPUT") {
@@ -253,16 +317,38 @@ export class ArchitectPlanning {
       throw new PlanningError("GRAPH_CONFLICT", `plan ${plan.id} is ${plan.state}`, "Call prepare for a new plan.");
     }
     const { snapshot, readiness } = await this.environment(store.getSnapshot(plan.environmentId));
+    const fitting = this.recipes(task.media.kind);
+    // The user may ask for particular recipes ("use FLUX.1-schnell"): only those are built, so
+    // one that ranks below three others can still be compared and chosen. A name that isn't
+    // among the fitting recipes is refused, not ignored, so the request can't silently widen.
+    let recipes = fitting;
+    if (request.recipeIds && request.recipeIds.length > 0) {
+      const unknown = request.recipeIds.filter((id) => !fitting.some((r) => r.id === id));
+      if (unknown.length > 0) {
+        throw new PlanningError(
+          "NO_FEASIBLE_CANDIDATE",
+          `not a recipe that fits this task: ${unknown.join(", ")}`,
+          "Use recipe IDs from prepare's `recipes`.",
+        );
+      }
+      recipes = fitting.filter((r) => request.recipeIds?.includes(r.id));
+    }
+    const families = await this.observeFamilies(
+      boundModelFiles({ task, snapshot, recipes, ...(request.proposals ? { proposals: request.proposals } : {}) }),
+    );
+    const inputSizes = await this.inputSizes(recipes, task);
     const out = planCandidates({
       task,
       snapshot,
       objectInfo: await this.objectInfo(),
-      recipes: this.recipes(task.media.kind),
+      recipes,
       ...(request.proposals ? { proposals: request.proposals } : {}),
       planId: plan.id,
       now,
       newId,
       ...(this.deps.isPaidNode ? { isPaidNode: this.deps.isPaidNode } : {}),
+      ...(families.evidence ? { families: families.evidence } : {}),
+      ...(inputSizes ? { inputSizes } : {}),
     });
     store.transaction(() => {
       for (const c of out.presented) store.putCandidate(c);
@@ -283,6 +369,7 @@ export class ArchitectPlanning {
       truncated: out.truncated,
       readiness,
       limit: MAX_PRESENTED_CANDIDATES,
+      ...(families.unobserved.length > 0 ? { familiesUnobserved: families.unobserved } : {}),
     };
   }
 
@@ -357,12 +444,20 @@ export class ArchitectPlanning {
   }
 
   /** Validate one candidate again against a fresh snapshot and the live node schemas. */
-  async validate(request: { planId: string; candidateId: string }) {
+  async validate(request: { planId: string; candidateId: string; inputBytes?: ReadonlyMap<string, Buffer> }) {
     const { store, now } = this.deps;
     const { plan, task } = this.requirePlan(request.planId);
     const candidate = this.requireCandidate(plan, request.candidateId);
     const { recipe, graph } = this.compiledGraph(candidate, task);
     const { snapshot } = await this.environment();
+    const families = await this.observeFamilies(
+      recipe.slots.flatMap((s) => {
+        const file = candidate.bindings[s.id];
+        const folder = s.modelFolder ?? "";
+        return s.valueType === "model_file" && typeof file === "string" && snapshot.installedModels?.folders[folder]?.includes(file) ? [{ folder, file }] : [];
+      }),
+    );
+    const inputSizes = await this.inputSizes([recipe], task, request.inputBytes);
     const outcome = validateGraph({
       graph,
       recipe,
@@ -371,6 +466,8 @@ export class ArchitectPlanning {
       objectInfo: await this.objectInfo(),
       snapshot,
       ...(this.deps.isPaidNode ? { isPaidNode: this.deps.isPaidNode } : {}),
+      ...(families.evidence ? { families: families.evidence } : {}),
+      ...(inputSizes ? { inputSizes } : {}),
     });
     const verdict = candidateStatus({ recipe, task, report: outcome.report, bindings: candidate.bindings, snapshot });
     const status = verdict.status;
@@ -400,6 +497,7 @@ export class ArchitectPlanning {
       previous: candidate.validation.overall,
       planState: stored.state,
       ...(deselect ? { selectionWithdrawn: true } : {}),
+      ...(families.unobserved.length > 0 ? { familiesUnobserved: families.unobserved } : {}),
     };
   }
 
@@ -445,12 +543,16 @@ export class ArchitectPlanning {
     const candidate = this.deps.store.getCandidate(candidateId);
     if (!candidate) throw new PlanningError("GRAPH_CONFLICT", `candidate ${candidateId} is not stored`, "Prepare a new run.");
     const { recipe, graph, fingerprint } = this.compiledGraph(candidate, task);
-    return this.lockFor(candidate, recipe, graph, fingerprint);
+    return this.lockFor(candidate, recipe, graph, fingerprint, task);
   }
 
-  private lockFor(candidate: PlanCandidate, recipe: Recipe, graph: ApiGraph, fingerprint: string) {
+  private lockFor(candidate: PlanCandidate, recipe: Recipe, graph: ApiGraph, fingerprint: string, task: TaskSpec) {
     const env = this.deps.store.getSnapshot(candidate.environmentId);
     return {
+      // The task's input files by asset id. Planning reads some of them for their size, but
+      // keeps no hash: the hash the grant binds is read when a run is prepared, and the run's
+      // lock carries it with the check after the run (GAPS Q33).
+      ...(task.inputs.length > 0 ? { inputs: task.inputs.map((i) => ({ role: i.role, assetId: i.assetId })) } : {}),
       // An acquirable candidate's files aren't on the target yet: the lock lists them with
       // the pinned source each would come from (ARCH 2026-11-16, sources).
       ...(candidate.acquisition
@@ -475,8 +577,13 @@ export class ArchitectPlanning {
     };
   }
 
-  /** Write the selected candidate's files under `artifacts/<task-id>/<plan-id>/` (spec §15.1). */
-  export(request: { planId: string }) {
+  /**
+   * Write the selected candidate's files under `artifacts/<task-id>/<plan-id>/` (spec §15.1).
+   * `workflow.ui.json` is written only when the UI graph made from the API graph loads back
+   * to the same graph (spec §10.4, AT-11); without readable node schemas, or when it
+   * doesn't round-trip, the other files are still written and `uiGraph` says why it isn't.
+   */
+  async export(request: { planId: string }) {
     const { plan, task } = this.requirePlan(request.planId);
     if (plan.state !== "SELECTED" || !plan.selectedCandidateId) {
       throw new PlanningError("MISSING_INPUT", `plan ${plan.id} has no selected candidate`, "Call select first.");
@@ -494,21 +601,50 @@ export class ArchitectPlanning {
     if (real !== resolve(realpathSync(this.deps.dataDir), "artifacts", task.id, plan.id)) {
       throw new PlanningError("GRAPH_CONFLICT", `refusing to export through a symbolic link under ${root}`, "Remove the link and export again.");
     }
-    const lock = this.lockFor(candidate, recipe, graph, fingerprint);
+    const lock = this.lockFor(candidate, recipe, graph, fingerprint, task);
+    const objectInfo = await this.objectInfo();
+    const ui = objectInfo
+      ? exportUiGraph(graph, objectInfo)
+      : { ok: false as const, reason: "the target's node schemas couldn't be read, so no UI graph was made", differences: [] };
     const files: Record<string, unknown> = {
       "task.json": task,
       "plan.json": { plan, candidate },
       "workflow.api.json": graph,
+      ...(ui.ok ? { "workflow.ui.json": ui.workflow } : {}),
       "validation.json": candidate.validation,
       "dependencies.lock.json": lock,
     };
+    if (!ui.ok) {
+      // A UI graph an earlier export of this plan wrote would sit next to an API graph it
+      // no longer matches. Only that name in this plan's folder is removed; unlink removes
+      // a link itself and never follows it, and anything but a file or a link is left.
+      const stale = join(dir, "workflow.ui.json");
+      let kind: "file" | "link" | "other" | "none" = "none";
+      try {
+        const st = lstatSync(stale);
+        kind = st.isSymbolicLink() ? "link" : st.isFile() ? "file" : "other";
+      } catch (err) {
+        // Only a missing file means there is nothing to remove; any other failure leaves
+        // the old file's state unknown, and the export stops rather than leave it behind.
+        if (!(err instanceof Error && "code" in err && err.code === "ENOENT")) throw err;
+        kind = "none";
+      }
+      if (kind === "file" || kind === "link") unlinkSync(stale);
+    }
     const written: string[] = [];
     for (const [name, value] of Object.entries(files)) {
       const path = join(dir, name);
       writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
       written.push(path);
     }
-    return { dir, files: written, graphFingerprint: fingerprint, uiGraph: "not exported: the UI graph comes with a certified recipe's UI template (ARCH, 2026-11-15)" };
+    return {
+      dir,
+      files: written,
+      graphFingerprint: fingerprint,
+      uiGraph: ui.ok
+        ? { exported: true as const, file: join(dir, "workflow.ui.json"), warnings: ui.warnings }
+        : { exported: false as const, reason: ui.reason },
+    };
   }
 }
 
@@ -530,6 +666,11 @@ export function candidateSummary(c: PlanCandidate) {
     overall: c.validation.overall,
     blocking: blockingChecks(c.validation),
     softUnknowns: c.validation.checks.filter((x) => !x.hard && x.verdict === "unknown").map((x) => x.message),
+    // A soft failure doesn't block the candidate but changes the result (an input stretched
+    // to the task's aspect ratio), so the user sees it before selecting (spec §4.3).
+    ...(c.validation.checks.some((x) => !x.hard && x.verdict === "fail")
+      ? { softFailures: c.validation.checks.filter((x) => !x.hard && x.verdict === "fail").map((x) => x.message) }
+      : {}),
     dependencyDelta: c.dependencyDelta,
     ...(c.acquisition
       ? {

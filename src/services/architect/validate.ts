@@ -8,16 +8,40 @@
 
 import type { ComfyUINodeDef, NodeInputSpec, ObjectInfo } from "../../comfyui/types.js";
 import { compileRecipe, graphFingerprint, type Bindings, type CompileResult } from "./compile.js";
+import { type InputSizes, outputSizeChecks } from "./output-size.js";
 import type {
   ApiGraph,
   CheckResult,
   EnvironmentSnapshot,
+  FamilyRule,
+  ModelObservation,
   PlanCandidate,
   Recipe,
+  RecipeSlot,
   TaskSpec,
   ValidationLayer,
   ValidationReport,
 } from "./schemas.js";
+
+/**
+ * What planning read of the bound model files' families (TODO 5.3): the shipped rules and
+ * the observations keyed `<folder>/<file>`. A file with no observation here is checked as
+ * before observations existed, so validation runs without a reader (tests, offline).
+ */
+export interface FamilyEvidence {
+  rules: readonly FamilyRule[];
+  observations: ReadonlyMap<string, ModelObservation>;
+}
+
+/** The key of a model file in `FamilyEvidence.observations`. */
+export function observationKey(folder: string, file: string): string {
+  return `${folder}/${file}`;
+}
+
+/** The rule a slot's `modelFamily` names, by id or alias, for the slot's folder. */
+export function ruleForFamily(rules: readonly FamilyRule[], family: string, folder: string): FamilyRule | undefined {
+  return rules.find((r) => (r.id === family || (r.aliases ?? []).includes(family)) && r.folders.includes(folder));
+}
 
 /** What `validateGraph` checks. */
 export interface ValidateInput {
@@ -33,6 +57,13 @@ export interface ValidateInput {
   snapshot: EnvironmentSnapshot;
   /** Decides whether a node definition spends money remotely. Defaults to `isPaidRenderNode`. */
   isPaidNode?: (def: ComfyUINodeDef) => boolean;
+  /** Observed model families; absent, every family check stays unknown (GAPS Q14). */
+  families?: FamilyEvidence;
+  /**
+   * The sizes of the task's input files a recipe sizes its output from (output-size.ts);
+   * absent, those size checks are hard unknowns.
+   */
+  inputSizes?: InputSizes;
 }
 
 /** The report and the dependencies found missing, for `PlanCandidate.dependencyDelta`. */
@@ -156,6 +187,7 @@ function contractLayer(input: ValidateInput, compiled: CompileResult): CheckResu
     const why = input.snapshot.installedModels?.unanswered.find((u) => u.folder === slot.modelFolder)?.reason ?? "the folder wasn't probed";
     return { ...check, verdict: "unknown" as const, message: `slot ${slot.id}: no file to bind, ${slot.modelFolder} couldn't be read (${why})` };
   });
+  checks.push(...outputSizeChecks(input.recipe, input.task, input.inputSizes));
   const transforms = input.transforms ?? [];
   checks.push(
     transforms.length === 0
@@ -285,6 +317,9 @@ function nativeTypesLayer(graph: ApiGraph, recipe: Recipe, objectInfo: ObjectInf
   const modelInputs = new Set(
     recipe.slots.filter((s) => s.valueType === "model_file").map((s) => `${s.target.node}\u0000${s.target.input}`),
   );
+  const imageInputs = new Set(
+    recipe.slots.filter((s) => s.valueType === "input_image").map((s) => `${s.target.node}\u0000${s.target.input}`),
+  );
 
   for (const [nodeId, node] of Object.entries(graph)) {
     const def = known(node.class_type);
@@ -322,6 +357,22 @@ function nativeTypesLayer(graph: ApiGraph, recipe: Recipe, objectInfo: ObjectInf
         continue;
       }
       const combo = comboChoices(spec);
+      if (imageInputs.has(`${nodeId}\u0000${name}`)) {
+        // An input image must be a file the loader lists from the target's input folder;
+        // Architect uploads nothing (GAPS Q33), so an unlisted name has no remedy here, and a
+        // loader whose schema lists nothing leaves the file unverified: a hard unknown.
+        const id = `combo.${nodeId}.${name}`;
+        if (!combo.combo || combo.choices === undefined) {
+          checks.push(c(id, "unknown", true, `${nodeId}.${name} takes an input image, but ${node.class_type}'s schema lists no input files to check ${JSON.stringify(value)} against`, nodeId));
+        } else {
+          checks.push(
+            combo.choices.includes(value)
+              ? c(id, "pass", true, `${nodeId}.${name} = ${JSON.stringify(value)} is a file ${node.class_type} lists in the target's input folder`, nodeId)
+              : c(id, "fail", true, `${nodeId}.${name} = ${JSON.stringify(value)} is not a file ${node.class_type} lists in the target's input folder; put it there or upload it in ComfyUI, then validate again`, nodeId),
+          );
+        }
+        continue;
+      }
       if (!combo.combo) continue;
       const id = `combo.${nodeId}.${name}`;
       if (modelInputs.has(`${nodeId}\u0000${name}`) && combo.choices === undefined) {
@@ -350,12 +401,14 @@ function nativeTypesLayer(graph: ApiGraph, recipe: Recipe, objectInfo: ObjectInf
 }
 
 /**
- * Model families (spec §10.3). Nothing reads a file's family yet, so each check is unknown.
- * For the recipe's default file, which the recipe's author named, it's a soft unknown; for
- * any other file it's hard, so a file of another family in the slot can't make a candidate
- * feasible (spec §9.3: an incompatible component can't be offset; GAPS Q14).
+ * Model families (spec §10.3, §9.3). With an observation of the bound file's safetensors
+ * header (TODO 5.3): a header that matches the slot's family rule passes; one that matches
+ * another family's rule fails, since an incompatible component can't be offset. Without a
+ * decisive observation (none, unreadable, no rule matched, no rule for the slot's family)
+ * the check is unknown under GAPS Q14's rule: soft for the recipe's default file, which
+ * its author named, hard for any other file, so such a candidate stays diagnostic.
  */
-function semanticTypesLayer(recipe: Recipe, values: Record<string, string | number>): CheckResult[] {
+function semanticTypesLayer(recipe: Recipe, values: Record<string, string | number>, families: FamilyEvidence | undefined): CheckResult[] {
   const c = mk("semantic_types");
   const modelSlots = recipe.slots.filter((s) => s.valueType === "model_file");
   if (modelSlots.length === 0) return [c("models", "not_applicable", false, "the recipe binds no model files")];
@@ -364,16 +417,53 @@ function semanticTypesLayer(recipe: Recipe, values: Record<string, string | numb
     if (s.modelFamily === undefined) return c(id, "not_applicable", false, `slot ${s.id} is annotated with no model family`, s.target.node);
     const bound = values[s.id];
     if (bound === undefined) return c(id, "not_applicable", false, `slot ${s.id} has no file bound`, s.target.node);
-    return bound === s.default
-      ? c(id, "unknown", false, `slot ${s.id} expects family ${s.modelFamily}; the recipe names ${bound}, whose family isn't verified yet`, s.target.node)
-      : c(
-          id,
-          "unknown",
-          true,
-          `slot ${s.id} expects family ${s.modelFamily}; ${JSON.stringify(bound)} isn't the recipe's file, and its family isn't verified`,
-          s.target.node,
-        );
+    const unverified = (why: string): CheckResult =>
+      bound === s.default
+        ? c(id, "unknown", false, `slot ${s.id} expects family ${s.modelFamily}; the recipe names ${bound}, ${why}`, s.target.node)
+        : c(id, "unknown", true, `slot ${s.id} expects family ${s.modelFamily}; ${JSON.stringify(bound)} isn't the recipe's file, and ${why}`, s.target.node);
+    const observation = families?.observations.get(observationKey(s.modelFolder ?? "", String(bound)));
+    if (families === undefined || observation === undefined) return unverified("whose family isn't verified yet");
+    return familyCheck(c, id, s, String(bound), observation, families.rules, unverified);
   });
+}
+
+/** The family check of one slot against an observation of its bound file. */
+function familyCheck(
+  c: ReturnType<typeof mk>,
+  id: string,
+  slot: RecipeSlot,
+  file: string,
+  observation: ModelObservation,
+  rules: readonly FamilyRule[],
+  unverified: (why: string) => CheckResult,
+): CheckResult {
+  const family = slot.modelFamily ?? "";
+  const rule = ruleForFamily(rules, family, slot.modelFolder ?? "");
+  const seen = `observed ${observation.observedAt}`;
+  const others = observation.matches.filter((m) => m !== rule?.id);
+  // Another family's rule matching is decisive whether or not this family has a rule: the
+  // header shows the file is something else (spec §9.3).
+  if (others.length > 0 && (rule === undefined || !observation.matches.includes(rule.id))) {
+    return c(id, "fail", true, `slot ${slot.id} expects family ${family}; the header of ${file} matches family ${others.join(", ")} instead (${seen})`, slot.target.node);
+  }
+  if (rule === undefined) return unverified(`no family rule for ${family} applies to ${slot.modelFolder}, so its header can't be checked`);
+  if (observation.outcome === "matched") {
+    const twins = rule.indistinguishableFrom ?? [];
+    if (twins.length === 0) {
+      return c(id, "pass", true, `slot ${slot.id}: the header of ${file} matches family rule ${rule.id} (${seen})`, slot.target.node);
+    }
+    // The header confirms the architecture, not which variant the file is: the recipe's
+    // author named the default, so it passes with the limit stated; another file of the same
+    // architecture could be the other variant, which the recipe wasn't written for (GAPS Q14).
+    const limit = `the header can't tell ${rule.id} from ${twins.join(", ")}`;
+    return file === String(slot.default)
+      ? c(id, "pass", true, `slot ${slot.id}: the header of ${file}, the recipe's file, matches family rule ${rule.id}; ${limit} (${seen})`, slot.target.node)
+      : c(id, "unknown", true, `slot ${slot.id}: the header of ${file} matches family rule ${rule.id}, but ${limit}, and ${file} isn't the recipe's file (${seen})`, slot.target.node);
+  }
+  if (observation.outcome === "ambiguous") {
+    return c(id, "unknown", true, `slot ${slot.id}: the header of ${file} matches more than one family rule (${observation.matches.join(", ")}), so its family isn't decided (${seen})`, slot.target.node);
+  }
+  return unverified(observation.outcome === "unreadable" ? `its header couldn't be read: ${observation.reason}` : `its header matches no family rule: ${observation.reason}`);
 }
 
 function dependenciesLayer(
@@ -517,7 +607,7 @@ export function validateGraph(input: ValidateInput): ValidationOutcome {
     checks.push(...structureLayer(graph, recipe, objectInfo));
     checks.push(...nativeTypesLayer(graph, recipe, objectInfo));
   }
-  checks.push(...semanticTypesLayer(recipe, compiled.values));
+  checks.push(...semanticTypesLayer(recipe, compiled.values, input.families));
   const deps = dependenciesLayer(recipe, compiled.values, objectInfo, snapshot);
   checks.push(...deps.checks);
   checks.push(...policyLayer(graph, task, objectInfo, snapshot, input.isPaidNode ?? isPaidRenderNode));

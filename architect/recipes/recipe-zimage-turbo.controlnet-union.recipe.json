@@ -1,0 +1,390 @@
+{
+  "schemaVersion": 1,
+  "id": "recipe-zimage-turbo.controlnet-union",
+  "revision": 1,
+  "title": "Z-Image Turbo: union ControlNet from a reference image's edges",
+  "description": "Text to image with Z-Image Turbo whose composition follows a reference image: Canny edges of the reference drive the Z-Image Turbo Fun ControlNet Union model patch (ModelPatchLoader, QwenImageDiffsynthControlnet at strength 1), and the prompt decides content and style. The latent has the edge map's size, so the output has the reference image's size, rounded down to a multiple of 8 by the latent; the contract check refuses a reference whose sides aren't multiples of 8. 8 steps of res_multistep at CFG 1.0 with ModelSamplingAuraFlow shift 3, as ComfyUI's template samples. The patch file goes into model_patches/.",
+  "kind": "image",
+  "operations": [
+    "reference_guided"
+  ],
+  "graph": {
+    "1": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "z_image_turbo_bf16.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "2": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen_3_4b.safetensors",
+        "type": "lumina2",
+        "device": "default"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "ae.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "ModelPatchLoader",
+      "inputs": {
+        "name": "Z-Image-Turbo-Fun-Controlnet-Union.safetensors"
+      },
+      "_meta": {
+        "title": "Union ControlNet patch"
+      }
+    },
+    "5": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      },
+      "_meta": {
+        "title": "Structure reference"
+      }
+    },
+    "6": {
+      "class_type": "Canny",
+      "inputs": {
+        "image": [
+          "5",
+          0
+        ],
+        "low_threshold": 0.1,
+        "high_threshold": 0.32
+      }
+    },
+    "7": {
+      "class_type": "QwenImageDiffsynthControlnet",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "model_patch": [
+          "4",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ],
+        "image": [
+          "6",
+          0
+        ],
+        "strength": 1
+      }
+    },
+    "8": {
+      "class_type": "ModelSamplingAuraFlow",
+      "inputs": {
+        "model": [
+          "7",
+          0
+        ],
+        "shift": 3
+      }
+    },
+    "9": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "2",
+          0
+        ],
+        "text": ""
+      },
+      "_meta": {
+        "title": "Positive"
+      }
+    },
+    "10": {
+      "class_type": "ConditioningZeroOut",
+      "inputs": {
+        "conditioning": [
+          "9",
+          0
+        ]
+      }
+    },
+    "11": {
+      "class_type": "GetImageSize",
+      "inputs": {
+        "image": [
+          "6",
+          0
+        ]
+      }
+    },
+    "12": {
+      "class_type": "EmptySD3LatentImage",
+      "inputs": {
+        "width": [
+          "11",
+          0
+        ],
+        "height": [
+          "11",
+          1
+        ],
+        "batch_size": 1
+      }
+    },
+    "13": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "8",
+          0
+        ],
+        "positive": [
+          "9",
+          0
+        ],
+        "negative": [
+          "10",
+          0
+        ],
+        "latent_image": [
+          "12",
+          0
+        ],
+        "seed": 0,
+        "steps": 8,
+        "cfg": 1,
+        "sampler_name": "res_multistep",
+        "scheduler": "simple",
+        "denoise": 1
+      }
+    },
+    "14": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "13",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "15": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "14",
+          0
+        ],
+        "filename_prefix": "architect/zimage-turbo-controlnet-union"
+      }
+    }
+  },
+  "slots": [
+    {
+      "id": "diffusion_model",
+      "label": "Z-Image Turbo diffusion model",
+      "valueType": "model_file",
+      "target": {
+        "node": "1",
+        "input": "unet_name"
+      },
+      "required": true,
+      "default": "z_image_turbo_bf16.safetensors",
+      "modelFolder": "diffusion_models",
+      "modelFamily": "z-image-turbo"
+    },
+    {
+      "id": "text_encoder",
+      "label": "Qwen 3 4B text encoder",
+      "valueType": "model_file",
+      "target": {
+        "node": "2",
+        "input": "clip_name"
+      },
+      "required": true,
+      "default": "qwen_3_4b.safetensors",
+      "modelFolder": "text_encoders",
+      "modelFamily": "qwen3-4b"
+    },
+    {
+      "id": "vae",
+      "label": "Z-Image VAE",
+      "valueType": "model_file",
+      "target": {
+        "node": "3",
+        "input": "vae_name"
+      },
+      "required": true,
+      "default": "ae.safetensors",
+      "modelFolder": "vae",
+      "modelFamily": "z-image-vae"
+    },
+    {
+      "id": "controlnet",
+      "label": "Z-Image Turbo Fun ControlNet Union patch",
+      "valueType": "model_file",
+      "target": {
+        "node": "4",
+        "input": "name"
+      },
+      "required": true,
+      "default": "Z-Image-Turbo-Fun-Controlnet-Union.safetensors",
+      "modelFolder": "model_patches",
+      "modelFamily": "z-image-controlnet-union"
+    },
+    {
+      "id": "prompt",
+      "label": "Prompt",
+      "valueType": "string",
+      "target": {
+        "node": "9",
+        "input": "text"
+      },
+      "required": true,
+      "fromTask": "intent"
+    },
+    {
+      "id": "reference_image",
+      "label": "Structure reference image (file name in ComfyUI's input folder)",
+      "valueType": "input_image",
+      "target": {
+        "node": "5",
+        "input": "image"
+      },
+      "required": true,
+      "fromTask": "inputs.reference_image.1"
+    },
+    {
+      "id": "seed",
+      "label": "Seed",
+      "valueType": "seed",
+      "target": {
+        "node": "13",
+        "input": "seed"
+      },
+      "required": true,
+      "default": 0
+    }
+  ],
+  "outputs": [
+    {
+      "role": "image",
+      "node": "15",
+      "format": "png",
+      "count": 1,
+      "scaleOfInput": {
+        "input": "inputs.reference_image.1",
+        "factor": 1,
+        "multipleOf": 8
+      }
+    }
+  ],
+  "dependencies": {
+    "nodeClasses": [
+      "UNETLoader",
+      "CLIPLoader",
+      "VAELoader",
+      "ModelPatchLoader",
+      "LoadImage",
+      "Canny",
+      "QwenImageDiffsynthControlnet",
+      "ModelSamplingAuraFlow",
+      "CLIPTextEncode",
+      "ConditioningZeroOut",
+      "GetImageSize",
+      "EmptySD3LatentImage",
+      "KSampler",
+      "VAEDecode",
+      "SaveImage"
+    ]
+  },
+  "modelSources": [
+    {
+      "folder": "diffusion_models",
+      "file": "z_image_turbo_bf16.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Z-Image-Turbo",
+        "revision": "6fc90a3b1b653e935a0d175e260736de25b84df5",
+        "path": "split_files/diffusion_models/z_image_turbo_bf16.safetensors",
+        "sha256": "2407613050b809ffdff18a4ac99af83ea6b95443ecebdf80e064a79c825574a6",
+        "sizeBytes": 12309866400,
+        "license": "apache-2.0"
+      }
+    },
+    {
+      "folder": "text_encoders",
+      "file": "qwen_3_4b.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Z-Image-Turbo",
+        "revision": "6fc90a3b1b653e935a0d175e260736de25b84df5",
+        "path": "split_files/text_encoders/qwen_3_4b.safetensors",
+        "sha256": "6c671498573ac2f7a5501502ccce8d2b08ea6ca2f661c458e708f36b36edfc5a",
+        "sizeBytes": 8044982048,
+        "license": "apache-2.0"
+      }
+    },
+    {
+      "folder": "vae",
+      "file": "ae.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Z-Image-Turbo",
+        "revision": "6fc90a3b1b653e935a0d175e260736de25b84df5",
+        "path": "split_files/vae/ae.safetensors",
+        "sha256": "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38",
+        "sizeBytes": 335304388,
+        "license": "apache-2.0"
+      }
+    },
+    {
+      "folder": "model_patches",
+      "file": "Z-Image-Turbo-Fun-Controlnet-Union.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union",
+        "revision": "01c794d57ff16844b24d0580471fa9d686e7a465",
+        "path": "Z-Image-Turbo-Fun-Controlnet-Union.safetensors",
+        "sha256": "86c085c0d7853f12ce5183499934b54d08371c60f549c5a6b20615cd23989388",
+        "sizeBytes": 3101572408,
+        "license": "apache-2.0"
+      }
+    }
+  ],
+  "certification": "proposed",
+  "evidence": [
+    {
+      "kind": "upstream_pack",
+      "source": "plugin/skills/z-image-txt2img/SKILL.md at fork baseline 707474d2 (blob 3dafc274)",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "Components as in recipe-zimage-turbo.t2i: z_image_turbo_bf16, qwen_3_4b, the Z-Image ae.safetensors; CFG 1.0 because Turbo is distilled. The installed VAE matches the flux-ae family rule, the family the skill and this recipe call z-image-vae."
+    },
+    {
+      "kind": "documentation",
+      "source": "ComfyUI workflow template image_z_image_turbo_fun_union_controlnet (comfyui-workflow-templates 0.11.103, GET http://127.0.0.1:8188/templates/image_z_image_turbo_fun_union_controlnet.json, sha256 617c27df391c122b81c1532e09355373e7996cc583fe9f5a4527913208e177ec)",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "The graph is the template's, node for node, without its PreviewImage of the edge map and its ImageScaleToMaxDimension, which the template bypasses: CLIPLoader qwen_3_4b type lumina2, UNETLoader z_image_turbo_bf16, VAELoader ae, ModelPatchLoader Z-Image-Turbo-Fun-Controlnet-Union, LoadImage, Canny 0.1 and 0.32, QwenImageDiffsynthControlnet strength 1, ModelSamplingAuraFlow shift 3, CLIPTextEncode, ConditioningZeroOut, GetImageSize of the edge map into EmptySD3LatentImage, KSampler 8 steps, CFG 1, res_multistep, simple, VAEDecode, SaveImage. The template's model list names the patch at alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union on main; the pin below is that repository at a commit."
+    },
+    {
+      "kind": "documentation",
+      "source": "GET http://127.0.0.1:8188/object_info, ComfyUI Desktop 0.44.0; the classes used captured in src/__tests__/architect/fixtures/object-info-desktop-0.44.0.json",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "ModelPatchLoader (name, a COMBO of model_patches, empty on the capture's machine), Canny (low_threshold, high_threshold 0.01 to 0.99), QwenImageDiffsynthControlnet (model, model_patch, vae, image, strength), ModelSamplingAuraFlow (shift) and GetImageSize (three INT outputs) are in the live schema."
+    },
+    {
+      "kind": "documentation",
+      "source": "Hugging Face API: /api/models/<repo>/revision/main and /api/models/<repo>/tree/<commit>, read by scripts/architect/pin-source.mjs",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "Z-Image-Turbo-Fun-Controlnet-Union.safetensors pinned from alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union at commit 01c794d5 (3101572408 bytes, BF16, licence apache-2.0 per the repository card); the Z-Image files as in recipe-zimage-turbo.t2i."
+    }
+  ]
+}

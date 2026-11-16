@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { type AcquisitionIo, diskShortfall, freeDiskBytesSync, hfEndpointRefusal, stagedNameOf } from "./acquisition.js";
 import { MIN_FREE_DISK_BYTES, acquisitionPolicy, formatBytes } from "./acquisition-policy.js";
 import { ARCHITECT_PANEL_RUNS_ENV, onPanelRoute, panelRunsAllowed } from "./config.js";
-import { canonicalJson } from "./hash.js";
+import { canonicalJson, sha256Hex } from "./hash.js";
 import type { ArchitectPlanning } from "./planning.js";
 import {
   type AcquireModelsEffect,
@@ -28,8 +28,11 @@ import {
   type PlanCandidate,
   type Recipe,
   type ReleaseResidencyEffect,
+  type RenderInput,
+  type RunRecord,
   type TaskSpec,
   actionPlanHash,
+  parseAssetId,
 } from "./schemas.js";
 import { architectDataDir, type ArchitectStore } from "./store.js";
 import { isLoopbackHostname } from "./validate.js";
@@ -116,7 +119,54 @@ export interface AdmissionDeps {
    * model files first (TODO 4.5). Without it such a candidate isn't prepared or started.
    */
   acquisitionIo?: AcquisitionIo;
+  /**
+   * Reads a file from the target's input folder (the facade's `readInputFile`), for a task
+   * with input images (GAPS Q33). Without it such a plan isn't prepared or started.
+   */
+  readInputFile?: (name: string) => Promise<{ bytes: Buffer }>;
 }
+
+/**
+ * The task's input files as the target serves them now: asset id, sha256 and size, in task
+ * order, one entry per asset (TODO 5.7.2). Undefined for a task without inputs, so the plan's
+ * hash stays what it was before inputs existed. A file that can't be read refuses the plan:
+ * the user would otherwise approve a render whose input nobody has seen (spec §14.2).
+ */
+async function readRenderInputs(deps: Pick<AdmissionDeps, "readInputFile">, task: TaskSpec): Promise<{ inputs: RenderInput[] | undefined; bytes: InputBytes }> {
+  const bytesByName = new Map<string, Buffer>();
+  if (task.inputs.length === 0) return { inputs: undefined, bytes: bytesByName };
+  const read = deps.readInputFile;
+  if (!read) {
+    throw new ApprovalError("MISSING_INPUT", "this server can't read the task's input files from the target", "Plan a task without input images, or use a server set up with the target.");
+  }
+  const out: RenderInput[] = [];
+  for (const input of task.inputs) {
+    if (out.some((x) => x.assetId === input.assetId)) continue;
+    const parsed = parseAssetId(input.assetId);
+    // Validation refuses these first; a stored task is still data, so it's checked again.
+    if (!parsed.ok) throw new ApprovalError("MISSING_INPUT", parsed.problem, "Revise the task's inputs, then plan again.");
+    let bytes: Buffer;
+    try {
+      ({ bytes } = await read(parsed.name));
+    } catch (err) {
+      throw new ApprovalError(
+        "MISSING_INPUT",
+        `couldn't read input ${input.assetId} (${input.role}) from the target's input folder: ${err instanceof Error ? err.message : String(err)}`,
+        "Check that the file is still in ComfyUI's input folder, then call architect_run prepare again.",
+      );
+    }
+    bytesByName.set(parsed.name, bytes);
+    out.push({ assetId: input.assetId, sha256: sha256Hex(bytes), sizeBytes: bytes.length });
+  }
+  return { inputs: out, bytes: bytesByName };
+}
+
+/**
+ * Input file name to the bytes one read gave, so the validation that checks an input's size
+ * decodes the same bytes the plan hashes: one read per input, and the size check and the
+ * grant can't see two versions of a file that changed between reads.
+ */
+export type InputBytes = ReadonlyMap<string, Buffer>;
 
 /** What the action plan binds, built from a selected candidate (everything the hash covers). */
 function binding(
@@ -124,6 +174,7 @@ function binding(
   baseUrl: string,
   residency: ReleaseResidencyEffect | undefined,
   acquire?: AcquireModelsEffect,
+  inputs?: RenderInput[],
 ) {
   return {
     planId: ctx.plan.id,
@@ -134,7 +185,12 @@ function binding(
     effects: [
       // The files are acquired before the render that needs them (ARCH 2026-11-16, candidates).
       ...(acquire ? [acquire] : []),
-      { kind: "local_render" as const, graphFingerprint: ctx.fingerprint, outputNodes: ctx.recipe.outputs.map((o) => o.node) },
+      {
+        kind: "local_render" as const,
+        graphFingerprint: ctx.fingerprint,
+        outputNodes: ctx.recipe.outputs.map((o) => o.node),
+        ...(inputs ? { inputs } : {}),
+      },
       ...(residency ? [residency] : []),
     ] satisfies Effect[],
     // The wall time counts from the run's start and so covers its downloads: a task without
@@ -154,7 +210,10 @@ function binding(
  */
 export async function prepareActionPlan(deps: AdmissionDeps, planId: string): Promise<{ actionPlan: ActionPlan; request: ApprovalRequest }> {
   const { store, now, newId } = deps;
-  const ctx = await freshSelection(deps, planId, { allowAcquirable: true });
+  // The input files are read and hashed first, and validation decodes their sizes from the
+  // same bytes, so the grant binds the content the size check saw (GAPS Q33).
+  const { inputs, bytes } = await readRenderInputs(deps, deps.planning.selectedForRun(planId, { allowAcquirable: true }).task);
+  const ctx = await freshSelection(deps, planId, { allowAcquirable: true }, bytes);
   const created = now();
   const expiresAt = new Date(created.getTime() + (deps.actionPlanTtlMs ?? DEFAULT_ACTION_PLAN_TTL_MS)).toISOString();
   const baseUrl = deps.baseUrl();
@@ -169,7 +228,7 @@ export async function prepareActionPlan(deps: AdmissionDeps, planId: string): Pr
   }
   // The models to unload are read now and shown in the approval, so the user is asked
   // before any of them is unloaded (GAPS Q23).
-  const bound = binding(ctx, baseUrl, await deps.releasable?.(baseUrl), acquire);
+  const bound = binding(ctx, baseUrl, await deps.releasable?.(baseUrl), acquire, inputs);
   const actionPlan = store.putActionPlan({
     schemaVersion: 1,
     id: `actions-${newId()}`,
@@ -199,8 +258,56 @@ export async function requireFeasible(
   planning: Pick<AdmissionDeps["planning"], "validate" | "store">,
   planId: string,
   candidateId: string,
+  inputBytes?: InputBytes,
 ): Promise<void> {
-  await requireAdmissible(planning, planId, candidateId);
+  await requireAdmissible(planning, planId, candidateId, inputBytes ? { inputBytes } : {});
+}
+
+/**
+ * Read a run's input files again and require each to be the one its grant approved: the
+ * asset id, sha256 and size the action plan's render records (TODO 5.7.2, GAPS Q33). Start
+ * reads them before the grant is consumed; a run that then waited for its pool or
+ * downloaded model files may reach submission much later, so the controller calls this
+ * before the POST too. A changed file, one that can't be read, or an action plan that can't
+ * be found invalidates the approval; the run fails and the user approves a new plan.
+ */
+export async function requireInputsUnchanged(
+  deps: { store: Pick<ArchitectStore, "getActionPlan">; readInputFile?: AdmissionDeps["readInputFile"] },
+  run: Pick<RunRecord, "id" | "actionPlanId">,
+): Promise<InputBytes> {
+  const readBytes: Map<string, Buffer> = new Map();
+  const actionPlan = deps.store.getActionPlan(run.actionPlanId);
+  if (!actionPlan) throw new ApprovalError("APPROVAL_INVALIDATED", `run ${run.id}'s action plan ${run.actionPlanId} is not stored`, "Prepare the run again.");
+  const approved = actionPlan.effects.find((e): e is Extract<Effect, { kind: "local_render" }> => e.kind === "local_render")?.inputs;
+  if (approved === undefined || approved.length === 0) return readBytes;
+  const read = deps.readInputFile;
+  if (!read) {
+    throw new ApprovalError("APPROVAL_INVALIDATED", `run ${run.id}'s input files can't be read again before submission here`, "Prepare the run again on a server set up with the target.");
+  }
+  for (const input of approved) {
+    const parsed = parseAssetId(input.assetId);
+    if (!parsed.ok) throw new ApprovalError("APPROVAL_INVALIDATED", `run ${run.id}: ${parsed.problem}`, "Revise the task's inputs, then plan again.");
+    let bytes: Buffer;
+    try {
+      ({ bytes } = await read(parsed.name));
+    } catch (err) {
+      throw new ApprovalError(
+        "APPROVAL_INVALIDATED",
+        `input ${input.assetId} couldn't be read again before submission: ${err instanceof Error ? err.message : String(err)}`,
+        "Check that the file is still in ComfyUI's input folder, then prepare the run again; the user approves the new plan.",
+      );
+    }
+    const sha256 = sha256Hex(bytes);
+    if (sha256 !== input.sha256 || bytes.length !== input.sizeBytes) {
+      throw new ApprovalError(
+        "APPROVAL_INVALIDATED",
+        `input ${input.assetId} changed since it was approved (sha256 ${shortHash(input.sha256)}, ${input.sizeBytes} bytes; now ${shortHash(sha256)}, ${bytes.length} bytes)`,
+        "Prepare the run again; the user approves the plan with the new input.",
+      );
+    }
+    readBytes.set(parsed.name, bytes);
+  }
+  return readBytes;
 }
 
 /**
@@ -213,9 +320,9 @@ export async function requireAdmissible(
   planning: Pick<AdmissionDeps["planning"], "validate" | "store">,
   planId: string,
   candidateId: string,
-  options: { allowAcquirable?: boolean } = {},
+  options: { allowAcquirable?: boolean; inputBytes?: InputBytes } = {},
 ): Promise<PlanCandidate> {
-  const checked = await planning.validate({ planId, candidateId });
+  const checked = await planning.validate({ planId, candidateId, ...(options.inputBytes ? { inputBytes: options.inputBytes } : {}) });
   const status = checked.candidate.status;
   if (status !== "feasible" && !(status === "acquirable" && options.allowAcquirable === true)) {
     throw new ApprovalError(
@@ -234,9 +341,9 @@ export async function requireAdmissible(
   return stored;
 }
 
-async function freshSelection(deps: AdmissionDeps, planId: string, options: { allowAcquirable: boolean }) {
+async function freshSelection(deps: AdmissionDeps, planId: string, options: { allowAcquirable: boolean }, inputBytes?: InputBytes) {
   const before = deps.planning.selectedForRun(planId, options);
-  await requireAdmissible(deps.planning, planId, before.candidate.id, options);
+  await requireAdmissible(deps.planning, planId, before.candidate.id, { ...options, ...(inputBytes ? { inputBytes } : {}) });
   // Read again: validation stored a fresh report and environment for the candidate.
   return deps.planning.selectedForRun(planId, options);
 }
@@ -392,7 +499,11 @@ export type FreeDiskReader = (path: string) => { known: true; bytes: number } | 
 function describeEffect(e: Effect, freeDisk: FreeDiskReader): string {
   switch (e.kind) {
     case "local_render":
-      return `Effect: local_render of graph ${shortHash(e.graphFingerprint)}`;
+      return [
+        `Effect: local_render of graph ${shortHash(e.graphFingerprint)}`,
+        // The content the grant binds; a changed file needs a new approval (GAPS Q33).
+        ...(e.inputs ?? []).map((i) => `  Input: ${i.assetId}, sha256 ${shortHash(i.sha256)}, ${formatBytes(i.sizeBytes)}, read from the target's input folder`),
+      ].join("\n");
     case "release_residency":
       return (
         `Effect: unload from Ollama at ${e.host} before the render, and load back after it: ` +
@@ -438,6 +549,10 @@ export function describeActionPlan(store: ArchitectStore, actionPlan: ActionPlan
     ...(candidate?.ranking.tier === "proposed" && actionPlan.effects.some((e) => e.kind === "acquire_models")
       ? ["Note: this recipe is proposed: an agent wrote it and pinned its download sources, and no maintainer has reviewed it yet"]
       : []),
+    // What the recipe's result does beyond the task, and the soft checks that failed (a
+    // stretched source), so the approval discloses them as the candidate did (spec §4.3).
+    ...(candidate ? (store.getRecipe(candidate.recipeId, candidate.recipeRevision)?.notices ?? []).map((n) => `Note: ${n}`) : []),
+    ...(candidate ? candidate.validation.checks.filter((c) => !c.hard && c.verdict === "fail").map((c) => `Soft check failed: ${c.message}`) : []),
     ...(candidate ? [`Models: ${Object.entries(candidate.bindings).filter(([, v]) => typeof v === "string" && /\.(safetensors|ckpt|pt|pth|bin|gguf)$/i.test(String(v))).map(([k, v]) => `${k}=${String(v)}`).join(", ") || "none"}`] : []),
     // One line per entry: `printable` turns a newline inside a line into a visible mark.
     ...actionPlan.effects.flatMap((e) => describeEffect(e, freeDisk).split("\n")),
@@ -491,7 +606,9 @@ export async function admitEffect(
   // A plan that acquires files was approved for an acquirable candidate, which stays
   // acquirable until the files are placed; every other plan needs a feasible one.
   const approvedAcquire = actionPlan.effects.find((e): e is AcquireModelsEffect => e.kind === "acquire_models");
-  const ctx = await freshSelection(deps, actionPlan.planId, { allowAcquirable: approvedAcquire !== undefined });
+  // One read per input, for the hash below and the size check of the validation (GAPS Q33).
+  const { inputs, bytes } = await readRenderInputs(deps, deps.planning.selectedForRun(actionPlan.planId, { allowAcquirable: approvedAcquire !== undefined }).task);
+  const ctx = await freshSelection(deps, actionPlan.planId, { allowAcquirable: approvedAcquire !== undefined }, bytes);
   requireLocalCapableTarget(store, baseUrl, ctx.candidate.environmentId);
   // The downloads are rebuilt from the candidate's fresh acquisition and upstream's current
   // destinations, without the free-disk reading (it isn't part of the hash; the controller
@@ -508,11 +625,13 @@ export async function admitEffect(
     }
     acquire = await acquireEffectFor(deps, ctx.task, ctx.candidate, { checkDisk: false });
   }
+  // The input files were read again above: one changed since the approval gives another hash, and
+  // the user approves the new content; one that vanished refuses the start (GAPS Q33).
   // The residency effect is the one the user approved, not a fresh reading: a model that
   // left Ollama since doesn't invalidate the approval, and one that arrived since isn't
   // unloaded (the controller blocks on it).
   const rebuilt = actionPlanHash(
-    binding(ctx, baseUrl, actionPlan.effects.find((e): e is ReleaseResidencyEffect => e.kind === "release_residency"), acquire),
+    binding(ctx, baseUrl, actionPlan.effects.find((e): e is ReleaseResidencyEffect => e.kind === "release_residency"), acquire, inputs),
   );
   if (rebuilt !== actionPlan.hash) {
     throw new ApprovalError(

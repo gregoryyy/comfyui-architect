@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "flux2-klein-4b",
+  "title": "FLUX.2 Klein 4B diffusion model (5 double and 20 single blocks, 3072 wide, Qwen 3 4B captions)",
+  "folders": ["diffusion_models", "unet"],
+  "requiredTensors": [
+    "*double_blocks.4.img_attn.qkv.weight",
+    "*single_blocks.19.linear1.weight",
+    "*double_stream_modulation_img.lin.weight",
+    "*single_stream_modulation.lin.weight",
+    "*img_in.weight",
+    "*txt_in.weight"
+  ],
+  "forbiddenTensors": ["*double_blocks.5.*", "*single_blocks.20.*", "*vector_in.*", "*guidance_in.*"],
+  "shapes": {
+    "*img_in.weight": [3072, 128],
+    "*txt_in.weight": [3072, 7680]
+  },
+  "indistinguishableFrom": ["flux2-klein-base-4b"],
+  "provenance": [
+    {
+      "source": "safetensors header of split_files/diffusion_models/flux-2-klein-4b.safetensors (7751105712 bytes) in Comfy-Org/Flux-2-Klein-4B at commit 5b3abca5c0dc1ecd4eaf3340868d09063fc1c965, read with HTTP Range requests for the 8-byte length and the 16552-byte header from https://huggingface.co/Comfy-Org/Flux-2-Klein-4B/resolve/5b3abca5c0dc1ecd4eaf3340868d09063fc1c965/split_files/diffusion_models/flux-2-klein-4b.safetensors; no weights were read",
+      "observedAt": "2026-11-16T09:53:40+01:00",
+      "note": "149 tensors, none prefixed, all BF16: double_blocks 0 to 4, single_blocks 0 to 19, img_in [3072, 128] (128 latent channels), txt_in [3072, 7680] (three 2560-wide Qwen 3 4B layers), shared modulation (double_stream_modulation_img, double_stream_modulation_txt, single_stream_modulation), time_in, no vector_in and no guidance_in. The file isn't installed on the reference target yet. FLUX.1 has 19 double and 38 single blocks, vector_in and img_in [3072, 64], so it can't match; Klein 9B is 4096 wide. The header doesn't tell the distilled model from Klein Base 4B, which shares the architecture."
+    }
+  ]
+}

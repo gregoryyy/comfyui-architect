@@ -34,8 +34,31 @@ export interface RecipeLoadResult {
   dirFound: boolean;
 }
 
-/** Load every `*.recipe.json` in `dir`, in file-name order. Two files with one id and revision is an error. */
-export function loadRecipeDir(dir: string): RecipeLoadResult {
+/**
+ * Whether a recipe's tier is one its evidence supports, for a shipped source (spec §8.4,
+ * GAPS Q27): `curated` needs a maintainer review of this revision, and a recipe without one
+ * ships as `proposed`. A review entry written before `EvidenceRef.revision` existed carries
+ * no revision: those are the owner's reviews of GAPS Q12 and PR #7, which looked at
+ * revision 3, so a missing revision counts as 3. Checked when shipped recipes load, not in
+ * the Recipe schema, so a stored older revision still parses. Undefined when the tier holds.
+ */
+export function shippedTierProblem(recipe: Recipe): string | undefined {
+  const reviewed = recipe.evidence.some((e) => e.kind === "maintainer_review" && (e.revision ?? 3) === recipe.revision);
+  if (recipe.certification === "curated" && !reviewed) {
+    return `${recipe.id} r${recipe.revision} is curated without a maintainer review of revision ${recipe.revision}`;
+  }
+  if (recipe.certification === "proposed" && reviewed) {
+    return `${recipe.id} r${recipe.revision} has a maintainer review of this revision but is marked proposed`;
+  }
+  if (recipe.certification === "fixture") return `${recipe.id} is a test fixture, which is never shipped`;
+  return undefined;
+}
+
+/**
+ * Load every `*.recipe.json` in `dir`, in file-name order. Two files with one id and revision
+ * is an error. With `shipped`, a recipe whose tier its evidence doesn't support is refused.
+ */
+export function loadRecipeDir(dir: string, options: { shipped?: boolean } = {}): RecipeLoadResult {
   if (!existsSync(dir)) return { recipes: [], errors: [], dirFound: false };
   const recipes: LoadedRecipe[] = [];
   const errors: RecipeLoadResult["errors"] = [];
@@ -55,6 +78,11 @@ export function loadRecipeDir(dir: string): RecipeLoadResult {
     const parsed = Recipe.safeParse(raw);
     if (!parsed.success) {
       errors.push({ file, message: parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ") });
+      continue;
+    }
+    const tier = options.shipped ? shippedTierProblem(parsed.data) : undefined;
+    if (tier !== undefined) {
+      errors.push({ file, message: tier });
       continue;
     }
     const key = `${parsed.data.id}@${parsed.data.revision}`;

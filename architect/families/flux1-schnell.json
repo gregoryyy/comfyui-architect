@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "flux1-schnell",
+  "title": "FLUX.1-schnell diffusion model, alone or in Comfy-Org's all-in-one checkpoint",
+  "folders": ["diffusion_models", "unet", "checkpoints"],
+  "requiredTensors": [
+    "*double_blocks.18.img_attn.qkv.weight",
+    "*single_blocks.37.linear1.weight",
+    "*img_in.weight",
+    "*txt_in.weight",
+    "*vector_in.in_layer.weight"
+  ],
+  "forbiddenTensors": ["*guidance_in.*", "*double_blocks.19.*", "*single_blocks.38.*"],
+  "shapes": {
+    "*img_in.weight": [3072, 64],
+    "*txt_in.weight": [3072, 4096]
+  },
+  "provenance": [
+    {
+      "source": "safetensors header of diffusion_models/flux1-schnell-fp8.safetensors (17236328572 bytes, Comfy-Org/flux1-schnell), linked as checkpoints/flux1-schnell-fp8.safetensors, on the reference target (ComfyUI Desktop 0.44.0 on port 8188, GAPS Q17)",
+      "observedAt": "2026-11-16T09:07:17+01:00",
+      "note": "1438 tensors: 776 under model.diffusion_model (19 double_blocks, 38 single_blocks, img_in [3072, 64], txt_in [3072, 4096], vector_in, time_in, no guidance_in), 418 under text_encoders (t5xxl, clip_l) and 244 under vae; metadata modelspec.architecture Flux.1-schnell. The patterns start with * so the unprefixed names of a diffusion-only file match too. FLUX.1-dev carries guidance_in, which is forbidden. The rule doesn't check that a checkpoints file carries the text encoders and VAE that CheckpointLoaderSimple needs."
+    }
+  ]
+}

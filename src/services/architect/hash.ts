@@ -15,6 +15,7 @@ export function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-export function sha256Hex(text: string): string {
+/** sha256 of a string (as UTF-8) or of bytes, as lowercase hex. */
+export function sha256Hex(text: string | Buffer): string {
   return createHash("sha256").update(text).digest("hex");
 }

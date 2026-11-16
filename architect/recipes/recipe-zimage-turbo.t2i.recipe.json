@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "id": "recipe-zimage-turbo.t2i",
-  "revision": 4,
+  "revision": 5,
   "title": "Z-Image Turbo: text to image",
-  "description": "Text to image with Z-Image Turbo from separate components: diffusion model, Qwen 3 4B text encoder and VAE. Turbo is DMD-distilled, so it samples in 10 steps at CFG 1.0 and ignores the negative prompt; the negative input is the zeroed positive conditioning. Width and height should be divisible by 16.",
+  "description": "Text to image with Z-Image Turbo from separate components: diffusion model, Qwen 3 4B text encoder and VAE. Turbo is DMD-distilled, so it samples in 10 steps at CFG 1.0 and ignores the negative prompt; the negative input is the zeroed positive conditioning. Width and height must be multiples of 16, EmptySD3LatentImage's step; the contract check refuses a task size off it.",
   "kind": "image",
   "operations": [
     "text_to_image"
@@ -230,7 +230,8 @@
       "role": "image",
       "node": "9",
       "format": "png",
-      "count": 1
+      "count": 1,
+      "multipleOf": 16
     }
   ],
   "dependencies": {
@@ -287,7 +288,7 @@
       }
     }
   ],
-  "certification": "curated",
+  "certification": "proposed",
   "evidence": [
     {
       "kind": "upstream_pack",
@@ -311,7 +312,8 @@
       "kind": "maintainer_review",
       "source": "Owner review, GAPS Q12 and PR #7 (2026-11-15 18:49)",
       "observedAt": "2026-11-15T18:49:40+01:00",
-      "note": "The owner accepted the recipe as curated. Not yet run on a recorded matrix, so not certified (AT-03)."
+      "note": "The owner accepted the recipe as curated. Not yet run on a recorded matrix, so not certified (AT-03).",
+      "revision": 3
     }
   ]
 }

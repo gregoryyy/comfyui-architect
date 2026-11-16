@@ -8,6 +8,7 @@
 // Kept free of Architect-specific logic so it can be offered upstream as-is (GAPS Q8).
 
 import {
+  MAX_PREVIEW_SOURCE_BYTES,
   enqueuePrompt,
   fetchImage,
   getHistory,
@@ -18,13 +19,14 @@ import {
   interrupt,
   resetObjectInfoCache,
 } from "../../comfyui/client.js";
-import type { ComfyUINodeDef, ObjectInfo, SystemStats } from "../../comfyui/types.js";
+import type { ComfyUINodeDef, ObjectInfo, SystemStats, WorkflowJSON } from "../../comfyui/types.js";
+import { comfyuiFetch } from "../../comfyui/fetch.js";
 import { isApiNode, isExternalServiceNode } from "../api-nodes.js";
 import { resolveOllamaHost, warmOllama } from "../ollama-vram.js";
 import { type CancelQueuedResult, cancelQueuedJob } from "../queue-manager.js";
 import { WorkflowExecutionError } from "../../utils/errors.js";
 import { resolveToolSurfacePolicy, toolAllowed } from "../../tools/tool-surface-filter.js";
-import { config, getComfyUIBaseUrl, isOwnHostAddress } from "../../config.js";
+import { config, getComfyUIBaseUrl, isCloudMode, isLoopbackHost, isOwnHostAddress } from "../../config.js";
 import { sharpUnavailableMessage, tryLoadSharp } from "../sharp-loader.js";
 import { basename, dirname, join } from "node:path";
 import { z } from "zod";
@@ -34,6 +36,7 @@ import {
   listLocalModelsWithCoverage,
   localDownloadCacheIdentity,
   resolveDownloadTarget,
+  resolveExistingModelFile,
   shouldDispatchDownloadToManager,
 } from "../model-resolver.js";
 import {
@@ -45,6 +48,17 @@ import {
   startDownloadJob,
 } from "../download-jobs.js";
 import { readDownloadProgress } from "../download-progress.js";
+import { loadManifestFile, resolvePackManifestFile } from "../manifest.js";
+import {
+  NON_EXECUTING_NODE_TYPES,
+  WIRING_VIRTUAL_TYPES,
+  convertApiToUi,
+  convertUiToApi,
+  isApiFormat,
+  isUiFormat,
+  looksLikeAssetFilename,
+} from "../workflow-converter.js";
+import { enumeratePacks, resolvePackWorkflowFile } from "../../tools/skills-access.js";
 import { downloadFetch } from "../download-proxy.js";
 import type { InstalledModels } from "./schemas.js";
 
@@ -83,11 +97,31 @@ export interface UpstreamFacade {
   /** An output file's bytes, through /view. */
   outputFile(ref: { filename: string; subfolder: string; type: "output" | "temp" }): Promise<{ bytes: Buffer; mimeType: string }>;
   /**
+   * A file in the target's input folder, through `/view?type=input`, with `name` split at
+   * its last `/` into subfolder and file name. Bounded by upstream's /view reader at
+   * `MAX_INPUT_FILE_BYTES`; throws when the target refuses, lacks the file or the body is
+   * larger (a failed read, never an empty file).
+   */
+  readInputFile(name: string): Promise<{ bytes: Buffer }>;
+  /**
+   * An installed model file located by upstream's resolver for existing files
+   * (`resolveExistingModelFile`, read mode): the configured model root and extra roots,
+   * containment-checked. Throws when it isn't found, isn't a file, or no local ComfyUI path
+   * is configured. Slow: the resolver may probe the running server on each call.
+   */
+  locateModelFile(folder: string, file: string): Promise<{ path: string; sizeBytes: number; mtimeMs: number; root: string }>;
+  /**
+   * A key that changes when the inputs of upstream's model-root resolution change: the
+   * ComfyUI target and the configured ComfyUI path. A cached location made under another
+   * key may point into roots upstream no longer resolves to.
+   */
+  modelRootsKey(): string;
+  /**
    * Decode an image fully with sharp and return its pixel size. Throws when the data
    * doesn't decode (a truncated or corrupt file); throws ImageDecoderUnavailableError when
    * sharp can't be loaded, which says nothing about the file.
    */
-  decodeImage(bytes: Buffer): Promise<{ width: number; height: number }>;
+  decodeImage(bytes: Buffer): Promise<{ width: number; height: number; channels?: number }>;
   /**
    * Whether a host is this machine: loopback, or an address of one of its interfaces
    * (upstream's `isOwnHostAddress`). False also for a name, which it doesn't resolve.
@@ -146,6 +180,119 @@ export interface UpstreamFacade {
   downloadFetch(url: string, init: RequestInit): Promise<Response>;
   /** The Hugging Face token upstream would send (HF_TOKEN, HUGGINGFACE_TOKEN or its env file). */
   huggingfaceToken(): string | undefined;
+  /**
+   * A GET on the configured ComfyUI target with upstream's auth headers (`comfyuiFetch`).
+   * Refuses a URL outside the target's base URL, so those headers never go to a host the
+   * configuration didn't name.
+   */
+  fetchFromTarget(url: string): Promise<Response>;
+  /**
+   * The packs upstream ships, by upstream's own enumeration (`enumeratePacks`, what
+   * `list_packs` lists). Empty also when the packs folder is missing: the caller checks the
+   * folder before it reads an empty list as "no packs".
+   */
+  listPacks(): UpstreamPack[];
+  /**
+   * The workflow file of a pack, resolved as `list_packs` resolves it
+   * (`resolvePackWorkflowFile`: name-guarded, inside the packs folder); undefined when the
+   * pack or its workflow doesn't exist.
+   */
+  packWorkflowFile(name: string): string | undefined;
+  /**
+   * The model entries of a pack's manifest, parsed by upstream's manifest schema
+   * (`loadManifestFile`); undefined when the pack has no manifest. Throws when the manifest
+   * doesn't parse.
+   */
+  packManifestModels(name: string): Promise<PackManifestModel[] | undefined>;
+}
+
+/** A pack as upstream's enumeration reports it, reduced to what Architect reads. */
+export interface UpstreamPack {
+  name: string;
+  family?: string;
+  kind?: string;
+  displayName?: string;
+  description: string;
+  hasWorkflow: boolean;
+}
+
+/** One model entry of a pack manifest: a URL and where upstream would place the file. */
+export interface PackManifestModel {
+  url: string;
+  /** `local_path` as the manifest writes it (`<folder>/<file>`), or `model_type` and `filename`. */
+  localPath?: string;
+  modelType?: string;
+  filename?: string;
+}
+
+// enumeratePacks returns loosely typed rows: pack.yaml values pass through as written, so
+// a field other than name and has_workflow is read only when it is a string.
+const PackRow = z
+  .object({
+    name: z.string().min(1),
+    family: z.unknown(),
+    kind: z.unknown(),
+    display_name: z.unknown(),
+    description: z.unknown(),
+    has_workflow: z.boolean(),
+  })
+  .passthrough();
+
+const stringOrUndefined = (v: unknown): string | undefined => (typeof v === "string" && v.trim().length > 0 ? v : undefined);
+
+/** Node types the frontend keeps and the executable graph never holds (upstream's lists). */
+export const FRONTEND_NOTE_NODE_TYPES: ReadonlySet<string> = new Set(["Note", "MarkdownNote"]);
+/**
+ * Virtual node types upstream's converter resolves into links or widget values: Reroute,
+ * PrimitiveNode and the Get/Set bus nodes (`NON_EXECUTING_NODE_TYPES`, `WIRING_VIRTUAL_TYPES`).
+ */
+export const RESOLVED_VIRTUAL_NODE_TYPES: ReadonlySet<string> = new Set(
+  [...NON_EXECUTING_NODE_TYPES, ...WIRING_VIRTUAL_TYPES].filter((t) => !FRONTEND_NOTE_NODE_TYPES.has(t)),
+);
+
+/** What converting a UI workflow to an API graph gave, as upstream's `convertUiToApi` reports it. */
+export interface UiConversion {
+  graph: WorkflowJSON;
+  warnings: string[];
+  /** Nodes dropped because their class isn't in object_info, by their id after expansion. */
+  missingNodeTypes: { nodeId: string; classType: string }[];
+}
+
+/** Whether a parsed workflow is in the UI (canvas) format: `nodes` and `links` arrays. */
+export function isUiWorkflow(value: unknown): boolean {
+  return isUiFormat(value);
+}
+
+/** Whether a parsed workflow is in the API format: every value a node with a `class_type`. */
+export function isApiWorkflow(value: unknown): boolean {
+  return isApiFormat(value);
+}
+
+/**
+ * Convert a UI workflow to an API graph with upstream's converter, which expands subgraphs
+ * (`definitions.subgraphs`), resolves Reroute, PrimitiveNode and Get/Set wiring, drops
+ * muted and bypassed nodes as ComfyUI's queue does, and maps widget values to input names
+ * by object_info. Throws when `ui` isn't a UI workflow.
+ */
+export function uiToApi(ui: unknown, objectInfo: ObjectInfo): UiConversion {
+  if (!isUiFormat(ui)) throw new Error("not a UI-format workflow (no nodes and links arrays)");
+  const r = convertUiToApi(ui, objectInfo);
+  return { graph: r.workflow, warnings: r.warnings, missingNodeTypes: r.missingNodeTypes.map((m) => ({ nodeId: m.nodeId, classType: m.classType })) };
+}
+
+/**
+ * Convert an API graph to a UI workflow with a generated layout (upstream's
+ * `convertApiToUi`): widget order from object_info's input order, `_meta.title` as the
+ * node title.
+ */
+export function apiToUi(graph: WorkflowJSON, objectInfo: ObjectInfo): { workflow: Record<string, unknown>; warnings: string[] } {
+  const r = convertApiToUi(graph, objectInfo);
+  return { workflow: { ...r.workflow }, warnings: r.warnings };
+}
+
+/** Whether a value has a model or asset file extension, by upstream's converter's rule. */
+export function looksLikeModelFile(value: unknown): boolean {
+  return looksLikeAssetFilename(value);
 }
 
 /**
@@ -169,6 +316,39 @@ export interface DownloadStatus {
  */
 export function presetWithholds(preset: string, toolName: string): boolean {
   return !toolAllowed(toolName, resolveToolSurfacePolicy({ COMFYUI_MCP_TOOL_PRESET: preset }));
+}
+
+/**
+ * The largest input file `readInputFile` reads: upstream's ceiling for one /view body
+ * (`MAX_PREVIEW_SOURCE_BYTES`), which its reader won't raise for any caller.
+ */
+export const MAX_INPUT_FILE_BYTES = MAX_PREVIEW_SOURCE_BYTES;
+
+/** A response body, refused past `maxBytes` (by its length header, then as it streams). */
+async function readBounded(res: Response, maxBytes: number, name: string): Promise<Buffer> {
+  const declared = Number(res.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > maxBytes) throw new Error(`input "${name}" is ${declared} bytes, over the ${maxBytes}-byte bound`);
+  if (!res.body) throw new Error(`ComfyUI /view sent no body for "${name}"`);
+  const chunks: Buffer[] = [];
+  let total = 0;
+  const reader = res.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error(`input "${name}" is over the ${maxBytes}-byte bound`);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks);
+}
+
+/** `sub/dir/name.png` as /view takes it: subfolder `sub/dir`, filename `name.png`. */
+export function splitInputName(name: string): { subfolder: string; filename: string } {
+  const cut = name.lastIndexOf("/");
+  return cut < 0 ? { subfolder: "", filename: name } : { subfolder: name.slice(0, cut), filename: name.slice(cut + 1) };
 }
 
 /** sharp couldn't be loaded, so no image was decoded: not a verdict on the image. */
@@ -215,11 +395,34 @@ export function createUpstreamFacade(): UpstreamFacade {
       const r = await fetchImage(ref.filename, ref.type, ref.subfolder);
       return { bytes: Buffer.from(r.base64, "base64"), mimeType: r.mimeType };
     },
+    readInputFile: async (name) => {
+      // A direct GET on the configured target only. Upstream's fetchImage would go to Comfy
+      // Cloud in cloud mode and, after a transport failure, to a panel origin or the panel
+      // relay; an input whose hash a grant binds must come from the local ComfyUI the
+      // render runs on (GAPS Q33), so those routes are refused rather than taken.
+      if (isCloudMode()) throw new Error("input files are read only from a local ComfyUI; this server is in cloud mode");
+      const base = getComfyUIBaseUrl().replace(/\/+$/, "");
+      const host = new URL(base).hostname;
+      if (!isLoopbackHost(host)) throw new Error(`input files are read only from a loopback ComfyUI; the target ${host} isn't one`);
+      const { subfolder, filename } = splitInputName(name);
+      const url = `${base}/view?${new URLSearchParams({ filename, type: "input", subfolder }).toString()}`;
+      const res = await comfyuiFetch(url, { redirect: "manual" });
+      if (res.status !== 200) throw new Error(`ComfyUI /view returned ${res.status} for "${name}" (input)`);
+      return { bytes: await readBounded(res, MAX_INPUT_FILE_BYTES, name) };
+    },
+    locateModelFile: async (folder, file) => {
+      const found = await resolveExistingModelFile(`${folder}/${file}`, { mode: "read" });
+      if (!found.info.isFile()) throw new Error(`${folder}/${file} is not a file under ${found.root}`);
+      return { path: found.path, sizeBytes: found.info.size, mtimeMs: found.info.mtimeMs, root: found.root };
+    },
+    modelRootsKey: () => JSON.stringify({ target: getComfyUIBaseUrl(), comfyuiPath: config.comfyuiPath ?? null }),
     decodeImage: async (bytes) => {
       const loaded = await tryLoadSharp();
       if (!loaded.ok) throw new ImageDecoderUnavailableError(sharpUnavailableMessage("Image decoding", loaded.err));
       const { info } = await loaded.sharp(bytes).raw().toBuffer({ resolveWithObject: true });
-      return { width: info.width, height: info.height };
+      // The decoded buffer is converted to sRGB; the file's own channel count is the header's.
+      const meta = await loaded.sharp(bytes).metadata();
+      return { width: info.width, height: info.height, ...(meta.channels !== undefined ? { channels: meta.channels } : {}) };
     },
     isOwnHostAddress: (host) => isOwnHostAddress(host),
     ollamaHost: () => resolveOllamaHost(),
@@ -263,6 +466,41 @@ export function createUpstreamFacade(): UpstreamFacade {
     },
     downloadFetch: (url, init) => downloadFetch(url, init),
     huggingfaceToken: () => config.huggingfaceToken?.trim() || undefined,
+    fetchFromTarget: (url) => {
+      const base = getComfyUIBaseUrl().replace(/\/+$/, "");
+      if (!url.startsWith(`${base}/`) || new URL(url).origin !== new URL(base).origin) {
+        return Promise.reject(new Error(`${url} is not on the configured ComfyUI target ${base}`));
+      }
+      return comfyuiFetch(url);
+    },
+    listPacks: () =>
+      enumeratePacks().map((row) => {
+        // Throws rather than skipping a row: a pack left out would read as not shipped.
+        const p = PackRow.parse(row);
+        const family = stringOrUndefined(p.family);
+        const kind = stringOrUndefined(p.kind);
+        const displayName = stringOrUndefined(p.display_name);
+        return {
+          name: p.name,
+          ...(family ? { family } : {}),
+          ...(kind ? { kind } : {}),
+          ...(displayName ? { displayName } : {}),
+          description: stringOrUndefined(p.description) ?? "",
+          hasWorkflow: p.has_workflow,
+        };
+      }),
+    packWorkflowFile: (name) => resolvePackWorkflowFile(name) ?? undefined,
+    packManifestModels: async (name) => {
+      const file = resolvePackManifestFile(name);
+      if (file === null) return undefined;
+      const manifest = await loadManifestFile(file);
+      return manifest.models.map((m) => ({
+        url: m.url,
+        ...(m.local_path ? { localPath: m.local_path } : {}),
+        ...(m.model_type ? { modelType: m.model_type } : {}),
+        ...(m.filename ? { filename: m.filename } : {}),
+      }));
+    },
   };
 }
 

@@ -1,0 +1,246 @@
+{
+  "schemaVersion": 1,
+  "id": "recipe-flux1-schnell.ckpt-img2img",
+  "revision": 1,
+  "title": "FLUX.1-schnell: image to image from the all-in-one checkpoint",
+  "description": "Prompt-guided image to image with FLUX.1-schnell from Comfy-Org's all-in-one checkpoint: the source image is encoded with the checkpoint's VAE and sampled again at a denoise below 1 (4 steps, CFG 1.0, euler, simple), so the prompt reshapes the image while lower denoise keeps more of its structure. Schnell doesn't follow edit instructions; it renders the prompt starting from the source. The output has the source image's size, rounded down to multiples of 8 by the VAE encode; the contract check refuses a source whose sides aren't multiples of 8. Denoise has no default: the caller chooses it. The checkpoint has to be in checkpoints/ (GAPS Q13).",
+  "kind": "image",
+  "operations": [
+    "image_edit"
+  ],
+  "graph": {
+    "1": {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": {
+        "ckpt_name": "flux1-schnell-fp8.safetensors"
+      },
+      "_meta": {
+        "title": "FLUX.1-schnell checkpoint"
+      }
+    },
+    "2": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "1",
+          1
+        ],
+        "text": ""
+      },
+      "_meta": {
+        "title": "Positive"
+      }
+    },
+    "3": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "1",
+          1
+        ],
+        "text": ""
+      },
+      "_meta": {
+        "title": "Negative (ignored at CFG 1)"
+      }
+    },
+    "4": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      },
+      "_meta": {
+        "title": "Source image"
+      }
+    },
+    "5": {
+      "class_type": "VAEEncode",
+      "inputs": {
+        "pixels": [
+          "4",
+          0
+        ],
+        "vae": [
+          "1",
+          2
+        ]
+      }
+    },
+    "6": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "positive": [
+          "2",
+          0
+        ],
+        "negative": [
+          "3",
+          0
+        ],
+        "latent_image": [
+          "5",
+          0
+        ],
+        "seed": 0,
+        "steps": 4,
+        "cfg": 1,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "denoise": 1
+      }
+    },
+    "7": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "6",
+          0
+        ],
+        "vae": [
+          "1",
+          2
+        ]
+      }
+    },
+    "8": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "7",
+          0
+        ],
+        "filename_prefix": "architect/flux1-schnell-ckpt-img2img"
+      }
+    }
+  },
+  "slots": [
+    {
+      "id": "checkpoint",
+      "label": "FLUX.1-schnell all-in-one checkpoint",
+      "valueType": "model_file",
+      "target": {
+        "node": "1",
+        "input": "ckpt_name"
+      },
+      "required": true,
+      "default": "flux1-schnell-fp8.safetensors",
+      "modelFolder": "checkpoints",
+      "modelFamily": "flux1-schnell"
+    },
+    {
+      "id": "prompt",
+      "label": "Prompt",
+      "valueType": "string",
+      "target": {
+        "node": "2",
+        "input": "text"
+      },
+      "required": true,
+      "fromTask": "intent"
+    },
+    {
+      "id": "source_image",
+      "label": "Source image (file name in ComfyUI's input folder)",
+      "valueType": "input_image",
+      "target": {
+        "node": "4",
+        "input": "image"
+      },
+      "required": true,
+      "fromTask": "inputs.source_image"
+    },
+    {
+      "id": "denoise",
+      "label": "Denoise (below 1 keeps more of the source)",
+      "valueType": "float",
+      "target": {
+        "node": "6",
+        "input": "denoise"
+      },
+      "required": true,
+      "min": 0,
+      "max": 1
+    },
+    {
+      "id": "seed",
+      "label": "Seed",
+      "valueType": "seed",
+      "target": {
+        "node": "6",
+        "input": "seed"
+      },
+      "required": true,
+      "default": 0
+    }
+  ],
+  "outputs": [
+    {
+      "role": "image",
+      "node": "8",
+      "format": "png",
+      "count": 1,
+      "scaleOfInput": {
+        "input": "inputs.source_image",
+        "factor": 1,
+        "multipleOf": 8
+      }
+    }
+  ],
+  "dependencies": {
+    "nodeClasses": [
+      "CheckpointLoaderSimple",
+      "CLIPTextEncode",
+      "LoadImage",
+      "VAEEncode",
+      "KSampler",
+      "VAEDecode",
+      "SaveImage"
+    ]
+  },
+  "modelSources": [
+    {
+      "folder": "checkpoints",
+      "file": "flux1-schnell-fp8.safetensors",
+      "source": {
+        "kind": "huggingface",
+        "repo": "Comfy-Org/Flux-1-Schnell",
+        "revision": "d31e04067066d92c55ece2b01748dcc337725d7a",
+        "path": "flux1-schnell-fp8.safetensors",
+        "sha256": "ead426278b49030e9da5df862994f25ce94ab2ee4df38b556ddddb3db093bf72",
+        "sizeBytes": 17236328572,
+        "license": "apache-2.0"
+      }
+    }
+  ],
+  "certification": "proposed",
+  "evidence": [
+    {
+      "kind": "upstream_pack",
+      "source": "plugin/skills/comfyui-core/SKILL.md at fork baseline 707474d2 (blob f7bb340d)",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "The image-to-image pattern: LoadImage, VAEEncode into KSampler's latent, denoise 0.5 to 0.8 (lower is closer to the input). The skill gives no single value, so the recipe has no default."
+    },
+    {
+      "kind": "documentation",
+      "source": "ComfyUI workflow template flux_schnell (comfyui-workflow-templates 0.11.103, GET http://127.0.0.1:8188/templates/flux_schnell.json, sha256 912fe178607a2c0e1ff12688703d22b34866949c9669ecc2739d19971e916b96)",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "Loader and sampler as in the template: CheckpointLoaderSimple flux1-schnell-fp8.safetensors (MODEL 0, CLIP 1, VAE 2), positive and empty negative CLIPTextEncode, KSampler 4 steps, CFG 1, euler, simple, VAEDecode with the checkpoint's VAE. The template is text to image; the source image path replaces its EmptySD3LatentImage."
+    },
+    {
+      "kind": "documentation",
+      "source": "GET http://127.0.0.1:8188/object_info, ComfyUI Desktop 0.44.0; the classes used captured in src/__tests__/architect/fixtures/object-info-desktop-0.44.0.json",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "CheckpointLoaderSimple, CLIPTextEncode, LoadImage, VAEEncode, KSampler, VAEDecode and SaveImage are in the live schema; denoise bounds 0 to 1 come from KSampler."
+    },
+    {
+      "kind": "documentation",
+      "source": "Hugging Face API: /api/models/<repo>/revision/main and /api/models/<repo>/tree/<commit>, read by scripts/architect/pin-source.mjs",
+      "observedAt": "2026-11-16T10:02:07+01:00",
+      "note": "flux1-schnell-fp8.safetensors pinned from Comfy-Org/Flux-1-Schnell (requested as Comfy-Org/flux1-schnell, renamed) at commit d31e0406, 17236328572 bytes as the installed file, licence apache-2.0 per the repository card. It is the fp8 all-in-one checkpoint recipe-flux1-schnell.ckpt-t2i and ComfyUI's flux_schnell template load, installed on the reference target; the precision rule (ARCH 2026-11-16) names the FLUX.2 Klein and SeedVR2 downloads."
+    }
+  ]
+}

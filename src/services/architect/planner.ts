@@ -23,7 +23,8 @@ import type {
   ValidationReport,
 } from "./schemas.js";
 import type { ComfyUINodeDef, ObjectInfo } from "../../comfyui/types.js";
-import { validateGraph } from "./validate.js";
+import type { InputSizes } from "./output-size.js";
+import { type FamilyEvidence, validateGraph } from "./validate.js";
 
 export const MAX_EXPANDED_CANDIDATES = 24;
 export const MAX_PRESENTED_CANDIDATES = 3;
@@ -61,6 +62,10 @@ export interface PlanningInput {
   planId: string;
   /** Decides whether a node spends money remotely; the validator's own rule when absent. */
   isPaidNode?: (def: ComfyUINodeDef) => boolean;
+  /** Observed families of the files `boundModelFiles` names; absent, family checks stay unknown. */
+  families?: FamilyEvidence;
+  /** Sizes of the task's input files that recipes size their output from; absent, those checks stay unknown. */
+  inputSizes?: InputSizes;
   now: () => Date;
   newId: () => string;
 }
@@ -130,6 +135,38 @@ function modelValues(recipe: Recipe, values: Record<string, string | number>): R
   return out;
 }
 
+/**
+ * The installed model files the candidates `planCandidates` builds would bind, so planning
+ * can read their families before it validates (TODO 5.3): the same retrieval, binding sets
+ * and compilation, without validation. Files the snapshot doesn't list for their folder are
+ * left out: there is nothing on the target to read.
+ */
+export function boundModelFiles(input: Pick<PlanningInput, "task" | "snapshot" | "recipes" | "proposals">): { folder: string; file: string }[] {
+  const { task, snapshot } = input;
+  const proposals = input.proposals ?? [];
+  const retrieved = retrieveRecipes(input.recipes, task, snapshot);
+  const share = retrieved.length === 0 ? 0 : Math.max(1, Math.floor(MAX_EXPANDED_CANDIDATES / retrieved.length));
+  const out = new Map<string, { folder: string; file: string }>();
+  let built = 0;
+  for (const { recipe } of retrieved) {
+    const budget = Math.min(share, MAX_EXPANDED_CANDIDATES - built);
+    if (budget <= 0) break;
+    const { sets } = bindingSets(recipe, snapshot, proposals, budget);
+    built += sets.length;
+    for (const bindings of sets) {
+      const values = { ...compileRecipe(recipe, task, bindings).values, ...bindings };
+      for (const slot of recipe.slots) {
+        const file = values[slot.id];
+        const folder = slot.modelFolder ?? "";
+        if (slot.valueType !== "model_file" || typeof file !== "string") continue;
+        if (!snapshot.installedModels?.folders[folder]?.includes(file)) continue;
+        out.set(`${folder}/${file}`, { folder, file });
+      }
+    }
+  }
+  return [...out.values()];
+}
+
 /** Candidate statuses in ranking order; the loop that groups candidates walks it too. */
 export const STATUS_ORDER = { feasible: 0, acquirable: 1, diagnostic: 2, blocked: 3 } as const satisfies Record<PlanCandidate["status"], number>;
 const TIER_ORDER = { certified: 0, curated: 1, proposed: 2, fixture: 3 } as const;
@@ -174,7 +211,9 @@ function addBlockers(into: PlanBlockers, recipe: Recipe, checks: readonly CheckR
     if (c.verdict === "unknown") into.insufficient_evidence.push(line);
     else if (c.layer === "dependencies") into.missing_dependencies.push(line);
     else if (c.layer === "policy") into.policy_conflicts.push(line);
-    else if (c.layer === "contract" && c.id.startsWith("contract.operation")) into.unsupported_operation.push(line);
+    // A task input no slot takes, or an asset form Architect can't resolve, is unsupported
+    // by the recipe (GAPS Q16), not a dependency to install.
+    else if (c.layer === "contract" && (c.id.startsWith("contract.operation") || c.id.startsWith("contract.task.inputs."))) into.unsupported_operation.push(line);
     else into.missing_dependencies.push(line);
   }
 }
@@ -218,7 +257,17 @@ export function planCandidates(input: PlanningInput): PlanningOutput {
     if (expansion.truncated) truncated = true;
     for (const bindings of expansion.sets) {
       const compiled = compileRecipe(recipe, task, bindings);
-      const report = validateGraph({ graph: compiled.graph, recipe, task, bindings, objectInfo, snapshot, ...(input.isPaidNode ? { isPaidNode: input.isPaidNode } : {}) });
+      const report = validateGraph({
+        graph: compiled.graph,
+        recipe,
+        task,
+        bindings,
+        objectInfo,
+        snapshot,
+        ...(input.isPaidNode ? { isPaidNode: input.isPaidNode } : {}),
+        ...(input.families ? { families: input.families } : {}),
+        ...(input.inputSizes ? { inputSizes: input.inputSizes } : {}),
+      });
       // The model files the graph actually binds, defaults included, so the candidate,
       // the agent and the export's lock name every file (compiling these again gives the
       // same graph).
@@ -255,7 +304,8 @@ export function planCandidates(input: PlanningInput): PlanningOutput {
           explanation:
             `${recipe.certification} recipe ${recipe.id} r${recipe.revision}; ` +
             `${report.dependencyDelta.missingModels.length} missing model(s), ` +
-            `${report.dependencyDelta.missingNodeClasses.length} missing node class(es)${scaleNote}${acquisitionNote}`,
+            `${report.dependencyDelta.missingNodeClasses.length} missing node class(es)${scaleNote}${acquisitionNote}` +
+            (recipe.notices && recipe.notices.length > 0 ? `; note: ${recipe.notices.join("; ")}` : ""),
         },
         status: verdict.status,
         ...(verdict.acquisition ? { acquisition: verdict.acquisition } : {}),

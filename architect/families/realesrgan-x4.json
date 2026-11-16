@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "realesrgan-x4",
+  "title": "Real-ESRGAN x4plus upscale model (RRDBNet, 23 blocks, 4x)",
+  "aliases": ["esrgan-4x"],
+  "folders": ["upscale_models"],
+  "requiredTensors": ["conv_first.weight", "body.22.rdb3.conv5.weight", "conv_up1.weight", "conv_up2.weight", "conv_hr.weight", "conv_last.weight"],
+  "forbiddenTensors": ["body.23.*"],
+  "shapes": {
+    "conv_first.weight": [64, 3, 3, 3],
+    "conv_last.weight": [3, 64, 3, 3]
+  },
+  "provenance": [
+    {
+      "source": "safetensors header of upscale_models/RealESRGAN_x4plus.safetensors (66857836 bytes, Comfy-Org/Real-ESRGAN) on the reference target (ComfyUI Desktop 0.44.0 on port 8188, GAPS Q17)",
+      "observedAt": "2026-11-16T09:07:17+01:00",
+      "note": "702 tensors: conv_first [64, 3, 3, 3], body.0 to body.22 (three RDBs each), conv_body, conv_up1, conv_up2, conv_hr, conv_last [3, 64, 3, 3]. The x2plus variant takes 12 input channels (pixel unshuffle) and the anime 6B variant has 6 blocks, so neither matches; ESRGAN files in the old model.N layout (4x-UltraSharp) match no rule and stay unknown."
+    }
+  ]
+}

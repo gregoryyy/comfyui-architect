@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "flux-ae",
+  "title": "FLUX.1 autoencoder (16 latent channels), also Z-Image's VAE",
+  "aliases": ["flux1-vae", "z-image-vae"],
+  "folders": ["vae"],
+  "requiredTensors": ["encoder.conv_in.weight", "encoder.conv_out.weight", "decoder.conv_in.weight", "decoder.conv_out.weight"],
+  "forbiddenTensors": ["quant_conv.weight", "post_quant_conv.weight"],
+  "shapes": {
+    "encoder.conv_in.weight": [128, 3, 3, 3],
+    "encoder.conv_out.weight": [32, 512, 3, 3],
+    "decoder.conv_in.weight": [512, 16, 3, 3]
+  },
+  "indistinguishableFrom": ["sd3-vae"],
+  "provenance": [
+    {
+      "source": "safetensors header of vae/ae.safetensors (335304388 bytes, Comfy-Org/Z-Image-Turbo split_files/vae) on the reference target (ComfyUI Desktop 0.44.0 on port 8188, GAPS Q17)",
+      "observedAt": "2026-11-16T09:07:17+01:00",
+      "note": "244 tensors under encoder and decoder; metadata modelspec.architecture Flux.1-AE. decoder.conv_in.weight [512, 16, 3, 3] reads 16 latent channels, and there is no quant_conv or post_quant_conv. The all-in-one FLUX checkpoint carries the same VAE under the vae. prefix with decoder.conv_in [512, 16, 3, 3]. SD 1.x and SDXL VAEs have 4 latent channels and quant_conv; Wan's VAE has encoder.conv1 and no conv_in. The header doesn't tell this VAE from Stable Diffusion 3's, which has the same shapes."
+    }
+  ]
+}

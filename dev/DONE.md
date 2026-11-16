@@ -2,6 +2,53 @@
 
 The progress log, newest entry on top. Each entry: `## YYYY-MM-DD HH:MM — Title` (time from `date`), the TODO items and PR or commit, an `Agent:` line, then **Implementation notes**, **Deviations** and **Insights**. The plan is in [TODO](TODO.md).
 
+## 2026-11-16 13:28 — The recipe set (milestone 5)
+
+TODO items: 5.1 to 5.5 and 5.7; 5.6's renders (its owner review is open). GAPS Q24, Q27, Q32, Q33, Q34, Q35. PR on branch `feat/milestone-5`.
+
+Agent: Opus 5.5, subagents: implementer (part A: input images, model families and the source registry; part B: template import and UI export; part C: the recipes, output size and the smoke, then the review fixes), assurance (milestone review).
+
+### Implementation notes
+
+- **The recipes.** 16 recipes, all `proposed` until the owner reviews them:
+  - Z-Image Turbo: text to image, half size plus 2× upscale, image to image, inpainting, union ControlNet, 2K upscale;
+  - FLUX.1-schnell: text to image from separate components, and text to image, image to image and inpainting from the checkpoint;
+  - FLUX.2 Klein 4B: edit, reference images, masked edit;
+  - RealESRGAN 4× and 2×, and SeedVR2 3B.
+
+  Each new recipe was built from ComfyUI's template on the target and cites it by name and sha256. Every model file is pinned.
+- **Input images.** A task's inputs are `comfyui-input:<name>`, files ComfyUI's loaders list from its input folder (Q33). `input_image` slots bind them.
+  - The `local_render` effect records each input's sha256 and size, so a changed input invalidates the grant at start and before a delayed submission.
+  - Prepare sizes and hashes each input from one read. After the run each input is read again and recorded as verified, changed or unknown.
+  - Reads go only to a loopback target, and Architect uploads nothing.
+- **Output size.**
+  - A recipe output may declare `scaleOfInput`, which is checked against the input's decoded size, and task-sized outputs check the latent step.
+  - A soft check flags a stretched input, and soft failures appear in the approval text.
+  - Masks must match the source size.
+- **Model families.** Rules in `architect/families/` identify a bound file from its safetensors header, read bounded and never the weights. A file of another family fails. A rule names the variants it can't separate, and only the recipe's default passes on such a match. Observations are cached by file, size, modification time, rules and model roots (migration 5).
+- **Sources and templates.**
+  - The source registry of spec §8.5 has the built-in `huggingface`, `comfyui-templates` and `upstream-packs` sources.
+  - The import expands subgraphs and converts the UI graph with upstream's converter into a draft `proposed` recipe. It blanks literal text and writes a conversion report; the template's model URLs are candidates, never pins. Missing node classes and unknown virtual nodes fail the import.
+- **UI export.** `export` writes `workflow.ui.json` when the round trip through upstream's converters gives the same graph (AT-11). Every shipped recipe passes.
+- **Choosing a recipe.** `propose` takes `recipeIds`, so a user can ask for a recipe that ranks below three others.
+- **Reviews.** A maintainer review names the revision it covers, so the three recipes reviewed at revision 3 are `proposed` again since each changed. A revision `main` ships keeps its content.
+- **Checks.**
+  - Lint, build, asset counts, `check:vocabulary`, `check:unknown-collapse`, `vocab:export --check`, `docs:gen` and docs links: pass.
+  - Architect tests: 946, all pass.
+  - Upstream's suite without `bridge-port-reclaim.test.ts`: 15,573 passed and the 13 baseline failures.
+- **Live, on the reference target.** The approved downloads were 23.6 GB: Q34's five files, 18.47 GB, and Q35's two encoders, 5.14 GB. Each file was verified and placed, with nothing left in staging or upstream's cache. Every recipe then rendered once from `stdio-smoke.mjs on --recipes all`, with its output checks passed. A rerun on the fixed build passed for all 16.
+
+### Deviations
+
+- The ARCH rows list the deviations from TODO 5.3 to 5.5 and from the templates: applicability by loader, precision and node revision; AT-11 through the converters; the SeedVR2 resize node; Klein's scaling; the 2K upscaler's fixed prompt.
+- The 2K upscaler encodes and decodes in tiles. A plain VAE decode at 2048×2048 exceeded the Apple GPU's tensor size limit in the first live run.
+- The `architect_library` tool of spec §16.1 isn't built. Listing and import are a service and a maintainer script.
+
+### Insights
+
+- The live run found what the tests couldn't: the Apple GPU's tensor size limit at 2048 pixels, SeedVR2's 19 minutes for 1024 → 4096, and a 12-minute cold load of the 16 GB FLUX.1-schnell checkpoint.
+- Presenting three candidates hides a recipe the user asks for by name. Naming recipes in `propose` fixes that without changing the ranking.
+
 ## 2026-11-16 08:19 — Approved model downloads (milestone 4)
 
 TODO items: 4.1 to 4.7. GAPS Q25, Q26 (answered 03:19), Q30, Q31, Q32 (answered 07:50). PR on branch `feat/milestone-4`, which starts from `docs/phase-3-plan` (PR #12, unmerged).

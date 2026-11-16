@@ -490,7 +490,7 @@ describe("migration 4", () => {
     expect(store.getRun(created.id)?.state).toBe("PREPARING");
     expect(store.createAcquisitions({ runId: created.id, now: new Date(T1), newId })).toHaveLength(1);
     const check = raw();
-    expect(check.prepare("SELECT MAX(version) AS v FROM schema_migrations").get()).toEqual({ v: 4 });
+    expect(check.prepare("SELECT MAX(version) AS v FROM schema_migrations").get()).toEqual({ v: MIGRATIONS.at(-1)?.version });
     check.close();
   });
 });

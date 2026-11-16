@@ -111,9 +111,10 @@ describe("compileRecipe", () => {
         slots: recipe.slots.map((s) => (s.id === "width" ? { ...s, fromTask: undefined, default: 1024 } : s)),
       });
       expect(byId(compileRecipe(noWidth, task, { checkpoint: CKPT }).checks, "contract.task.width").verdict).toBe("unknown");
-      const withInput = fixtureTask({ inputs: [{ assetId: "a1", role: "reference_image" }] });
-      expect(byId(compileRecipe(recipe, withInput, { checkpoint: CKPT }).checks, "contract.task.input.reference_image")).toMatchObject({
-        verdict: "unknown",
+      // An input the recipe has no slot for fails as unsupported (GAPS Q16), never passes.
+      const withInput = fixtureTask({ inputs: [{ assetId: "comfyui-input:ref.png", role: "reference_image" }] });
+      expect(byId(compileRecipe(recipe, withInput, { checkpoint: CKPT }).checks, "contract.task.inputs.reference_image.1")).toMatchObject({
+        verdict: "fail",
         hard: true,
       });
     });

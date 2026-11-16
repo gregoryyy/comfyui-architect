@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "clip-l",
+  "title": "CLIP ViT-L/14 text encoder (12 layers, 768 wide), FLUX.1's short text encoder",
+  "folders": ["text_encoders", "clip"],
+  "requiredTensors": [
+    "text_model.embeddings.token_embedding.weight",
+    "text_model.embeddings.position_embedding.weight",
+    "text_model.encoder.layers.11.self_attn.q_proj.weight"
+  ],
+  "forbiddenTensors": ["text_model.encoder.layers.12.*"],
+  "shapes": {
+    "text_model.embeddings.token_embedding.weight": [49408, 768],
+    "text_model.embeddings.position_embedding.weight": [77, 768]
+  },
+  "provenance": [
+    {
+      "source": "safetensors header of diffusion_models/flux1-schnell-fp8.safetensors (17236328572 bytes) on the reference target (ComfyUI Desktop 0.44.0 on port 8188, GAPS Q17), its text_encoders.clip_l.transformer tensors",
+      "observedAt": "2026-11-16T09:07:17+01:00",
+      "note": "No stand-alone CLIP-L file is installed on the reference target, so the names are the embedded encoder's with the text_encoders.clip_l.transformer. prefix removed: token_embedding [49408, 768], position_embedding [77, 768], encoder layers 0 to 11. CLIP-G is 1280 wide with 32 layers and doesn't match. Not yet checked against a stand-alone clip_l.safetensors header; a file whose names differ matches no rule and stays unknown."
+    }
+  ]
+}

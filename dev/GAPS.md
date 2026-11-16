@@ -1,6 +1,6 @@
 # Gaps
 
-Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-16 07:50.
+Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-16 12:43.
 
 How this file works:
 - Answers are recorded with date, time and author: `**Answer** (2026-11-15 13:30, Gregor Heinrich): …`. Corrections of assumptions record the same in the **Correction** column. Short answers are fine.
@@ -305,6 +305,31 @@ Spec §8.5 asks for a configured source registry: adapter, root or URL, allowed 
 - **Proposed:** for Hugging Face downloads the pins and Q25's rules are enough. The registry comes with the template sources in milestone 5 (TODO 5.2), whose configured roots and refresh state need it.
 - **Answer** (2026-11-16 07:50, Gregor Heinrich): as proposed.
 - **Resolved** (2026-11-16 07:50, Opus 5.5 for Gregor Heinrich): recipe pins and Q25's rules serve Hugging Face downloads; the source registry of spec §8.5 comes with the template sources (TODO 5.2).
+
+### Q33. Where may a task's input images come from? — blocking for TODO 5.7
+
+Nine of the 15 recipes of Q24 take an input image or a mask (image to image, inpainting, editing, reference images, upscaling an image). A task names its inputs by `assetId`, and nothing resolves an asset to a file on the target yet.
+
+- **Proposed:** only files already in the target ComfyUI's input folder, which its image loaders list. Architect reads no other local file and uploads nothing; the user puts images there or uploads them in ComfyUI. Each input file is hashed into the action plan and the run record. The alternatives are a local path the user names, copied into the input folder after a separate approval, or any local path the agent names.
+- **Answer** (2026-11-16 08:51, Gregor Heinrich): the ComfyUI input folder, as proposed.
+- **Resolved** (2026-11-16 08:51, Opus 5.5 for Gregor Heinrich): TODO 5.7; [ARCH](ARCH.md#decision-log).
+
+### Q34. How are milestone 5's live downloads and renders approved?
+
+Milestone 5's live checks download the files of Q24 (about 20 GB) and render each recipe once. In milestones 3 and 4 the smoke approved its run through the terminal channel's code, standing in for the owner, after the owner agreed to the run.
+
+- **Proposed:** before the live runs the exact file list, sources and sizes are shown to the owner; on the owner's go-ahead the e2e runner approves through the terminal channel's code, as in milestones 3 and 4. The alternatives are the owner approving each request in the terminal, or no live downloads in this milestone.
+- **Answer** (2026-11-16 08:51, Gregor Heinrich): as proposed.
+- **Resolved** (2026-11-16 08:51, Opus 5.5 for Gregor Heinrich): TODO 5.6.
+- **Go-ahead** (2026-11-16 09:44, Gregor Heinrich): "go ahead with the download list", for the five files shown: `diffusion_models/flux-2-klein-4b.safetensors` (Comfy-Org/Flux-2-Klein-4B@5b3abca5, 7.75 GB), `vae/flux2-vae.safetensors` (same, 0.34 GB), `model_patches/Z-Image-Turbo-Fun-Controlnet-Union.safetensors` (alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union@01c794d5, 3.10 GB), `diffusion_models/seedvr2_3b_fp16.safetensors` (Comfy-Org/SeedVR2@df488797, 6.78 GB), `vae/seedvr2_ema_vae_fp16.safetensors` (same, 0.50 GB), 18.47 GB, all Apache-2.0, and one mask image `architect-smoke-mask.png` placed in ComfyUI's input folder by the smoke. A dry-run list that differs goes back to the owner.
+
+### Q35. Should the separate-components FLUX.1-schnell recipe get its encoders?
+
+`recipe-flux1-schnell.t2i`, the one `curated` recipe, needs T5-XXL and CLIP-L encoders that aren't installed and weren't pinned, so milestone 5's live check couldn't render it. Pinning them changes the recipe, so it becomes revision 4 and `proposed` until the owner reviews it again.
+
+- **Proposed:** pin and download `text_encoders/t5xxl_fp8_e4m3fn.safetensors` (4.89 GB) and `text_encoders/clip_l.safetensors` (0.25 GB) from `comfyanonymous/flux_text_encoders` (Apache-2.0), approved by the smoke as in Q34, and render the recipe once. The alternative is to keep revision 3 `curated` and unrendered.
+- **Answer** (2026-11-16 12:43, Gregor Heinrich): as proposed; the owner reviews revision 4 with the other recipes.
+- **Resolved** (2026-11-16 12:43, Opus 5.5 for Gregor Heinrich): `recipe-flux1-schnell.t2i` r4 pins all four files; TODO 5.6.
 
 ## Assumptions
 
