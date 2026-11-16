@@ -153,8 +153,19 @@ Exit: the certified set (spec §2.2: 12 to 20 variants across 2 to 3 families) c
 Exit (spec §20): the reference acceptance suite passes on the documented test matrix; unsupported cases are reported as unsupported. Gate ([ROAD](ROAD.md) phase 3): AT-01 to AT-12, AT-04 at the proposed 90%, first-attempt and repaired success reported apart.
 
 - [ ] 6.1 Bounded repair (spec §13.4): errors classified into schema or wiring, missing dependency, unsupported backend or precision, memory, transport, policy and quality; a repair is a new plan revision with a visible diff, limited to the approved scope and an allow list of transformations; limits two repair rounds, three previews, one final execution; anything beyond needs an amended grant
+  - [ ] 6.1.1 Schemas and migration 6: `RunLimits` stage and repair limits, the effect's `stages` and `repair`, `RunRecord.attempt`, the execution error's detail, `graph_revisions`; plans made before keep their hashes
+  - [ ] 6.1.2 Failure classification and the transformation allowlist (`repair.ts`), each transformation with tests on the shipped recipes' graphs
+  - [ ] 6.1.3 Child attempts in the controller and the store's admission transaction, with negative tests: an exhausted budget, a transformation outside the effect, a predecessor in OUTCOME_UNKNOWN, a passed deadline, a repeated identical failure, a changed action plan, a duplicate creation
+  - [ ] 6.1.4 The approval text and `architect_run` status with stages, repair scope, attempts and diffs
 - [ ] 6.2 Validation stages (spec §13.1): a smoke or preview render as its own graph revision, never reported as the final graph's result
+  - [ ] 6.2.1 The smoke stage (`preview.min_steps`): planned only when it lowers a step count, evaluated on the built-in criteria only, never reported as the final's result
 - [ ] 6.3 Protected-region evaluation (spec §13.2): an exact comparison of the pixels outside the mask for recipes that promise it, with the mask, threshold and colour handling part of the criterion
+  - [ ] 6.3.1 The evaluator with tests on synthetic images: exact, a changed protected pixel, a tolerance, another size, an ICC profile, an EXIF rotation, a changed input file
+  - [ ] 6.3.2 The planning check of the graph's guarantee, hard when the criterion is required
 - [ ] 6.4 Optional visual evaluators (GAPS Q29, answered 2026-11-16 03:19): an OCR check through `glm-ocr` for text in the image, behind a versioned plugin contract; its verdicts stay advisory unless the user accepts the evaluator for a criterion, and an uncertain reading is `unknown`
+  - [ ] 6.4.1 The `VisualEvaluator` contract, the `text_in_image` criterion and the advisory flag, with acceptance counting only accepted evaluators
+  - [ ] 6.4.2 `architect.ocr-glm` through the facade, loopback only, with tests for each verdict rule and a non-loopback host
 - [ ] 6.5 The reference acceptance suite (spec §19.2): 30 task fixtures, 20 feasible across the certified recipes and 10 deliberate conflicts, policy and missing-evidence cases, reviewed by the owner; resource fixtures for an Apple unified-memory and a dedicated-GPU profile; a runner for AT-01 to AT-12, including AT-09's no-egress check
+  - [ ] 6.5.1 The 30 fixtures and their README
+  - [ ] 6.5.2 The CI test (AT-01, AT-02, AT-10 with both resource profiles) and the live runner with the no-egress preload (AT-04, AT-09)
 - [ ] 6.6 The test matrix documented in EVAL (GAPS Q28: the reference Mac only, a dedicated GPU in fixtures only, no paid machines); the suite run on it, results in EVAL and DONE
