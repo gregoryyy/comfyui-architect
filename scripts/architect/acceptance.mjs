@@ -11,27 +11,31 @@
 //
 // What it does, in order:
 //   1. Generates the synthetic inputs of inputs.json with sharp (deterministic SVG rendered
-//      to PNG) and UPLOADS each missing one into `<folder>/` of the TARGET'S INPUT FOLDER
+//      to PNG) and UPLOADS each missing one as `<prefix><name>` to the top level of the TARGET'S INPUT FOLDER
 //      through ComfyUI's upload endpoint. A file of that name already there is used when it
 //      has the same pixels and refused otherwise: nothing is ever uploaded over a file.
 //   2. Starts the server with COMFYUI_ARCHITECT=1, its own ARCHITECT_DATA_DIR under the
-//      output folder, and `node --import egress-guard.mjs`, which records every outbound
-//      destination the server opens (AT-09).
+//      output folder, none of the runner's ARCHITECT_* variables that widen what a run may
+//      do (acceptance-judge.mjs `serverEnv`), and `node --import egress-guard.mjs`, which
+//      records every outbound destination, DNS query and child process of the server (AT-09).
 //   3. Plans each fixture (prepare; propose restricted to its recipeIds, with its proposals)
 //      and checks the outcome against `expect`. A `render` fixture whose plan matched is then
 //      selected, prepared and APPROVED IN THE TERMINAL CHANNEL'S CODE with the typed hash, as
-//      the stdio smoke does (a runner has no person at a TTY), and RENDERED on the target; an
-//      action plan that would download is not approved. It follows the run, its smoke and
-//      repair attempts included, until the attempts stop, and finalizes it. It never clears
-//      the queue and cancels only its own run, and only at its 45-minute deadline.
+//      the stdio smoke does (a runner has no person at a TTY), and RENDERED on the target. It
+//      approves only an action plan whose one effect is a local render, read from the store
+//      the approval reads; downloads and residency changes are never approved. It follows the
+//      run, its smoke and repair attempts included, until the attempts stop, and finalizes it.
+//      It never clears the queue and cancels only its own run, and only at its 45-minute
+//      deadline. A render fixture passes when execution passed and acceptance passed or waits
+//      only on the user's review.
 //   4. Writes report.json and report.md: per fixture the outcome, the candidate, execution,
 //      acceptance and evaluations, wall time, first attempt or repaired, smoke attempts apart,
-//      and the egress check; AT-04 over the 20 feasible fixtures, first-attempt and repaired
-//      apart. A `plan` or `render` fixture without downloads fails when a non-loopback
-//      destination was recorded between its start and end.
+//      and the egress check; AT-04 over the 20 feasible fixtures, on execution alone,
+//      first-attempt and repaired apart; AT-09 over the whole session. A fixture fails when a
+//      non-loopback destination was recorded between its start and end.
 // The target comes from the usual environment (COMFYUI_URL, COMFYUI_HOST/PORT, ...) and must
-// be loopback. Needs `npm run build` first. Exits 1 if a fixture fails, 2 on a usage or setup
-// error.
+// be localhost, ::1 or 127.0.0.0/8. Needs `npm run build` first. Exits 1 if a fixture fails or
+// AT-09 isn't passed, 2 on a usage or setup error.
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -40,6 +44,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import * as judge from "./acceptance-judge.mjs";
 
 const ENTRY = fileURLToPath(new URL("../../dist/index.js", import.meta.url));
 const GUARD = fileURLToPath(new URL("./egress-guard.mjs", import.meta.url));
@@ -72,7 +77,7 @@ if (!existsSync(ENTRY)) usage(`${ENTRY} is missing; run npm run build first`);
 
 const acceptance = await import("../../dist/services/architect/acceptance.js");
 const { architectDataDir } = await import("../../dist/services/architect/store.js");
-const { isLoopbackHostname } = await import("../../dist/services/architect/validate.js");
+const { BUILT_IN_IMAGE_CRITERIA, NO_EVALUATOR_CRITERION } = await import("../../dist/services/architect/evaluation.js");
 const { createUpstreamFacade } = await import("../../dist/services/architect/upstream.js");
 const { FORK_IDENTITY } = await import("../../dist/fork-identity.js");
 
@@ -94,16 +99,20 @@ if (onlyArg) {
 
 const baseUrl = createUpstreamFacade().comfyuiBaseUrl().replace(/\/+$/, "");
 const target = new URL(baseUrl);
-if (!isLoopbackHostname(target.hostname)) {
-  usage(`the target ${target.host} isn't loopback; the suite runs on the local reference target only (EVAL, test matrix)`);
+// Stricter than validate.ts's isLoopbackHostname, which also accepts the bind addresses
+// 0.0.0.0 and ::.
+if (!judge.strictLoopbackHost(target.hostname)) {
+  usage(`the target ${target.host} isn't localhost, ::1 or 127.0.0.0/8; the suite runs on the local reference target only (EVAL, test matrix)`);
 }
 
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 const outDir = outArg ? resolve(outArg) : join(architectDataDir(), "acceptance", stamp);
 const dataDir = join(outDir, "data");
 const egressFile = join(outDir, "egress.jsonl");
+// The guard's record of failed writes (egress-guard.mjs).
+const egressErrors = `${egressFile}.errors`;
 mkdirSync(dataDir, { recursive: true });
-if (existsSync(egressFile)) usage(`${egressFile} exists; give a new --out`);
+if (existsSync(egressFile) || existsSync(egressErrors)) usage(`${egressFile} exists; give a new --out`);
 
 // ---------------------------------------------------------------------------------------
 // 1. Inputs
@@ -124,7 +133,7 @@ async function samePixels(sharp, a, b) {
 }
 
 async function viewInput(name) {
-  const res = await fetch(`${baseUrl}/view?type=input&subfolder=${encodeURIComponent(inputs.folder)}&filename=${encodeURIComponent(name)}`);
+  const res = await fetch(`${baseUrl}/view?type=input&filename=${encodeURIComponent(name)}`);
   if (res.status === 404) return { state: "absent" };
   if (!res.ok) return { state: "unknown", reason: `/view answered HTTP ${res.status}` };
   return { state: "present", bytes: Buffer.from(await res.arrayBuffer()) };
@@ -137,7 +146,7 @@ async function prepareInputs() {
   for (const file of inputs.files) {
     const bytes = await renderInput(sharp, file);
     const name = acceptance.inputName(inputs, file);
-    const there = await viewInput(file.name);
+    const there = await viewInput(name);
     if (there.state === "unknown") throw new Error(`whether ${name} is in the input folder is unknown: ${there.reason}`);
     if (there.state === "present") {
       if (there.bytes.equals(bytes) || (await samePixels(sharp, there.bytes, bytes))) {
@@ -150,8 +159,8 @@ async function prepareInputs() {
     // upload instead of replacing the file, and the check below sees the other name.
     const uploaded = await uploadImageHttp(name, bytes, "image/png", false);
     const landed = typeof uploaded?.name === "string" ? uploaded.name : undefined;
-    if (landed !== undefined && landed !== file.name) throw new Error(`${name} was stored as ${landed}: a file of that name appeared during the upload`);
-    const check = await viewInput(file.name);
+    if (landed !== undefined && landed !== name) throw new Error(`${name} was stored as ${landed}: a file of that name appeared during the upload`);
+    const check = await viewInput(name);
     if (check.state !== "present" || !check.bytes.equals(bytes)) throw new Error(`${name} doesn't read back as uploaded`);
     out.push({ name, sha256: sha256(bytes), state: "uploaded" });
   }
@@ -161,19 +170,9 @@ async function prepareInputs() {
 // ---------------------------------------------------------------------------------------
 // 2.-3. The session and the fixtures
 
-function parseReply(res) {
-  const text = res?.content?.[0]?.type === "text" ? res.content[0].text : "";
-  try {
-    return { ...JSON.parse(text), isError: res?.isError === true };
-  } catch {
-    // The SDK's own refusal of invalid arguments is plain text.
-    return { status: "error", summary: text.slice(0, 500), isError: true, error: { code: "INVALID_ARGUMENTS" } };
-  }
-}
-
 async function call(client, name, toolArgs) {
   try {
-    return parseReply(await client.callTool({ name, arguments: toolArgs }, undefined, CALL_TIMEOUT));
+    return judge.parseReply(await client.callTool({ name, arguments: toolArgs }, undefined, CALL_TIMEOUT));
   } catch (err) {
     return { status: "error", summary: err instanceof Error ? err.message : String(err), isError: true, error: { code: "CALL_FAILED" }, thrown: true };
   }
@@ -200,20 +199,35 @@ function judgePlan(f, proposed) {
       : { ok: false, outcome, reason: `no feasible candidate of ${f.expect.recipes.join(", ")}` };
   }
   if (usable.length > 0) return { ok: false, outcome, reason: `expected blocked, but ${usable.map((c) => `${recipeOf(c)} is ${c.status}`).join(", ")}` };
-  return categories.includes(f.expect.category)
+  // AT-02: each expected check, and no reason the fixture didn't name. The raw blockers, not a
+  // default: blockers that don't parse are unreadable, never an empty set (#796).
+  const j = acceptance.judgeBlockers(f, proposed.data?.plan?.blockers);
+  return j.passed
     ? { ok: true, outcome }
-    : { ok: false, outcome, reason: `blocked, but under ${categories.join(", ") || "no category"}, not ${f.expect.category}` };
+    : { ok: false, outcome, reason: j.unreadable ?? [...j.missing.map((m) => `missing ${m}`), ...j.unexpected.map((u) => `unexpected ${u}`)].join("; ") };
 }
 
+/**
+ * Approve in the terminal channel's code, after checking the action plan that approval reads:
+ * the store's, for the request the server named. The typed hash is the stored plan's, so the
+ * approval can't confirm a plan other than the one checked.
+ */
 async function approve(prepared) {
   const { runArchitectCli } = await import("../../dist/services/architect/cli.js");
   const { ArchitectStore } = await import("../../dist/services/architect/store.js");
+  const { shortHash } = await import("../../dist/services/architect/admission.js");
   const store = ArchitectStore.open(dataDir);
   try {
-    return await runArchitectCli(["approve", prepared.data.approvalRequest.id], {
+    const requestId = prepared.data?.approvalRequest?.id;
+    const request = typeof requestId === "string" ? store.getApprovalRequest(requestId) : undefined;
+    const stored = request ? store.getActionPlan(request.actionPlanId) : undefined;
+    const judged = judge.approvalJudgement({ reply: prepared.data, request, stored, shortHash });
+    if (!judged.ok) return { approved: false, effects: judged.effects, reason: judged.reason };
+    const code = await runArchitectCli(["approve", requestId], {
       store,
-      io: { interactive: true, write: () => undefined, ask: async () => prepared.data.shortHash },
+      io: { interactive: true, write: () => undefined, ask: async () => judged.typed },
     });
+    return code === 0 ? { approved: true, effects: judged.effects } : { approved: false, effects: judged.effects, reason: `the terminal approval returned ${code}` };
   } finally {
     store.close();
   }
@@ -244,19 +258,17 @@ function evaluationView(e) {
   return { criterion: e.criterion, verdict: e.verdict, source: e.source, ...(e.advisory ? { advisory: true } : {}), explanation: String(e.explanation ?? "").slice(0, 300) };
 }
 
-async function render(client, f, planId, chosen) {
+async function render(client, f, planId, chosen, task) {
   const selected = await call(client, "architect_plan", { action: "select", planId, candidateId: chosen.id });
   if (selected.status !== "ok") return { ok: false, reason: `select: ${selected.summary}` };
   const prepared = await call(client, "architect_run", { action: "prepare", planId });
   const actionPlan = prepared.data?.actionPlan;
   if (!actionPlan) return { ok: false, reason: `run prepare: ${prepared.error?.code ?? ""} ${prepared.summary}` };
-  const effects = actionPlan.effects.map((e) => e.kind);
-  if (effects.includes("acquire_models")) {
-    // The runner never approves a download: the feasible fixtures need none.
-    return { ok: false, downloads: true, effects, reason: "the action plan downloads model files; the runner doesn't approve downloads" };
-  }
-  const code = await approve(prepared);
-  if (code !== 0) return { ok: false, effects, reason: `the terminal approval returned ${code}` };
+  // A single local render only: the feasible fixtures download nothing, and a residency
+  // change or any later effect kind needs a person's approval (spec §14.2).
+  const approval = await approve(prepared);
+  const effects = approval.effects ?? judge.effectKinds(actionPlan) ?? [];
+  if (!approval.approved) return { ok: false, effects, reason: `not approved: ${approval.reason}` };
   const startedAt = Date.now();
   const started = await call(client, "architect_run", { action: "start", actionPlanId: actionPlan.id });
   const runId = started.data?.run?.id;
@@ -282,32 +294,40 @@ async function render(client, f, planId, chosen) {
   }
   const wallSeconds = Math.round((Date.now() - startedAt) / 1000);
   const chain = status.data?.chain;
-  const attempts = (status.data?.attempts ?? []).map((a) => acceptance.StatusAttempt.safeParse(a)).filter((p) => p.success).map((p) => p.data);
-  const summary = acceptance.summariseAttempts(status.data?.attempts ? attempts : undefined);
+  const summary = judge.attemptSummary(status.data?.attempts, (a) => acceptance.StatusAttempt.safeParse(a), acceptance.summariseAttempts);
   const resultRunId = chain?.resultRunId ?? runId;
   // The evaluations of the attempt that stands for the result, not of a smoke attempt.
   const resultStatus = resultRunId === runId ? status : await call(client, "architect_run", { action: "status", runId: resultRunId });
   const finalized = await call(client, "architect_run", { action: "finalize", runId });
   const verdicts = status.data?.verdicts ?? {};
+  const evaluations = resultStatus.data?.evaluations ?? [];
+  const accepted = judge.acceptanceJudgement({
+    acceptance: verdicts.acceptance,
+    evaluations,
+    required: task ? judge.requiredCriteria(task, { builtInImage: BUILT_IN_IMAGE_CRITERIA, noEvaluator: NO_EVALUATOR_CRITERION }) : [],
+  });
+  const verdict = judge.renderVerdict(verdicts.execution, accepted);
   return {
-    ok: verdicts.execution === "passed",
+    ok: verdict.ok,
     runId,
     resultRunId,
     state: resultStatus.data?.run?.state ?? status.data?.run?.state,
     ...(resultStatus.data?.run?.error ? { error: { code: resultStatus.data.run.error.code, message: String(resultStatus.data.run.error.message ?? "").slice(0, 300) } } : {}),
     verdicts,
-    evaluations: (resultStatus.data?.evaluations ?? []).map(evaluationView),
+    evaluations: evaluations.map(evaluationView),
+    acceptancePendingOn: accepted.pendingOn,
     path: summary.path,
     smokeAttempts: summary.smokeAttempts,
     finalAttempts: summary.finalAttempts,
     chainReported: summary.chainReported,
+    ...(summary.unparsed ? { unparsedAttempts: summary.unparsed } : {}),
     ...(chain ? { chain: { state: chain.state, stopRule: chain.stopRule, stopReason: chain.stopReason } } : {}),
     attempts: (status.data?.attempts ?? []).map(attemptView),
     wallSeconds,
     timedOut,
     finalize: finalized.status,
     effects,
-    ...(verdicts.execution === "passed" ? {} : { reason: `execution ${verdicts.execution ?? "unknown"}${timedOut ? " (deadline reached; the run was cancelled)" : ""}` }),
+    ...(verdict.ok ? {} : { reason: `${verdict.reason}${timedOut ? " (deadline reached; the run was cancelled)" : ""}` }),
   };
 }
 
@@ -317,8 +337,10 @@ async function runFixture(client, f) {
   const prepared = await call(client, "architect_plan", { action: "prepare", task: f.task });
   const planId = prepared.data?.plan?.id;
   if (f.expect.outcome === "refused") {
-    const refused = !planId && (prepared.isError || prepared.status === "error");
-    return { ...entry, outcome: { status: refused ? "refused" : "accepted", error: prepared.error?.code, summary: String(prepared.summary ?? "").slice(0, 300) }, passed: refused, ...(refused ? {} : { reason: "the task was accepted" }), wallSeconds: Math.round((Date.now() - startedAt) / 1000) };
+    // AT-01: only the validation refusal counts, never a failed call or another error.
+    const refusal = judge.refusalJudgement(prepared);
+    const status = refusal.refused ? "refused" : planId ? "accepted" : "error";
+    return { ...entry, outcome: { status, error: prepared.error?.code, summary: String(prepared.summary ?? "").slice(0, 300) }, passed: refusal.refused, ...(refusal.refused ? {} : { reason: refusal.reason }), wallSeconds: Math.round((Date.now() - startedAt) / 1000) };
   }
   if (!planId) return { ...entry, outcome: { status: "error", summary: String(prepared.summary ?? "").slice(0, 300) }, passed: false, reason: `prepare: ${prepared.error?.code ?? ""} ${prepared.summary}` };
   const proposed = await call(client, "architect_plan", {
@@ -332,7 +354,7 @@ async function runFixture(client, f) {
   const base = { ...entry, outcome: judged.outcome, ...(judged.chosen ? { candidate: { id: judged.chosen.id, recipe: judged.chosen.recipe, status: judged.chosen.status } } : {}) };
   if (!judged.ok) return { ...base, passed: false, reason: judged.reason, wallSeconds: Math.round((Date.now() - startedAt) / 1000) };
   if (f.live !== "render" || planOnly) return { ...base, passed: true, wallSeconds: Math.round((Date.now() - startedAt) / 1000) };
-  const run = await render(client, f, planId, judged.chosen);
+  const run = await render(client, f, planId, judged.chosen, prepared.data?.task);
   return { ...base, run, passed: run.ok, ...(run.ok ? {} : { reason: run.reason }), wallSeconds: Math.round((Date.now() - startedAt) / 1000) };
 }
 
@@ -348,7 +370,7 @@ function markdown(report) {
   const lines = [
     `# Acceptance suite, ${report.startedAt.slice(0, 16).replace("T", " ")} UTC`,
     "",
-    `${report.fork} on ${report.target}; ${report.fixtures.length} fixture(s)${report.planOnly ? ", planned only" : ""}. ${report.passed} passed, ${report.failed} failed.`,
+    `${report.fork} on ${report.target}; ${report.fixtures.length} fixture(s)${report.planOnly ? ", planned only" : ""}. ${report.passed} passed, ${report.failed} failed; AT-09 ${report.at09.verdict}.`,
     "",
     "| Fixture | Expected | Outcome | Candidate | Execution | Acceptance | Attempts | Wall | Egress | Result |",
     "|---|---|---|---|---|---|---|---|---|---|",
@@ -356,10 +378,13 @@ function markdown(report) {
   for (const r of report.fixtures) {
     const expected = r.expected.outcome === "blocked" ? `blocked: ${r.expected.category}` : r.expected.outcome;
     const outcome = r.outcome?.status === "blocked" ? `blocked: ${(r.outcome.categories ?? []).join(", ")}` : (r.outcome?.status ?? "");
-    const attempts = r.run ? `${r.run.path === "repaired" ? "repaired" : "first"}; ${r.run.smokeAttempts} smoke, ${r.run.finalAttempts} final` : "";
+    const path = { repaired: "repaired", first_attempt: "first", unknown: `unknown (${r.run?.unparsedAttempts ?? 0} unread)` }[r.run?.path] ?? "";
+    const attempts = r.run ? `${path}; ${r.run.smokeAttempts} smoke, ${r.run.finalAttempts} final` : "";
+    const pendingOn = r.run?.acceptancePendingOn ?? [];
+    const acceptance = r.run?.verdicts ? `${r.run.verdicts.acceptance ?? "unknown"}${pendingOn.length > 0 ? ` (on ${pendingOn.join(", ")})` : ""}` : "";
     const egress = r.egress.checked ? (r.egress.violations.length === 0 ? "loopback only" : r.egress.violations.join(", ")) : `not checked: ${r.egress.reason}`;
     lines.push(
-      `| ${r.id} | ${expected} | ${outcome} | ${r.candidate?.recipe ?? ""} | ${r.run?.verdicts?.execution ?? ""} | ${r.run?.verdicts?.acceptance ?? ""} | ${attempts} | ${r.wallSeconds ?? ""} s | ${egress} | ${r.passed ? "pass" : `FAIL: ${String(r.reason ?? "").replace(/\|/g, "/")}`} |`,
+      `| ${r.id} | ${expected} | ${outcome} | ${r.candidate?.recipe ?? ""} | ${r.run?.verdicts?.execution ?? ""} | ${acceptance} | ${attempts} | ${r.wallSeconds ?? ""} s | ${egress} | ${r.passed ? "pass" : `FAIL: ${String(r.reason ?? "").replace(/\|/g, "/")}`} |`,
     );
   }
   const a = report.at04;
@@ -368,15 +393,19 @@ function markdown(report) {
     lines.push("Not measured: no feasible fixture was rendered.");
   } else {
     lines.push(
-      `${a.executable} of ${a.feasible} feasible fixtures executable (${(a.share * 100).toFixed(0)}%, target ${(a.target * 100).toFixed(0)}%): ${a.firstAttempt} on the first attempt, ${a.repaired} after repair.` +
+      `${a.executable} of ${a.feasible} feasible fixtures executable (${(a.share * 100).toFixed(0)}%, target ${(a.target * 100).toFixed(0)}%): ${a.firstAttempt} on the first attempt, ${a.repaired} after repair` +
+        (a.executable - a.firstAttempt - a.repaired > 0 ? `, ${a.executable - a.firstAttempt - a.repaired} with attempts that couldn't be read.` : ".") +
+        " Counted on execution alone; acceptance is in the table." +
         (a.complete ? "" : ` Incomplete: ${a.notRendered.length} not rendered (${a.notRendered.join(", ")}).`) +
         (a.notExecutable.length > 0 ? ` Not executable: ${a.notExecutable.join(", ")}.` : "") +
         ` ${a.passed ? "Passed." : "Not passed."}`,
     );
   }
+  const n = report.at09;
   lines.push("", "## AT-09", "");
   lines.push(
-    `${report.egress.records} destination record(s), ${report.egress.unreadable} unreadable line(s). ` +
+    `${{ passed: "Passed", failed: "Failed", unknown: "Unknown" }[n.verdict]}${n.reasons.length > 0 ? `: ${n.reasons.join("; ")}` : ""}. ` +
+      `${report.egress.records} record(s): ${report.egress.destinations} destination(s), ${report.egress.spawnRecords} child process(es) (${n.spawns.join(", ") || "none"}); ${report.egress.unreadable} unreadable line(s). ` +
       `Fixtures with a non-loopback destination: ${report.fixtures.filter((r) => r.egress.violations.length > 0).map((r) => r.id).join(", ") || "none"}. ` +
       `Outside every fixture: ${report.egress.outsideFixtures.join(", ") || "loopback only"}. ComfyUI's own traffic isn't covered.`,
   );
@@ -398,10 +427,14 @@ const startedAt = new Date().toISOString();
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: ["--import", pathToFileURL(GUARD).href, ENTRY, "--full"],
-  env: { ...process.env, COMFYUI_ARCHITECT: "1", ARCHITECT_DATA_DIR: dataDir, [acceptance.EGRESS_LOG_ENV]: egressFile },
+  // Not the runner's whole environment: ARCHITECT_MANAGE_RESIDENCY, for one, would put a
+  // release_residency effect into the action plans (which the runner then refuses), and an
+  // ARCHITECT_* variable it doesn't know may widen what a run may do (acceptance-judge.mjs).
+  env: judge.serverEnv(process.env, { COMFYUI_ARCHITECT: "1", ARCHITECT_DATA_DIR: dataDir, [acceptance.EGRESS_LOG_ENV]: egressFile }),
   stderr: "ignore",
 });
 const client = new Client({ name: "architect-acceptance", version: "0.0.0" });
+const sessionFrom = Date.now();
 await client.connect(transport);
 const results = [];
 const windows = [];
@@ -423,14 +456,17 @@ try {
 } finally {
   await client.close();
 }
+const sessionTo = Date.now();
 
-const log = existsSync(egressFile) ? acceptance.parseEgressLog(readFileSync(egressFile, "utf-8")) : { records: [], unreadable: 0 };
+const logExists = existsSync(egressFile);
+const log = logExists ? acceptance.parseEgressLog(readFileSync(egressFile, "utf-8")) : { records: [], unreadable: 0 };
+// Startup lines and child processes name no destination; only the rest is checked for one.
+const { destinations, spawns } = judge.classifyEgress(log.records);
 for (const r of results) {
   const w = windows.find((x) => x.id === r.id);
-  const violations = w ? acceptance.egressViolations(log.records, w.from, w.to) : [];
-  if (r.run?.downloads) {
-    r.egress = { checked: false, reason: "the action plan downloads", violations };
-  } else if (!existsSync(egressFile)) {
+  // No exemption for downloads: the runner never approves one, so nothing may leave.
+  const violations = w ? acceptance.egressViolations(destinations, w.from, w.to) : [];
+  if (!logExists) {
     // No log at all: the guard didn't run, so egress is unknown, never "none" (#796).
     r.egress = { checked: false, reason: "the egress guard wrote no log", violations: [] };
     r.passed = false;
@@ -444,7 +480,15 @@ for (const r of results) {
   }
 }
 const inside = (at) => windows.some((w) => at >= w.from && at <= w.to);
-const outsideFixtures = acceptance.egressViolations(log.records.filter((r) => !inside(r.at)), 0, Number.MAX_SAFE_INTEGER);
+const outsideFixtures = acceptance.egressViolations(destinations.filter((r) => !inside(r.at)), 0, Number.MAX_SAFE_INTEGER);
+// The whole log, not only [sessionFrom, sessionTo]: the server wrote every line within the
+// session, so a line outside it would be a clock oddity, and still not a reason to ignore it.
+const at09 = judge.at09Verdict({
+  logExists,
+  log,
+  sidecarExists: existsSync(egressErrors),
+  violations: (records) => acceptance.egressViolations(records, 0, Number.MAX_SAFE_INTEGER),
+});
 
 const feasibleIds = loaded.fixtures.filter((f) => f.expect.outcome === "feasible").map((f) => f.id);
 const rendered = results.filter((r) => r.run && r.run.runId).map((r) => ({ id: r.id, execution: r.run.verdicts?.execution, path: r.run.path }));
@@ -461,10 +505,12 @@ const report = {
   inputs: preparedInputs,
   fixtures: results,
   at04: acceptance.at04(feasibleIds, rendered),
-  egress: { records: log.records.length, unreadable: log.unreadable, outsideFixtures },
+  egress: { records: log.records.length, destinations: destinations.length, spawnRecords: spawns.length, unreadable: log.unreadable, outsideFixtures, session: { from: sessionFrom, to: sessionTo } },
+  at09,
 };
 writeFileSync(join(outDir, "report.json"), scrub(`${JSON.stringify(report, null, 2)}\n`));
 writeFileSync(join(outDir, "report.md"), scrub(markdown(report)));
 console.log(`\n${report.passed} passed, ${report.failed} failed; report in ${outDir}`);
 if (report.at04.rendered > 0) console.log(`AT-04: ${report.at04.executable}/${report.at04.feasible} executable, ${report.at04.firstAttempt} first attempt, ${report.at04.repaired} repaired`);
-process.exit(report.failed > 0 ? 1 : 0);
+console.log(`AT-09: ${at09.verdict}${at09.reasons.length > 0 ? ` (${at09.reasons.join("; ")})` : ""}`);
+process.exit(report.failed > 0 || at09.verdict !== "passed" ? 1 : 0);

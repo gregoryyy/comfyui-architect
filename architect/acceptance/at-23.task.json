@@ -4,7 +4,10 @@
   "title": "WebP output",
   "expect": {
     "outcome": "blocked",
-    "category": "unsupported_operation"
+    "category": "unsupported_operation",
+    "checks": [
+      "the recipe writes format png, the task asks for webp"
+    ]
   },
   "live": "plan",
   "why": "The recipes save PNG; another format is a hard conflict, not a conversion.",

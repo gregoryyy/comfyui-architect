@@ -4,7 +4,10 @@
   "title": "Protected pixels on a stretched masked edit",
   "expect": {
     "outcome": "blocked",
-    "category": "unsupported_operation"
+    "category": "unsupported_operation",
+    "checks": [
+      "criterion outside-mask: the recipe doesn't guarantee the protected region"
+    ]
   },
   "live": "plan",
   "why": "The masked edit scales the source to the task's size, so the pixels outside the mask can't stay the source's; a required protected region fails hard (TODO 6.3).",
@@ -20,11 +23,11 @@
     },
     "inputs": [
       {
-        "assetId": "comfyui-input:architect-acceptance/scene-1024.png",
+        "assetId": "comfyui-input:architect-acceptance-scene-1024.png",
         "role": "source_image"
       },
       {
-        "assetId": "comfyui-input:architect-acceptance/mask-1024.png",
+        "assetId": "comfyui-input:architect-acceptance-mask-1024.png",
         "role": "mask"
       }
     ],
@@ -33,8 +36,8 @@
         "id": "outside-mask",
         "kind": "protected_region_exact",
         "required": true,
-        "sourceAssetId": "comfyui-input:architect-acceptance/scene-1024.png",
-        "maskAssetId": "comfyui-input:architect-acceptance/mask-1024.png",
+        "sourceAssetId": "comfyui-input:architect-acceptance-scene-1024.png",
+        "maskAssetId": "comfyui-input:architect-acceptance-mask-1024.png",
         "coordinateSpace": "source_pixels"
       }
     ]

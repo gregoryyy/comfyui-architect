@@ -25,11 +25,11 @@
     },
     "inputs": [
       {
-        "assetId": "comfyui-input:architect-acceptance/scene-1024.png",
+        "assetId": "comfyui-input:architect-acceptance-scene-1024.png",
         "role": "source_image"
       },
       {
-        "assetId": "comfyui-input:architect-acceptance/mask-1024.png",
+        "assetId": "comfyui-input:architect-acceptance-mask-1024.png",
         "role": "mask"
       }
     ],
@@ -38,8 +38,8 @@
         "id": "outside-mask",
         "kind": "protected_region_exact",
         "required": true,
-        "sourceAssetId": "comfyui-input:architect-acceptance/scene-1024.png",
-        "maskAssetId": "comfyui-input:architect-acceptance/mask-1024.png",
+        "sourceAssetId": "comfyui-input:architect-acceptance-scene-1024.png",
+        "maskAssetId": "comfyui-input:architect-acceptance-mask-1024.png",
         "coordinateSpace": "source_pixels"
       }
     ]

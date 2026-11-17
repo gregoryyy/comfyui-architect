@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "folder": "architect-acceptance",
+  "prefix": "architect-acceptance-",
   "files": [
     {
       "name": "scene-1024.png",

@@ -4,7 +4,15 @@
   "title": "Missing input file",
   "expect": {
     "outcome": "blocked",
-    "category": "insufficient_evidence"
+    "category": "insufficient_evidence",
+    "checks": [
+      "the output is the size of architect-acceptance-does-not-exist.png, whose size isn't known"
+    ],
+    "related": {
+      "missing_dependencies": [
+        "\"architect-acceptance-does-not-exist.png\" is not a file LoadImage lists in the target's input folder"
+      ]
+    }
   },
   "live": "plan",
   "why": "The named file isn't in the target's input folder, so its size and content are unknown.",
@@ -20,12 +28,20 @@
     },
     "inputs": [
       {
-        "assetId": "comfyui-input:architect-acceptance/does-not-exist.png",
+        "assetId": "comfyui-input:architect-acceptance-does-not-exist.png",
         "role": "source_image"
       }
     ]
   },
   "recipeIds": [
     "recipe-zimage-turbo.img2img"
+  ],
+  "proposals": [
+    {
+      "recipeId": "recipe-zimage-turbo.img2img",
+      "bindings": {
+        "denoise": 0.6
+      }
+    }
   ]
 }

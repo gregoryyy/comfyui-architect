@@ -4,7 +4,11 @@
   "title": "Size off the latent's step",
   "expect": {
     "outcome": "blocked",
-    "category": "unsupported_operation"
+    "category": "unsupported_operation",
+    "checks": [
+      "/the task's width 1000 isn't a multiple of (16|32)/",
+      "/the task's height 1000 isn't a multiple of (16|32)/"
+    ]
   },
   "live": "plan",
   "why": "Z-Image Turbo needs sides that are multiples of 16; the size isn't rounded on the user's behalf (spec \u00a74.3).",

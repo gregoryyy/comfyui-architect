@@ -4,7 +4,10 @@
   "title": "Local render on a remote target",
   "expect": {
     "outcome": "blocked",
-    "category": "policy_conflicts"
+    "category": "policy_conflicts",
+    "checks": [
+      "the task renders locally only; the target 192.168.1.20 is not a loopback address"
+    ]
   },
   "live": "fixture_only",
   "why": "The task renders locally only and the fixture's target isn't loopback (spec \u00a714).",

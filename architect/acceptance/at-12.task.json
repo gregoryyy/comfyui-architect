@@ -25,11 +25,11 @@
     },
     "inputs": [
       {
-        "assetId": "comfyui-input:architect-acceptance/scene-1024.png",
+        "assetId": "comfyui-input:architect-acceptance-scene-1024.png",
         "role": "reference_image"
       },
       {
-        "assetId": "comfyui-input:architect-acceptance/pattern-1024.png",
+        "assetId": "comfyui-input:architect-acceptance-pattern-1024.png",
         "role": "reference_image"
       }
     ]

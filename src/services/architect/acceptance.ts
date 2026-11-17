@@ -1,7 +1,8 @@
 // The reference acceptance suite's data (spec §19.2; TODO 6.5; ARCH 2026-11-16, milestone 6,
 // acceptance suite): the task fixtures in `architect/acceptance/`, the synthetic input images
-// they name, and the pure parts of the live runner's report: which outbound destinations break
-// AT-09 and how AT-04 counts first-attempt and repaired results.
+// they name, and the pure parts of the live runner's report: whether a conflict's blockers are
+// the ones it expects (AT-02), which outbound destinations break AT-09 and how AT-04 counts
+// first-attempt and repaired results.
 //
 // The CI test (`acceptance-suite.test.ts`) and the live runner (`scripts/architect/
 // acceptance.mjs`) both read the fixtures through these schemas, so a field either of them
@@ -22,12 +23,54 @@ export const ACCEPTANCE_DIR = fileURLToPath(new URL("../../../architect/acceptan
 export const BlockerCategory = PlanBlockers.keyof();
 export type BlockerCategory = z.infer<typeof BlockerCategory>;
 
+/** Whether a blocker check is written as a regular expression: `/source/`. */
+function isRegexCheck(check: string): boolean {
+  return check.length > 2 && check.startsWith("/") && check.endsWith("/");
+}
+
+/**
+ * One expected blocker line: a substring of the line, or a regular expression's source
+ * between slashes (`/multiple of (16|32)/`). A substring is the default because the lines
+ * quote file names and sizes full of characters a pattern would read as syntax.
+ */
+export const BlockerCheck = z
+  .string()
+  .min(1)
+  .refine(
+    (check) => {
+      if (!isRegexCheck(check)) return true;
+      try {
+        new RegExp(check.slice(1, -1));
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    { message: "a check between slashes must be a valid regular expression" },
+  );
+
+/** Whether a blocker line matches an expected check. */
+export function blockerCheckMatches(check: string, line: string): boolean {
+  return isRegexCheck(check) ? new RegExp(check.slice(1, -1)).test(line) : line.includes(check);
+}
+
 /** What a fixture expects planning to come to. */
 export const AcceptanceExpectation = z.discriminatedUnion("outcome", [
   /** A feasible candidate of one of `recipes`. */
   z.object({ outcome: z.literal("feasible"), recipes: z.array(z.string().min(1)).min(1) }).strict(),
-  /** No feasible or acquirable candidate, and at least one blocker in `category`. */
-  z.object({ outcome: z.literal("blocked"), category: BlockerCategory }).strict(),
+  /**
+   * No feasible or acquirable candidate, blocked for the reason `checks` names (`judgeBlockers`).
+   * `checks` are the lines `category` must hold; `related` the lines the same conflict puts in
+   * other categories, as at-30's missing file is what the forbidden download would fetch.
+   */
+  z
+    .object({
+      outcome: z.literal("blocked"),
+      category: BlockerCategory,
+      checks: z.array(BlockerCheck).min(1),
+      related: z.partialRecord(BlockerCategory, z.array(BlockerCheck).min(1)).optional(),
+    })
+    .strict(),
   /** The task is rejected as malformed before planning (AT-01). */
   z.object({ outcome: z.literal("refused") }).strict(),
 ]);
@@ -79,8 +122,11 @@ export type AcceptanceFixture = z.infer<typeof AcceptanceFixture>;
 export const AcceptanceInputs = z
   .object({
     schemaVersion: z.literal(1),
-    /** The subfolder of the target's input folder the runner writes them to. */
-    folder: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
+    /**
+     * The prefix of each file's name in the target's input folder. The files sit at its top
+     * level: LoadImage lists only that level, and an input must be a file it lists (GAPS Q33).
+     */
+    prefix: z.string().regex(/^[a-z0-9][a-z0-9-]*-$/),
     files: z
       .array(
         z
@@ -158,9 +204,9 @@ export function loadAcceptanceFixtures(dir: string = ACCEPTANCE_DIR): Acceptance
   return out;
 }
 
-/** The name a task's `comfyui-input:` asset id gives an input file: `<folder>/<name>`. */
-export function inputName(inputs: Pick<AcceptanceInputs, "folder">, file: Pick<AcceptanceInputFile, "name">): string {
-  return `${inputs.folder}/${file.name}`;
+/** The name a task's `comfyui-input:` asset id gives an input file: `<prefix><name>`. */
+export function inputName(inputs: Pick<AcceptanceInputs, "prefix">, file: Pick<AcceptanceInputFile, "name">): string {
+  return `${inputs.prefix}${file.name}`;
 }
 
 /**
@@ -203,6 +249,70 @@ export function inputSvg(file: Pick<AcceptanceInputFile, "width" | "height" | "p
         "</svg>"
       );
   }
+}
+
+// ---------------------------------------------------------------------------------------
+// AT-02: a conflict blocked for its own reason
+
+/**
+ * The lines a failed compilation adds for each candidate it built no graph for (validate.ts):
+ * the structure and native-type layers and the paid-node scan have nothing to check, so they
+ * are unknown. They follow from the failure a fixture expects and are never its reason.
+ */
+export const COMPILE_KNOCK_ON_LINES = [
+  "no graph: compilation failed its contract checks",
+  "no compiled graph to scan for paid render nodes",
+] as const;
+
+/** Whether a blocker line is one of the knock-ons of a failed compilation, as `<recipe>: <line>`. */
+export function isCompileKnockOn(line: string): boolean {
+  return COMPILE_KNOCK_ON_LINES.some((k) => line === k || line.endsWith(`: ${k}`));
+}
+
+/** Whether a blocked fixture's plan was blocked for its reason, and what didn't match. */
+export interface BlockerJudgement {
+  passed: boolean;
+  /**
+   * Why the blockers couldn't be read, when they couldn't: the judgement is then unknown, and
+   * `missing` and `unexpected` are empty because nothing was compared, not because nothing differed.
+   */
+  unreadable?: string;
+  /** Expected checks no line matched, as `<category>: <check>`. */
+  missing: string[];
+  /** Lines no expected check matched that aren't knock-ons, as `<category>: <line>`. */
+  unexpected: string[];
+}
+
+/**
+ * Judge a plan's blockers against a blocked fixture (AT-02). It passes only when each
+ * expected check matches a line of its category, every line is matched by a check of its
+ * category or is a knock-on of a failed compilation, and so no category holds a reason the
+ * fixture didn't name. A non-empty category alone isn't enough: a conflict that is also
+ * blocked by, say, an unbound slot would pass while testing the wrong reason.
+ *
+ * `blockers` is parsed here, so the live runner can pass the plan's blockers as the tool
+ * returned them; blockers that don't parse are `unreadable`, never an empty set (#796).
+ */
+export function judgeBlockers(fixture: Pick<AcceptanceFixture, "expect">, blockers: unknown): BlockerJudgement {
+  const expectation = fixture.expect;
+  if (expectation.outcome !== "blocked") {
+    return { passed: false, missing: [`(fixture): expects ${expectation.outcome}, not blocked`], unexpected: [] };
+  }
+  const parsed = PlanBlockers.safeParse(blockers);
+  if (!parsed.success) return { passed: false, unreadable: `the plan's blockers don't parse: ${issues(parsed.error)}`, missing: [], unexpected: [] };
+  const expected: Partial<Record<BlockerCategory, string[]>> = { ...expectation.related, [expectation.category]: expectation.checks };
+  const missing: string[] = [];
+  const unexpected: string[] = [];
+  for (const category of BlockerCategory.options) {
+    const checks = expected[category] ?? [];
+    const lines = parsed.data[category];
+    for (const check of checks) if (!lines.some((l) => blockerCheckMatches(check, l))) missing.push(`${category}: ${check}`);
+    for (const line of lines) {
+      if (isCompileKnockOn(line) || checks.some((c) => blockerCheckMatches(c, line))) continue;
+      unexpected.push(`${category}: ${line}`);
+    }
+  }
+  return { passed: missing.length === 0 && unexpected.length === 0, missing, unexpected };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -295,7 +405,10 @@ export function attemptRepaired(a: StatusAttempt): boolean {
 
 /** How a rendered fixture's attempts came out, for the report. */
 export interface AttemptSummary {
-  /** `first_attempt`: no attempt was repaired; `repaired`: one was. */
+  /**
+   * `first_attempt`: the first final attempt whose execution passed wasn't repaired;
+   * `repaired`: it was. With no executable final, whether any attempt was repaired.
+   */
   path: "first_attempt" | "repaired";
   smokeAttempts: number;
   finalAttempts: number;
@@ -303,13 +416,21 @@ export interface AttemptSummary {
   chainReported: boolean;
 }
 
-/** Count a status's attempts; without `attempts` the run is one first attempt. */
+/**
+ * Count a status's attempts, in the order the status lists them; without `attempts` the run
+ * is one first attempt. AT-04 asks whether the result was executable at the first attempt,
+ * so the path is the first executable final's: a quality repair after it (another seed, say)
+ * renders again but doesn't make an executable first final a repaired one.
+ */
 export function summariseAttempts(attempts: readonly StatusAttempt[] | undefined): AttemptSummary {
   if (attempts === undefined || attempts.length === 0) return { path: "first_attempt", smokeAttempts: 0, finalAttempts: 1, chainReported: false };
+  const finals = attempts.filter((a) => a.stage !== "smoke");
+  const executable = finals.find((a) => a.execution === "passed");
+  const repaired = executable ? attemptRepaired(executable) : attempts.some(attemptRepaired);
   return {
-    path: attempts.some(attemptRepaired) ? "repaired" : "first_attempt",
-    smokeAttempts: attempts.filter((a) => a.stage === "smoke").length,
-    finalAttempts: attempts.filter((a) => a.stage !== "smoke").length,
+    path: repaired ? "repaired" : "first_attempt",
+    smokeAttempts: attempts.length - finals.length,
+    finalAttempts: finals.length,
     chainReported: true,
   };
 }

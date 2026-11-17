@@ -4,7 +4,16 @@
   "title": "Download needed, downloads forbidden",
   "expect": {
     "outcome": "blocked",
-    "category": "policy_conflicts"
+    "category": "policy_conflicts",
+    "checks": [
+      "downloads forbidden by the task (constraints.modelDownloads): diffusion_models/flux-2-klein-4b.safetensors"
+    ],
+    "related": {
+      "missing_dependencies": [
+        "diffusion_models/flux-2-klein-4b.safetensors is not installed on the target",
+        "1.unet_name = \"flux-2-klein-4b.safetensors\" is not a file UNETLoader offers on the target"
+      ]
+    }
   },
   "live": "fixture_only",
   "why": "The fixture's target lacks the Klein model file, and the task forbids downloads, so the candidate isn't acquirable (GAPS Q25).",
@@ -20,7 +29,7 @@
     },
     "inputs": [
       {
-        "assetId": "comfyui-input:architect-acceptance/scene-1456x816.png",
+        "assetId": "comfyui-input:architect-acceptance-scene-1456x816.png",
         "role": "source_image"
       }
     ],

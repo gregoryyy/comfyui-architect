@@ -25,7 +25,7 @@
     },
     "inputs": [
       {
-        "assetId": "comfyui-input:architect-acceptance/scene-1456x816.png",
+        "assetId": "comfyui-input:architect-acceptance-scene-1456x816.png",
         "role": "source_image"
       }
     ]
