@@ -66,7 +66,7 @@ Phases are [ROAD](ROAD.md)'s.
 | Evaluator verdicts don't overreach | `protected-region.test.ts`: a changed input, an ICC profile or 16 bits are `unknown`, another size fails; `ocr-glm.test.ts`: a non-loopback host sends nothing, a redirect isn't followed, a missing, ambiguous or timed-out model is `unknown`; `visual-evaluation.test.ts`: advisory records don't count, the approval names an accepted criterion's text, match rule and tolerance |
 | ComfyUI error text is data | `repair.test.ts`: classification over bounded text by fixed patterns; an instruction in the text changes no class and no step |
 | Untrusted content stays data | Injection fixtures in workflow notes, model cards and node docs; the planner's output must not change |
-| No egress under `local-private` | AT-09: no outbound provider or catalog request in the test run |
+| No egress under `local-private` | AT-09: the live runner starts the server with the preload `scripts/architect/egress-guard.mjs`, which records the server process's TCP connections (fetch, undici, http, https, net, tls), child processes, DNS lookups and UDP; the run passes only with a startup record, loopback destinations alone over the whole session, no unreadable or lost record and no child process other than Node. It is a measurement, not enforcement, and doesn't see ComfyUI's own traffic (spec §19.2, deployment-level) |
 | No duplicate renders | AT-06: a dropped response after submission ends in `OUTCOME_UNKNOWN`, not a second submission |
 | Unrelated work untouched | AT-07: cancellation and recovery tests with foreign queued jobs and an open canvas |
 | Loopback by default | Upstream's transport tests, kept passing; a test that Architect adds no listener of its own |

@@ -6,7 +6,7 @@ The project's documents are in [dev/](dev/README.md), for development (called `e
 
 ## Current status
 
-Milestone 5 (the recipe set) is in review: 16 recipes for Z-Image Turbo, FLUX.1-schnell, FLUX.2 Klein 4B, RealESRGAN and SeedVR2, all `proposed` until the owner reviews them, input images from ComfyUI's input folder (GAPS Q33), model families read from file headers, the source registry, template import and the UI export. Milestone 4 (approved model downloads) is done: a candidate whose only gap is model files its recipe pins on Hugging Face is `acquirable`, and the run's approval covers downloading them, verified by sha256 before placement (GAPS Q25, Q26, Q30 to Q32). Milestone 3 (spec Phase 2, managed execution) is done: with `COMFYUI_ARCHITECT` on, `architect_run` renders a selected candidate locally once the user approves it in a client dialog or with the terminal command `comfyui-mcp architect approve`, follows the job with a durable controller, checks the outputs and records the user's verdict; `COMFYUI_ARCHITECT=managed` withholds upstream's effectful tools (GAPS Q20, Q21); `ARCHITECT_PANEL_RUNS` and `ARCHITECT_MANAGE_RESIDENCY` set what the panel may start and which Ollama models may be unloaded (GAPS Q22, Q23). Milestone 2 (planning) is done. The package keeps the name `comfyui-mcp` until a rename milestone before the first publish, which also brings command shorthands and the publishing preparation (GAPS Q11). The fork's README is `README.md`; upstream's is `README_BASE.md`. Panel work waits for the panel phase (ROAD phase 4). Still open from milestone 1: the first CI run, which waits on the owner confirming the fork's workflows in the Actions tab. ROAD phase 3 continues with TODO milestone 6 (repair, region checks and the acceptance suite); their decisions are GAPS Q24 to Q29, answered 2026-11-16. On the reference Mac `lsof` hangs, and upstream's model-path resolution waits about 15 s for it on every call.
+Milestone 5 (the recipe set) is in review: 16 recipes for Z-Image Turbo, FLUX.1-schnell, FLUX.2 Klein 4B, RealESRGAN and SeedVR2, all `proposed` until the owner reviews them, input images from ComfyUI's input folder (GAPS Q33), model families read from file headers, the source registry, template import and the UI export. Milestone 4 (approved model downloads) is done: a candidate whose only gap is model files its recipe pins on Hugging Face is `acquirable`, and the run's approval covers downloading them, verified by sha256 before placement (GAPS Q25, Q26, Q30 to Q32). Milestone 3 (spec Phase 2, managed execution) is done: with `COMFYUI_ARCHITECT` on, `architect_run` renders a selected candidate locally once the user approves it in a client dialog or with the terminal command `comfyui-mcp architect approve`, follows the job with a durable controller, checks the outputs and records the user's verdict; `COMFYUI_ARCHITECT=managed` withholds upstream's effectful tools (GAPS Q20, Q21); `ARCHITECT_PANEL_RUNS` and `ARCHITECT_MANAGE_RESIDENCY` set what the panel may start and which Ollama models may be unloaded (GAPS Q22, Q23). Milestone 2 (planning) is done. The package keeps the name `comfyui-mcp` until a rename milestone before the first publish, which also brings command shorthands and the publishing preparation (GAPS Q11). The fork's README is `README.md`; upstream's is `README_BASE.md`. Panel work waits for the panel phase (ROAD phase 4). Still open from milestone 1: the first CI run, which waits on the owner confirming the fork's workflows in the Actions tab. Milestone 6 (bounded repair, smoke stages, protected-region and OCR evaluators, the 30-fixture acceptance suite) is built and reviewed; ROAD phase 3's gate waits on the owner's review of the fixtures and on the live run that counts, whose self-approval is GAPS Q36 (Q37 to Q39 settle what AT-01, AT-10 and a fixture's pass claim). On the reference Mac `lsof` hangs, and upstream's model-path resolution waits about 15 s for it on every call.
 
 - The design authority is `dev/design/SPEC.md`, a working copy of the input spec v1.0 (GAPS Q1); spec section numbers (§) refer to it. Design changes go there, never into `dev/input/`.
 - Before proposing an architecture or technology choice, check it against the design rules below and the spec.
@@ -81,7 +81,10 @@ src/services/architect/       the Architect domain: config (modes, forwarded var
                               image and its contract checks), families (safetensors headers, family rules, the
                               observation cache), sources (the built-in source registry), templates (listing and
                               importing templates of the index and the packs, the conversion report), ui-graph (the UI
-                              export and its round trip, AT-11), cli (the terminal approval channel), panel
+                              export and its round trip, AT-11), cli (the terminal approval channel), panel, files,
+                              repair (failure classes and the transformation allowlist), acceptance (the suite's
+                              fixture contracts and judging); evaluators/ holds the evaluator contract and registry, the
+                              protected-region evaluator and its graph guarantee, and architect.ocr-glm
 src/tools/architect.ts        the architect_* MCP tools (architect_inspect, architect_plan) and the MCP prompts;
                               architect-run.ts registers architect_run and its approval dialogs
 src/__tests__/architect/      Architect tests; fixtures/ holds fixture recipes and node schemas, fixtures/templates/ a
@@ -90,10 +93,13 @@ scripts/architect/            Architect scripts: stdio-smoke.mjs, what an MCP cl
                               --plan plans, --run renders on the target, --acquire downloads a pinned file first,
                               --recipes plans and renders each named shipped recipe (--dry lists the downloads only);
                               pin-source.mjs, the maintainer tool that pins a recipe's model source; import-template.mjs,
-                              the maintainer tool that imports a template as a draft recipe with its conversion report
+                              the maintainer tool that imports a template as a draft recipe with its conversion report;
+                              acceptance.mjs, the live acceptance runner (--plan-only, --only), with acceptance-judge.mjs
+                              (its verdicts) and egress-guard.mjs (the preload that records the server's egress, AT-09)
 dev/research/                 research notes; index in its README
 architect/recipes/            shipped recipes, *.recipe.json; the README's table lists them
 architect/families/           shipped model-family rules, <id>.json: tensor names and shapes, with provenance
+architect/acceptance/         the reference acceptance suite: 30 task fixtures, inputs.json; the README's table lists them
 architect/skills/, architect/commands/   the skill and the /architect command, served as MCP prompts while the
                               flag is on; they move to plugin/ when Architect is on by default
 ```

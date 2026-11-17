@@ -1,6 +1,6 @@
 # Gaps
 
-Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-16 12:43.
+Open questions and explicit assumptions. **Questions** are for the owner to answer. **Assumptions** are what the docs currently take for granted because they seemed clear enough not to ask; check them and correct any that are wrong. Status: 2026-11-16 23:03.
 
 How this file works:
 - Answers are recorded with date, time and author: `**Answer** (2026-11-15 13:30, Gregor Heinrich): …`. Corrections of assumptions record the same in the **Correction** column. Short answers are fine.
@@ -330,6 +330,32 @@ Milestone 5's live checks download the files of Q24 (about 20 GB) and render eac
 - **Proposed:** pin and download `text_encoders/t5xxl_fp8_e4m3fn.safetensors` (4.89 GB) and `text_encoders/clip_l.safetensors` (0.25 GB) from `comfyanonymous/flux_text_encoders` (Apache-2.0), approved by the smoke as in Q34, and render the recipe once. The alternative is to keep revision 3 `curated` and unrendered.
 - **Answer** (2026-11-16 12:43, Gregor Heinrich): as proposed; the owner reviews revision 4 with the other recipes.
 - **Resolved** (2026-11-16 12:43, Opus 5.5 for Gregor Heinrich): `recipe-flux1-schnell.t2i` r4 pins all four files; TODO 5.6.
+
+### Q36. May the acceptance runner approve the suite's renders and place its inputs?
+
+The live runner (`scripts/architect/acceptance.mjs`) renders the 20 feasible fixtures on the reference Mac. It approves each run through the terminal channel's code, standing in for you, as the smoke did under Q34. Q34's go-ahead named milestone 5's files only. The grants are stored as `terminal` and can't be told apart from a person's in `architect.db`.
+
+- **What it does:** approves only action plans with exactly one `local_render` effect, never a download or a model unload; writes six synthetic PNGs (`architect-acceptance-*.png`) to the top level of ComfyUI's input folder, never over a file, where every `LoadImage` list shows them; cancels only its own run, at its 45-minute deadline.
+- **Already done:** on your request "complete phase 3" (2026-11-16) the runner ran live on this basis. The first attempt also left a subfolder `architect-acceptance/` with six files in the input folder, which `LoadImage` doesn't list.
+- **Proposed:** confirm the go-ahead for the suite's live runs on these terms; keep the six top-level files for later runs; let the runner remove the `architect-acceptance/` subfolder it left. The alternatives are approving each run yourself in the terminal, or a run note that marks the runner's grants as the runner's.
+
+### Q37. Is a task of a kind without recipes refused or blocked?
+
+at-21 asks for a video. `TaskSpec` has only the image kind's media part until ROAD phase 6, so `prepare` refuses the task as malformed. Milestone 6's exit says unsupported cases are reported as unsupported.
+
+- **Proposed:** keep the refusal until phase 6 adds the kind, and count at-21 under AT-01 as a refused task; AT-01's malformed proposals are tested in CI separately (a binding to an unknown slot, a binding of the wrong type, an invented model file). The alternative is accepting any kind in `TaskSpec` and blocking it as an unsupported operation.
+
+### Q38. What does AT-10 claim while no recipe has a resource estimate?
+
+The planner marks every candidate's resource estimate `unknown`, so nothing about memory can be summed or checked yet.
+
+- **Proposed:** AT-10 counts as passed on what is tested under both resource profiles (Apple unified memory and a dedicated GPU): one target's pool is held by one run at a time, nothing adds a device's memory to system RAM. Memory accounting is reported as not measured. Separate VRAM and RAM pools for a dedicated GPU wait for ROAD phase 5 (empirical optimization). The alternative is building resource estimates for the 16 recipes before phase 3's gate.
+
+### Q39. Does a feasible fixture pass when its render ran but a required check failed?
+
+at-04, at-10 and at-13 check protected pixels, at-18 text through OCR, at-20 a size.
+
+- **Proposed:** a feasible fixture passes the suite only when execution and acceptance passed, or acceptance waits only on your review. AT-04 (executable workflows) counts execution alone, first-attempt and repaired apart, as spec §19.2 defines it. The alternative is counting execution alone for every fixture.
 
 ## Assumptions
 
