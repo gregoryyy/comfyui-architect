@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "at-21",
+  "title": "Unsupported kind: video",
+  "expect": {
+    "outcome": "refused"
+  },
+  "live": "plan",
+  "why": "No video kind exists before ROAD phase 6; the task is refused as malformed and never reaches planning (AT-01).",
+  "task": {
+    "intent": "A five-second clip of waves.",
+    "media": {
+      "kind": "video",
+      "operation": "text_to_video",
+      "output": {
+        "width": 1024,
+        "height": 576,
+        "frames": 120
+      }
+    }
+  }
+}

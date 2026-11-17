@@ -203,17 +203,82 @@ export function candidateStatus(input: {
   return acq.acquirable ? { status: "acquirable", acquisition: acq.acquisition, refusals: [] } : { status: "blocked", refusals: acq.refusals };
 }
 
+/** The value at a dotted task path, as the compiler reads a slot's `fromTask`. */
+function taskValue(task: TaskSpec, path: string): unknown {
+  let cur: unknown = task;
+  for (const key of path.split(".")) {
+    if (cur === null || typeof cur !== "object" || Array.isArray(cur) || !Object.hasOwn(cur, key)) return undefined;
+    cur = Reflect.get(cur, key);
+  }
+  return cur;
+}
+
+/** Where a failing hard contract check goes in spec §9.5's groups. */
+export type ContractGroup = "insufficient_evidence" | "missing_dependencies" | "unsupported_operation";
+
+/**
+ * Sort a failing hard contract check by what would resolve it. The check ids are the
+ * compiler's (`contract.binding.<id>`, `contract.slot.<id>`) and the validator's
+ * (`compiled_from_recipe`); a slot check's id doesn't say which of the compiler's reasons
+ * failed it, so the recipe, the task and the bindings decide, the way compileRecipe does.
+ *
+ * - A proposal error is a gap the agent can fill or correct with other bindings, so it is
+ *   missing evidence, not an operation the recipe can't serve (spec §9.2, §9.5): a binding
+ *   naming no slot, a bound value the slot or the task refuses (a contradicting or
+ *   out-of-range value, an input slot bound at all), a required slot with no binding, task
+ *   value or default, a graph that isn't the recipe compiled with its bindings.
+ * - An open model slot whose folder lists no file needs a file installed: a missing
+ *   dependency.
+ * - Anything else is the recipe's limit: an operation, an input no slot takes or an asset
+ *   form Architect can't resolve (GAPS Q16), a task value the slot can't take or a size off
+ *   the recipe's step, a count, format or size the outputs don't declare, a mask of another
+ *   size, a protected region the graph doesn't guarantee. Nothing installable resolves it.
+ */
+export function contractGroup(
+  recipe: Recipe,
+  task: TaskSpec,
+  bindings: PlanCandidate["bindings"],
+  snapshot: Pick<EnvironmentSnapshot, "installedModels">,
+  c: Pick<CheckResult, "id">,
+): ContractGroup {
+  if (c.id.startsWith("contract.binding.") || c.id === "compiled_from_recipe") return "insufficient_evidence";
+  const slot = recipe.slots.find((s) => `contract.slot.${s.id}` === c.id);
+  if (slot === undefined) return "unsupported_operation";
+  // A slot aimed at a link is a defect of the recipe, whatever was bound.
+  if (Array.isArray(recipe.graph[slot.target.node]?.inputs[slot.target.input])) return "unsupported_operation";
+  const fromTask = slot.fromTask !== undefined ? taskValue(task, slot.fromTask) : undefined;
+  if (Object.hasOwn(bindings, slot.id)) {
+    // The task's size off the recipe's divisor fails before any binding is looked at.
+    const divisor = slot.fromTaskDivisor;
+    if (divisor !== undefined && fromTask !== undefined && (typeof fromTask !== "number" || !Number.isInteger(fromTask / divisor))) {
+      return "unsupported_operation";
+    }
+    return "insufficient_evidence";
+  }
+  const open = slot.valueType !== "input_image" && slot.required && slot.default === undefined && fromTask === undefined;
+  if (!open) return "unsupported_operation";
+  if (slot.valueType === "model_file" && (snapshot.installedModels?.folders[slot.modelFolder ?? ""] ?? []).length === 0) {
+    return "missing_dependencies";
+  }
+  return "insufficient_evidence";
+}
+
 /** Sort blocking checks into the groups spec §9.5 asks for. */
-function addBlockers(into: PlanBlockers, recipe: Recipe, checks: readonly CheckResult[]): void {
+function addBlockers(
+  into: PlanBlockers,
+  recipe: Recipe,
+  task: TaskSpec,
+  bindings: PlanCandidate["bindings"],
+  snapshot: EnvironmentSnapshot,
+  checks: readonly CheckResult[],
+): void {
   for (const c of checks) {
     if (!c.hard || (c.verdict !== "fail" && c.verdict !== "unknown")) continue;
     const line = `${recipe.id}: ${c.message}`;
     if (c.verdict === "unknown") into.insufficient_evidence.push(line);
     else if (c.layer === "dependencies") into.missing_dependencies.push(line);
     else if (c.layer === "policy") into.policy_conflicts.push(line);
-    // A task input no slot takes, or an asset form Architect can't resolve, is unsupported
-    // by the recipe (GAPS Q16), not a dependency to install.
-    else if (c.layer === "contract" && (c.id.startsWith("contract.operation") || c.id.startsWith("contract.task.inputs."))) into.unsupported_operation.push(line);
+    else if (c.layer === "contract") into[contractGroup(recipe, task, bindings, snapshot, c)].push(line);
     else into.missing_dependencies.push(line);
   }
 }
@@ -275,7 +340,7 @@ export function planCandidates(input: PlanningInput): PlanningOutput {
       const verdict = candidateStatus({ recipe, task, report: report.report, bindings: bound, snapshot });
       // An acquirable candidate's failing checks are the files the approval would fetch, not
       // blockers; a refused acquisition adds why next to the checks it leaves failing.
-      if (verdict.status !== "acquirable") addBlockers(blockers, recipe, report.report.checks);
+      if (verdict.status !== "acquirable") addBlockers(blockers, recipe, task, bindings, snapshot, report.report.checks);
       for (const r of verdict.refusals) blockers[r.group].push(`${recipe.id}: ${r.message}`);
       const scaleNote = renderScaleNote(recipe, task, bound);
       const acquisitionNote = verdict.acquisition

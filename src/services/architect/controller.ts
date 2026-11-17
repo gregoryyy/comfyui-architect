@@ -32,19 +32,28 @@ import { z } from "zod";
 import type { ModelAcquirer } from "./acquisition.js";
 import { graphFingerprint } from "./compile.js";
 import { type DecodeResult, acceptanceFrom, evaluateOutputs, needsUserReview, type ProbedOutput } from "./evaluation.js";
+import type { FetchedOutput } from "./evaluators/contract.js";
+import type { PoolLease, VisualEvaluation } from "./evaluators/registry.js";
 import { type MediaProbe, probeMedia } from "./media-probe.js";
+import { type AttemptView, SEED_CHANGEABLE_CRITERIA, type StopRule, applySteps, buildRevision, chainStopOf, nextAttempt, resultOf } from "./repair.js";
 import { type ResourceCoordinator, residencyRestored, unloadedForRun } from "./resources.js";
 import {
   type AcquireModelsEffect,
+  type ActionPlan,
   type ApiGraph,
+  type ApprovalGrant,
   ArchitectErrorCode,
+  type ExecutionErrorDetail,
   FINAL_RUN_STATES,
+  type GraphRevision,
+  type LocalRenderEffect,
   type RunError,
   type RunEvent,
   RunOutput,
   type RunPrincipal,
   type RunRecord,
   type RunState,
+  StoredRecordError,
   type TaskSpec,
   actionPlanHash,
 } from "./schemas.js";
@@ -79,9 +88,12 @@ export interface RunControllerDeps {
   /** The task revision the run serves. */
   taskFor: (run: RunRecord) => TaskSpec;
   /**
-   * Check the run against a fresh environment snapshot before it is submitted. Called only
-   * for a run that waited in WAITING_FOR_RESOURCE, since the target may have changed while
-   * it waited. A throw fails the run with the error's code, as a `graphFor` error does.
+   * Check the run against a fresh environment snapshot, and its input files against the
+   * sha256 its effect bound, before it is submitted. Called for a run that waited in
+   * WAITING_FOR_RESOURCE, since the target may have changed while it waited, for every
+   * later attempt of a chain, which a root's start checked only once, and after placed
+   * downloads. A throw fails the run with the error's code, as a `graphFor` error does;
+   * without it a later attempt isn't submitted.
    */
   revalidate?: (run: RunRecord) => Promise<void>;
   /**
@@ -89,6 +101,11 @@ export interface RunControllerDeps {
    * Without it such a run fails in PREPARING; nothing is downloaded.
    */
   acquirer?: Pick<ModelAcquirer, "step" | "stop" | "forgetNodeSchemas">;
+  /**
+   * The visual evaluators (protected regions, OCR) run in EVALUATING (TODO 6.3, 6.4). Without
+   * it the criteria they judge are recorded as `unknown`.
+   */
+  visualEvaluation?: Pick<VisualEvaluation, "evaluate">;
   pollIntervalMs?: number;
   /** Absences from queue and history after which an OUTCOME_UNKNOWN run waits for the user. */
   maxConsecutiveAbsent?: number;
@@ -124,6 +141,21 @@ const POLLED: readonly RunState[] = [
 ];
 
 const AttemptData = z.object({ promptId: z.string().uuid() });
+
+/** States after which an attempt's chain decides what follows (ARCH 2026-11-16, milestone 6). */
+const ATTEMPT_ENDED: readonly RunState[] = ["FAILED", "COMPLETED", "CANCELLED", "AWAITING_REVIEW"];
+/** Passes of one chain decision; each creates at most one attempt, and the grant bounds them first. */
+const MAX_CHAIN_PASSES = 16;
+
+/** Whether the root records that its chain stopped. */
+function chainStopped(events: readonly RunEvent[]): boolean {
+  return chainStopOf(events) !== undefined;
+}
+
+/** A child attempt: a run the controller created under its root's grant. */
+function isLaterAttempt(run: RunRecord): boolean {
+  return run.attempt !== undefined && run.attempt.rootRunId !== run.id;
+}
 const EvaluatingData = z.object({ unparsedOutputs: z.number().int().nonnegative() });
 
 // ComfyUI's history entry, read as untrusted data: only the fields the outcome rests on.
@@ -152,7 +184,7 @@ const ImageRef = z.object({ filename: z.unknown(), subfolder: z.unknown().option
 type HistoryOutcome =
   | { kind: "success"; outputs: Record<string, unknown> }
   | { kind: "interrupted" }
-  | { kind: "error"; message: string }
+  | { kind: "error"; message: string; detail?: ExecutionErrorDetail }
   /** An entry that doesn't say: not completed, or a shape this build can't read. */
   | { kind: "unclear"; reason: string };
 
@@ -174,7 +206,18 @@ function classifyHistory(entry: unknown): HistoryOutcome {
     const d = data.success ? data.data : {};
     const where = d.node_type ? `${d.node_type}${d.node_id !== undefined ? ` (node ${d.node_id})` : ""}` : "a node";
     const what = d.exception_message ? `${d.exception_type ? `${d.exception_type}: ` : ""}${d.exception_message}` : "no message";
-    return { kind: "error", message: bounded(`ComfyUI reported an execution error in ${where}: ${what}`) };
+    // The fields the repair classifies on (TODO 6.1.1), each bounded: ComfyUI's text is data.
+    const detail: ExecutionErrorDetail = {
+      ...(d.node_id !== undefined ? { nodeId: String(d.node_id).slice(0, 64) } : {}),
+      ...(d.node_type !== undefined ? { nodeType: d.node_type.slice(0, 200) } : {}),
+      ...(d.exception_type !== undefined ? { exceptionType: d.exception_type.slice(0, 200) } : {}),
+      ...(d.exception_message !== undefined ? { exceptionMessage: bounded(d.exception_message) } : {}),
+    };
+    return {
+      kind: "error",
+      message: bounded(`ComfyUI reported an execution error in ${where}: ${what}`),
+      ...(Object.keys(detail).length > 0 ? { detail } : {}),
+    };
   }
   if (status?.completed === true && status.status_str === "success") return { kind: "success", outputs: parsed.data.outputs ?? {} };
   return { kind: "unclear", reason: `the history entry says completed=${String(status?.completed)}, status ${status?.status_str ?? "absent"}` };
@@ -260,6 +303,8 @@ export class RunController {
   private readonly lastError = new Map<string, string>();
   /** Reloads of unloaded Ollama models in flight, by run; `settled` waits for them. */
   private readonly restoring = new Map<string, Promise<void>>();
+  /** Roots whose next step couldn't be decided (an error, or found at resume); the poller retries them. */
+  private readonly pendingChains = new Set<string>();
   private timer: NodeJS.Timeout | undefined;
   private ticking = false;
 
@@ -275,7 +320,7 @@ export class RunController {
    * Runs in other states are returned as they are.
    */
   advance(runId: string): Promise<RunRecord> {
-    return this.exclusive(runId, () => this.advanceNow(runId));
+    return this.exclusive(runId, () => this.advanceNow(runId)).then((run) => this.afterAttempt(run));
   }
 
   /**
@@ -294,7 +339,7 @@ export class RunController {
 
   /** One observation of the target; the run moves only when the observation settles something. */
   reconcile(runId: string): Promise<RunRecord> {
-    return this.exclusive(runId, () => this.reconcileNow(runId));
+    return this.exclusive(runId, () => this.reconcileNow(runId)).then((run) => this.afterAttempt(run));
   }
 
   /**
@@ -304,7 +349,7 @@ export class RunController {
    * it is.
    */
   cancel(runId: string, principal: RunPrincipal): Promise<RunRecord> {
-    return this.exclusive(runId, () => this.cancelNow(runId, principal));
+    return this.exclusive(runId, () => this.cancelNow(runId, principal)).then((run) => this.afterAttempt(run));
   }
 
   /**
@@ -327,7 +372,11 @@ export class RunController {
       if (HOLDING.includes(run.state)) continue;
       const events = this.deps.store.listRunEvents(run.id);
       if (unloadedForRun(events) && !residencyRestored(events)) this.restoreResidency(run);
+      // A chain whose last attempt finished while no process decided what follows: the
+      // process stopped between the two (ARCH 2026-11-16, milestone 6, attempts).
+      if (run.attempt?.index === 1 && !chainStopped(events)) this.pendingChains.add(run.id);
     }
+    await this.retryPendingChains();
     return out;
   }
 
@@ -366,6 +415,7 @@ export class RunController {
           this.reportError(err, run.id);
         }
       }
+      await this.retryPendingChains();
     } finally {
       this.ticking = false;
     }
@@ -378,9 +428,16 @@ export class RunController {
     const run = this.require(runId);
     if (run.state === "VALIDATING") return this.validateAndSubmit(run);
     if (run.state !== "PREPARING" && run.state !== "WAITING_FOR_RESOURCE") return run;
+    if (this.cancelPending(run)) {
+      // Recorded, but not acted on: the process stopped in between, or the request came for
+      // the chain while this attempt was being created. It is cancelled unsubmitted.
+      if (run.state === "PREPARING" && !isLaterAttempt(run) && this.acquireEffectOf(run) && this.deps.acquirer) await this.deps.acquirer.stop(run, "cancelled");
+      return this.move(this.require(runId), "CANCELLED", "cancelled before submission, as requested");
+    }
 
     const overBudget = this.budgetExceeded(run);
-    const acquire = run.state === "PREPARING" ? this.acquireEffectOf(run) : undefined;
+    // A later attempt takes no downloads: the root acquired what the grant approved (ARCH 2026-11-16).
+    const acquire = run.state === "PREPARING" && !isLaterAttempt(run) ? this.acquireEffectOf(run) : undefined;
     if (overBudget !== false) {
       // Downloads still running are the run's own and stop with it.
       if (acquire && this.deps.acquirer) await this.deps.acquirer.stop(run, { failed: { code: overBudget.code, message: overBudget.reason } });
@@ -408,6 +465,15 @@ export class RunController {
       },
     });
     return validating.state === "VALIDATING" ? this.validateAndSubmit(validating) : validating;
+  }
+
+  /**
+   * Whether a cancel request is recorded for a run not yet submitted: on the run itself, or,
+   * for a later attempt, on its chain's root, where execution records it for the whole chain.
+   */
+  private cancelPending(run: RunRecord): boolean {
+    if (cancelRequested(this.deps.store.listRunEvents(run.id))) return true;
+    return isLaterAttempt(run) && run.attempt !== undefined && cancelRequested(this.deps.store.listRunEvents(run.attempt.rootRunId));
   }
 
   /** The run's approved downloads, when its action plan has them. */
@@ -489,10 +555,39 @@ export class RunController {
       const message = `the graph compiled now (${fingerprint.slice(0, 12)}) isn't the one the grant approved (${run.graphFingerprint.slice(0, 12)})`;
       return this.move(run, "FAILED", message, { patch: { error: { code: "APPROVAL_INVALIDATED", message } } });
     }
+    // An attempt that renders a revision submits the approved graph with the revision's steps
+    // applied in order, and only when that gives the fingerprint the revision recorded (ARCH
+    // 2026-11-16, milestone 6, attempts): a stored step list that changed can't reach ComfyUI.
+    const revisionId = run.attempt?.revisionId;
+    if (revisionId !== undefined) {
+      const revision = store.getGraphRevision(revisionId);
+      const refuse = (message: string) => this.move(run, "FAILED", message, { patch: { error: { code: "APPROVAL_INVALIDATED", message } } });
+      if (!revision || revision.rootRunId !== run.attempt?.rootRunId || revision.baseFingerprint !== run.graphFingerprint) {
+        return refuse(`run ${run.id}'s graph revision ${revisionId} isn't stored for its chain`);
+      }
+      try {
+        graph = applySteps(graph, revision.steps);
+      } catch (err) {
+        return refuse(`revision ${revisionId} doesn't apply to the approved graph: ${messageOf(err)}`);
+      }
+      const revised = graphFingerprint(graph);
+      if (revised !== revision.fingerprint) {
+        return refuse(`revision ${revisionId} gives graph ${revised.slice(0, 12)}, not the recorded ${revision.fingerprint.slice(0, 12)}`);
+      }
+    }
     // A run that waited for the pool was checked against the environment of its start; the
-    // target may have changed since, so it is checked again before the POST (spec §15.3).
+    // target may have changed since, so it is checked again before the POST (spec §15.3). So
+    // is every later attempt: start checked the inputs and the snapshot once, for the root,
+    // and a repair or a final may follow it many minutes later. revalidate reads the input
+    // files again against the sha256 the effect bound, so a changed one invalidates the
+    // approval instead of reaching ComfyUI under it (GAPS Q33).
     const waited = events.some((e) => e.kind === "transition" && e.to === "WAITING_FOR_RESOURCE");
-    if (waited && this.deps.revalidate) {
+    const later = isLaterAttempt(run);
+    if (later && !this.deps.revalidate) {
+      const message = `attempt ${run.attempt?.index ?? "?"} can't be checked against its inputs and a fresh snapshot here, so it isn't submitted`;
+      return this.move(run, "FAILED", message, { patch: { error: { code: "APPROVAL_INVALIDATED", message } } });
+    }
+    if ((waited || later) && this.deps.revalidate) {
       try {
         await this.deps.revalidate(run);
       } catch (err) {
@@ -501,6 +596,8 @@ export class RunController {
       }
     }
 
+    // A cancel request recorded during the awaits above, on the run or on its chain's root.
+    if (this.cancelPending(run)) return this.move(run, "CANCELLED", "cancelled before submission, as requested");
     // spec §15.4: one submission per run. The claim checks state and attempt under the
     // store's write lock and writes the attempt, so of two processes that both got here
     // (two servers resuming one VALIDATING run, or a poll racing an advance) one POSTs. The
@@ -679,7 +776,7 @@ export class RunController {
         });
       case "error":
         return this.move(run, "FAILED", outcome.message, {
-          patch: { timings: { finishedAt }, error: { code: "EXECUTION_FAILED", message: outcome.message } },
+          patch: { timings: { finishedAt }, error: { code: "EXECUTION_FAILED", message: outcome.message, ...(outcome.detail ? { detail: outcome.detail } : {}) } },
           data: { observation: "error" },
         });
       case "unclear":
@@ -774,18 +871,22 @@ export class RunController {
     const run = this.require(runId);
     // A final run, or one whose render is done, has nothing left to cancel.
     if (FINAL_RUN_STATES.includes(run.state) || run.state === "EVALUATING" || run.state === "AWAITING_REVIEW") return run;
-    this.deps.store.appendRunEvent({
-      runId,
-      kind: "cancel",
-      principal,
-      reason: `cancellation requested by the ${principal}`,
-      at: this.deps.now(),
-    });
+    // One request is one event: a chain's root may already carry the request execution
+    // recorded for the whole chain.
+    if (!cancelRequested(this.deps.store.listRunEvents(runId))) {
+      this.deps.store.appendRunEvent({
+        runId,
+        kind: "cancel",
+        principal,
+        reason: `cancellation requested by the ${principal}`,
+        at: this.deps.now(),
+      });
+    }
     switch (run.state) {
       case "PREPARING":
         // The run's own downloads stop first, by the job ids on its acquisitions; staged
         // files go with them (spec §14.5: nothing that isn't the run's is touched).
-        if (this.acquireEffectOf(run) && this.deps.acquirer) await this.deps.acquirer.stop(run, "cancelled");
+        if (!isLaterAttempt(run) && this.acquireEffectOf(run) && this.deps.acquirer) await this.deps.acquirer.stop(run, "cancelled");
         return this.move(this.require(runId), "CANCELLED", `cancelled by the ${principal} before submission`, { principal });
       case "AWAITING_APPROVAL":
       case "WAITING_FOR_RESOURCE":
@@ -947,6 +1048,7 @@ export class RunController {
     const unparsedOutputs = parsed.success ? parsed.data.unparsedOutputs : 0;
 
     const files: ProbedOutput[] = [];
+    const fetched: FetchedOutput[] = [];
     for (const ref of run.outputs) {
       let bytes: Buffer;
       try {
@@ -954,20 +1056,78 @@ export class RunController {
       } catch (err) {
         const reason = `couldn't fetch the file: ${messageOf(err)}`;
         files.push({ ref, probe: { readable: false, fetched: false, reason }, decode: { state: "not_attempted", reason } });
+        fetched.push({ ref, reason });
         continue;
       }
       const probe = probeMedia(bytes);
       files.push({ ref, probe, decode: await this.decode(bytes, probe) });
+      fetched.push({ ref, bytes });
     }
     const stored = new Set(store.listEvaluations(run.id).map((e) => e.id));
-    for (const input of evaluateOutputs({ run, task, files, unparsedOutputs, at: now() })) {
+    let visualCriteria: ReadonlySet<string> | undefined;
+    // A smoke attempt is judged on the built-in checks only and never waits for a review: it
+    // shows the path executes, not that the task is met (spec §13.1; TODO 6.2.1). So no visual
+    // evaluator runs on it either; its task criteria are recorded as not applicable.
+    const smoke = run.attempt?.stage === "smoke";
+    if (this.deps.visualEvaluation && !smoke) {
+      const over = this.budgetExceeded(run);
+      const visual = await this.deps.visualEvaluation.evaluate({
+        run,
+        task,
+        outputs: fetched,
+        actionPlan: store.getActionPlan(run.actionPlanId),
+        storedIds: stored,
+        lease: this.evaluationLease(run),
+        ...(over !== false ? { waitOver: over.reason } : {}),
+        at: now(),
+      });
+      for (const input of visual.records) if (!stored.has(input.id)) store.putEvaluation(input);
+      if (visual.waiting.length > 0) {
+        // Another run holds the pool; the next pass tries again, until the wall time is over.
+        if (!events.some((e) => e.kind === "note" && e.data?.waitingForPool === true)) {
+          store.appendRunEvent({
+            runId: run.id,
+            kind: "note",
+            principal: "controller",
+            reason: bounded(`the evaluation of ${visual.waiting.map((w) => w.criterionId).join(", ")} waits for the memory pool: ${visual.waiting[0].reason}`),
+            data: { waitingForPool: true },
+            at: now(),
+          });
+        }
+        return this.require(run.id);
+      }
+      visualCriteria = visual.criteria;
+    }
+    for (const input of evaluateOutputs({ run, task, files, unparsedOutputs, ...(visualCriteria ? { visualCriteria } : {}), at: now() })) {
       if (!stored.has(input.id)) store.putEvaluation(input);
     }
-    const acceptance = acceptanceFrom(task, store.listEvaluations(run.id));
-    const review = needsUserReview(task);
+    const acceptance = acceptanceFrom(smoke ? { ...task, acceptance: [] } : task, store.listEvaluations(run.id));
+    const review = !smoke && needsUserReview(task);
     return this.move(run, review ? "AWAITING_REVIEW" : "COMPLETED", review ? `automatic checks done (${acceptance}); waiting for the user's review` : `automatic checks done: ${acceptance}`, {
       patch: { acceptance },
     });
+  }
+
+  /**
+   * The run's pool lease for an evaluator that uses the pool (OCR on this machine's Ollama):
+   * EVALUATING holds no lease, so it is taken again, by the heartbeat that takes a free or
+   * expired lease, and released when the evaluator is done (ARCH 2026-11-16, visual
+   * evaluators).
+   */
+  private evaluationLease(run: RunRecord): PoolLease {
+    const { resources } = this.deps;
+    return {
+      take: () => {
+        const beat = resources.heartbeat(run);
+        return beat.held ? { held: true } : { held: false, reason: beat.reason };
+      },
+      extend: () => {
+        resources.heartbeat(run);
+      },
+      release: () => {
+        resources.release(run);
+      },
+    };
   }
 
   /**
@@ -983,6 +1143,234 @@ export class RunController {
       if (err instanceof ImageDecoderUnavailableError) return { state: "not_attempted", reason: messageOf(err) };
       return { state: "failed", reason: bounded(messageOf(err), 500) };
     }
+  }
+
+  // -------------------------------------------------------------------------------------
+  // Attempts under one grant (spec §13.4; ARCH 2026-11-16, milestone 6, attempts)
+
+  /**
+   * After a call on an attempt: when it ended (FAILED, COMPLETED, CANCELLED or waiting for
+   * review), decide what follows in its chain. The call's own result is returned either way;
+   * a decision that fails is retried by the poller.
+   */
+  private async afterAttempt(run: RunRecord): Promise<RunRecord> {
+    if (!run.attempt || !ATTEMPT_ENDED.includes(run.state)) return run;
+    try {
+      await this.continueChain(run.attempt.rootRunId);
+    } catch (err) {
+      this.pendingChains.add(run.attempt.rootRunId);
+      this.reportError(err, run.attempt.rootRunId);
+    }
+    return run;
+  }
+
+  private async retryPendingChains(): Promise<void> {
+    for (const rootId of [...this.pendingChains]) {
+      this.pendingChains.delete(rootId);
+      try {
+        await this.continueChain(rootId);
+      } catch (err) {
+        this.pendingChains.add(rootId);
+        this.reportError(err, rootId);
+      }
+    }
+  }
+
+  /**
+   * Decide and carry out what follows the chain's last attempt, until an attempt is in
+   * flight or the chain stops: a final after a passed smoke, a repair within the grant, or a
+   * stop recorded on the root with its rule and result. The child is created only through
+   * the store's admission transaction; the store refuses what the grant doesn't cover, and a
+   * refusal stops the chain. Calls on one chain take turns.
+   */
+  private continueChain(rootId: string): Promise<void> {
+    return this.exclusive(`chain:${rootId}`, async () => {
+      // Each pass creates at most one attempt; the grant's run limit bounds the passes.
+      for (let pass = 0; pass < MAX_CHAIN_PASSES; pass++) {
+        const step = await this.decide(rootId);
+        if (step === undefined) return;
+        const child = await this.exclusive(step.id, () => this.advanceNow(step.id));
+        if (!ATTEMPT_ENDED.includes(child.state)) return;
+      }
+    });
+  }
+
+  /** One decision: the attempt to advance next, or undefined when nothing is to be done now. */
+  private async decide(rootId: string): Promise<RunRecord | undefined> {
+    const { store, now } = this.deps;
+    const root = store.getRun(rootId);
+    if (!root?.attempt || root.attempt.rootRunId !== root.id) return undefined;
+    const rootEvents = store.listRunEvents(root.id);
+    if (chainStopped(rootEvents)) return undefined;
+    const attempts = store.listAttempts(root.id);
+    const last = attempts.at(-1);
+    if (!last?.attempt) return undefined;
+    const cancelled = cancelRequested(rootEvents) || cancelRequested(store.listRunEvents(last.id));
+    // A created attempt that hasn't left PREPARING (the process stopped after creating it) is
+    // advanced, unless the chain was cancelled meanwhile: then it is cancelled unsubmitted.
+    if (last.id !== root.id && last.state === "PREPARING") {
+      if (!cancelled) return last;
+      this.move(last, "CANCELLED", "cancelled before submission: the chain was cancelled");
+      const task = this.deps.taskFor(root);
+      const resultRunId = resultOf(store.listAttempts(root.id).map((a) => this.attemptView(a, task)));
+      this.stopChain(root, { rule: "cancelled", reason: "the run was cancelled", ...(resultRunId ? { resultRunId } : {}) }, attempts);
+      return undefined;
+    }
+    if (!ATTEMPT_ENDED.includes(last.state)) return undefined;
+
+    let actionPlan: ActionPlan | undefined;
+    let grant: ApprovalGrant | undefined;
+    try {
+      actionPlan = store.getActionPlan(root.actionPlanId);
+      grant = root.grantId === undefined ? undefined : store.getGrant(root.grantId);
+    } catch (err) {
+      // An action plan or grant edited since it was stored doesn't parse: nothing more runs under it.
+      if (!(err instanceof StoredRecordError)) throw err;
+      this.stopChain(root, { rule: "refused", reason: `the root's action plan or grant doesn't read back: ${err.message}` }, attempts);
+      return undefined;
+    }
+    const render = actionPlan?.effects.find((e): e is LocalRenderEffect => e.kind === "local_render");
+    if (!actionPlan || !grant || !render) {
+      this.stopChain(root, { rule: "refused", reason: "the root's action plan or grant is not stored" }, attempts);
+      return undefined;
+    }
+    const task = this.deps.taskFor(root);
+    const views = attempts.map((a) => this.attemptView(a, task));
+    const lastView = views[views.length - 1];
+    // Only a failure the decision could repair needs the graph the last attempt rendered.
+    let approved: ApiGraph | undefined;
+    const graphOfLast = async (): Promise<ApiGraph> => {
+      approved = await this.deps.graphFor(root);
+      if (graphFingerprint(approved) !== root.graphFingerprint) throw new Error(`the graph compiled now isn't the one grant ${grant.id} approved`);
+      return applySteps(approved, lastView.steps);
+    };
+    // A cancelled chain stops without the graph: compiling it may fail, and a failure here
+    // would leave the decision pending, to be retried, instead of stopping the chain.
+    const needsGraph = !cancelled && (last.state === "FAILED" || (last.state === "COMPLETED" && lastView.qualityFailure !== undefined));
+    const decision = nextAttempt({
+      attempts: views,
+      repair: render.repair?.transformations ?? [],
+      limits: grant.limits,
+      deadlinePassed: now().getTime() >= Date.parse(root.createdAt) + grant.limits.maxWallTimeSeconds * 1000,
+      cancelRequested: cancelled,
+      lastGraph: needsGraph ? await graphOfLast() : {},
+    });
+    if (decision.kind === "wait") return undefined;
+    if (decision.kind === "stop") {
+      this.stopChain(root, decision, attempts);
+      return undefined;
+    }
+
+    if (!approved) approved = await this.deps.graphFor(root);
+    const at = now();
+    const index = last.attempt.index + 1;
+    let revision: GraphRevision | undefined;
+    if (decision.steps.length > 0) {
+      try {
+        revision = buildRevision({
+          id: `grev-${this.deps.newUuid()}`,
+          rootRunId: root.id,
+          actionPlanId: actionPlan.id,
+          candidateId: root.candidateId,
+          approved,
+          approvedFingerprint: render.graphFingerprint,
+          ...(last.attempt.revisionId ? { parentRevisionId: last.attempt.revisionId } : {}),
+          steps: decision.steps,
+          at,
+        }).revision;
+      } catch (err) {
+        this.stopChain(root, { rule: "no_applicable_transformation", reason: `the next revision doesn't apply: ${messageOf(err)}` }, attempts);
+        return undefined;
+      }
+    }
+    const childId = `run-${this.deps.newUuid()}`;
+    let created: { run: RunRecord; created: boolean };
+    try {
+      created = store.createChildAttempt({
+        run: {
+          schemaVersion: 1,
+          id: childId,
+          actionPlanId: root.actionPlanId,
+          planId: root.planId,
+          taskId: root.taskId,
+          taskRevision: root.taskRevision,
+          candidateId: root.candidateId,
+          graphFingerprint: root.graphFingerprint,
+          target: root.target,
+          idempotencyKey: `${root.idempotencyKey}#${index}`,
+          state: "PREPARING",
+          ...(root.grantId ? { grantId: root.grantId } : {}),
+          attempt: {
+            rootRunId: root.id,
+            index,
+            stage: decision.stage,
+            repairRound: decision.repairRound,
+            ...(revision ? { revisionId: revision.id } : {}),
+          },
+          createdAt: at.toISOString(),
+          updatedAt: at.toISOString(),
+        },
+        predecessorRunId: last.id,
+        ...(revision ? { revision } : {}),
+        now: at,
+        reason: `attempt ${index} (${decision.stage}${decision.repairRound > 0 ? `, repair round ${decision.repairRound}` : ""}) under grant ${grant.id}: ${decision.reason}`,
+      });
+    } catch (err) {
+      // A conflict, or a stored record that no longer parses (an edited action plan): no attempt.
+      if (!(err instanceof StoreConflictError) && !(err instanceof StoredRecordError)) throw err;
+      this.stopChain(root, { rule: "refused", reason: `the next attempt was refused: ${err.message}` }, attempts);
+      return undefined;
+    }
+    store.appendRunEvent({
+      runId: root.id,
+      kind: "note",
+      principal: "controller",
+      reason: bounded(`attempt ${index} follows attempt ${last.attempt.index}: ${decision.reason}`),
+      data: { chain: "attempt", attempt: index, runId: created.run.id, stage: decision.stage, repairRound: decision.repairRound, ...(revision ? { revisionId: revision.id } : {}) },
+      at,
+    });
+    return created.run;
+  }
+
+  /** The decision's view of one attempt. */
+  private attemptView(run: RunRecord, task: TaskSpec): AttemptView {
+    const { store } = this.deps;
+    const attempt = run.attempt;
+    if (!attempt) throw new Error(`run ${run.id} isn't an attempt`);
+    const steps = attempt.revisionId === undefined ? [] : (store.getGraphRevision(attempt.revisionId)?.steps ?? []);
+    let qualityFailure: AttemptView["qualityFailure"];
+    if (attempt.stage === "final" && run.state === "COMPLETED" && run.acceptance === "failed") {
+      const failing = [...new Set(store.listEvaluations(run.id).filter((e) => e.verdict === "fail" && e.source !== "agent_reported" && e.advisory !== true).map((e) => e.criterionId))];
+      const kinds = failing.map((id) => task.acceptance.find((c) => c.id === id)?.kind);
+      // A seed can change the outcome only if every failure is of a kind it can change.
+      const seedChangeable = kinds.length > 0 && kinds.every((k) => k !== undefined && SEED_CHANGEABLE_CRITERIA.includes(k));
+      qualityFailure = { criteria: failing, seedChangeable };
+    }
+    return {
+      runId: run.id,
+      index: attempt.index,
+      stage: attempt.stage,
+      repairRound: attempt.repairRound,
+      state: run.state,
+      acceptance: run.acceptance,
+      steps,
+      ...(run.error ? { error: run.error } : {}),
+      submitted: store.listRunEvents(run.id).some((e) => e.kind === "submit_attempt"),
+      ...(qualityFailure ? { qualityFailure } : {}),
+    };
+  }
+
+  /** Record on the root that the chain stopped, with the rule and the result (once). */
+  private stopChain(root: RunRecord, stop: { rule: StopRule; reason: string; resultRunId?: string }, attempts: readonly RunRecord[]): void {
+    if (chainStopped(this.deps.store.listRunEvents(root.id))) return;
+    this.deps.store.appendRunEvent({
+      runId: root.id,
+      kind: "note",
+      principal: "controller",
+      reason: bounded(`the attempts stopped: ${stop.reason}`),
+      data: { chain: "stopped", rule: stop.rule, attempts: attempts.length, ...(stop.resultRunId ? { resultRunId: stop.resultRunId } : {}) },
+      at: this.deps.now(),
+    });
   }
 
   // -------------------------------------------------------------------------------------
@@ -1060,9 +1448,17 @@ export class RunController {
     const grant = run.grantId === undefined ? undefined : this.deps.store.getGrant(run.grantId);
     if (!grant) return { code: "APPROVAL_INVALIDATED", reason: `run ${run.id} has no stored grant, so its limits are unknown` };
     const seconds = grant.limits.maxWallTimeSeconds;
-    const deadline = Date.parse(run.createdAt) + seconds * 1000;
+    // spec §13.4: the deadline runs from the approved operation's start, the root's, and
+    // covers every attempt under the grant.
+    let start = run.createdAt;
+    if (run.attempt && run.attempt.rootRunId !== run.id) {
+      const root = this.deps.store.getRun(run.attempt.rootRunId);
+      if (!root) return { code: "APPROVAL_INVALIDATED", reason: `run ${run.id}'s root ${run.attempt.rootRunId} is not stored, so its deadline is unknown` };
+      start = root.createdAt;
+    }
+    const deadline = Date.parse(start) + seconds * 1000;
     if (this.deps.now().getTime() < deadline) return false;
-    return { code: "BUDGET_EXCEEDED", reason: `the run passed the ${seconds} s of wall time grant ${grant.id} allows from ${run.createdAt}` };
+    return { code: "BUDGET_EXCEEDED", reason: `the run passed the ${seconds} s of wall time grant ${grant.id} allows from ${start}` };
   }
 
   private promptIdOf(run: RunRecord): string {

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "at-05",
+  "title": "Z-Image Turbo, edge-guided generation",
+  "expect": {
+    "outcome": "feasible",
+    "recipes": [
+      "recipe-zimage-turbo.controlnet-union"
+    ]
+  },
+  "recipeIds": [
+    "recipe-zimage-turbo.controlnet-union"
+  ],
+  "live": "render",
+  "why": "The union ControlNet on a wide reference; the output keeps the reference's size.",
+  "task": {
+    "intent": "A temple courtyard in warm evening light, following the reference's outlines.",
+    "media": {
+      "kind": "image",
+      "operation": "reference_guided",
+      "output": {
+        "width": 1456,
+        "height": 816
+      }
+    },
+    "inputs": [
+      {
+        "assetId": "comfyui-input:architect-acceptance-scene-1456x816.png",
+        "role": "reference_image"
+      }
+    ]
+  }
+}

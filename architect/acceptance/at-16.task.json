@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "at-16",
+  "title": "SeedVR2 3B, restoring upscale",
+  "expect": {
+    "outcome": "feasible",
+    "recipes": [
+      "recipe-seedvr2-3b.upscale"
+    ]
+  },
+  "recipeIds": [
+    "recipe-seedvr2-3b.upscale"
+  ],
+  "live": "render",
+  "why": "512 to 2048; a 512 source keeps the run far below the 19 minutes of 1024 to 4096.",
+  "task": {
+    "intent": "The same image, restored, at a higher resolution.",
+    "media": {
+      "kind": "image",
+      "operation": "upscale",
+      "output": {
+        "width": 2048,
+        "height": 2048
+      }
+    },
+    "inputs": [
+      {
+        "assetId": "comfyui-input:architect-acceptance-scene-512.png",
+        "role": "source_image"
+      }
+    ]
+  }
+}

@@ -296,4 +296,33 @@ CREATE TABLE sources (
 );
 `,
   },
+  {
+    // Milestone 6 (TODO 6.1.1; ARCH 2026-11-16, milestone 6, attempts). A child attempt is a
+    // run under its root's grant: it carries the grant, so the one-grant-one-run index now
+    // covers roots only (root_run_id NULL), and the grant's consumed_by_run_id stays the root.
+    // (root_run_id, attempt_index) is unique, so one attempt index has one run; the
+    // idempotency key `<root key>#<index>` says the same. A graph revision belongs to the
+    // root whose attempt renders it.
+    version: 6,
+    name: "attempts_and_graph_revisions",
+    sql: `
+ALTER TABLE runs ADD COLUMN root_run_id TEXT REFERENCES runs(id);
+ALTER TABLE runs ADD COLUMN attempt_index INTEGER CHECK (attempt_index IS NULL OR attempt_index >= 1);
+
+DROP INDEX runs_grant_id;
+CREATE UNIQUE INDEX runs_grant_id ON runs(grant_id) WHERE grant_id IS NOT NULL AND root_run_id IS NULL;
+CREATE UNIQUE INDEX runs_root_attempt ON runs(root_run_id, attempt_index) WHERE root_run_id IS NOT NULL;
+
+CREATE TABLE graph_revisions (
+  id           TEXT PRIMARY KEY,
+  root_run_id  TEXT NOT NULL REFERENCES runs(id),
+  parent_id    TEXT REFERENCES graph_revisions(id),
+  fingerprint  TEXT NOT NULL,
+  created_at   TEXT NOT NULL,
+  payload      TEXT NOT NULL
+);
+
+CREATE INDEX graph_revisions_root_run_id ON graph_revisions(root_run_id);
+`,
+  },
 ];

@@ -2,6 +2,43 @@
 
 The progress log, newest entry on top. Each entry: `## YYYY-MM-DD HH:MM — Title` (time from `date`), the TODO items and PR or commit, an `Agent:` line, then **Implementation notes**, **Deviations** and **Insights**. The plan is in [TODO](TODO.md).
 
+## 2026-11-16 23:34 — Repair, region checks and the acceptance suite (milestone 6)
+
+TODO items: 6.1 to 6.4, 6.5.1, 6.5.2; 6.5 waits on the owner's review of the fixtures, 6.6 on the run that counts. GAPS Q28, Q29, Q36 to Q39. PR on branch `feat/milestone-6`.
+
+Agent: Opus 5.5, subagents: implementer (parts A, B and C; the two fixes of the part C review), assurance (parts A and B; part C).
+
+### Implementation notes
+
+- **Repair and stages** (6.1, 6.2): failures are classified, a repair is a new graph revision from the allowlist, inside the grant's budget; a smoke stage runs first where it lowers a step count and is never reported as the final's result. Details are in ARCH's milestone 6 rows.
+- **Evaluators** (6.3, 6.4): the exact protected-region check and its planning guarantee; `architect.ocr-glm` behind the `VisualEvaluator` contract, advisory unless the approval accepts it for a criterion.
+- **The suite** (6.5): 30 fixtures in `architect/acceptance/`, the CI test and the live runner with its egress preload.
+- **After the first live run.** The inputs moved from the subfolder `architect-acceptance/` to the input folder's top level as `architect-acceptance-<name>`. `LoadImage` lists only the top level, so every input fixture had failed its input check on the target, while CI passed. The CI capture now offers only top-level names.
+- **After the part C review:**
+  - the runner approves only an action plan with exactly one `local_render` effect, checked on the stored plan it approves, and starts the server without `ARCHITECT_*` variables that widen what may be unloaded or started;
+  - a feasible fixture passes on execution and acceptance;
+  - each conflict fixture names the checks it must fail, and `judgeBlockers` fails it on any other blocker but a failed compilation's knock-on lines;
+  - proposal errors are filed as insufficient evidence, not as unsupported operations;
+  - AT-01 has malformed proposals in CI;
+  - AT-09 has a run-level verdict, and the preload also records child processes, DNS and UDP, numbers its lines and keeps a sidecar of lost writes; read-only system programs such as `lsof` don't make it `unknown`;
+  - AT-10 tests the pool lease under both profiles.
+- **Checks:**
+  - lint, build, asset counts, `check:vocabulary`, `check:unknown-collapse`, `vocab:export --check` and `docs:gen`: pass;
+  - Architect tests: 1,169, all pass;
+  - upstream's suite without `bridge-port-reclaim.test.ts`, before the part C fixes, which touch no upstream file: 15,751 passed, 10 failed, all baseline failures of BASE (9 in `install-accepted-never-enqueued`, 1 in `install-node-git-expectation`).
+- **Live, on the reference target** (EVAL, Results): with the runner as it was before the part C fixes, 28 of 28 live fixtures passed. AT-04 was 20 of 20 executable, 19 on the first attempt and 1 repaired: at-17's tiled-decode repair after the INT_MAX error. All 20 acceptances passed, OCR included, and every egress record was loopback.
+
+### Deviations
+
+- **The run that counts on the fixed runner wasn't made.** The session's permission classifier refused a second self-approved live run, so the gate waits on Q36.
+- **The planner sorts a failing slot check by re-deriving the compiler's reason** from the recipe, the task and the bindings. The compiler's check ids don't carry the reason, and changing them would touch every consumer of `contract.slot.`. The planner tests pin each kind.
+
+### Insights
+
+- A CI capture that lists whatever the fixtures name can't show how the real loader lists files. Only the live run found the subfolder problem.
+- A check of "some line in the expected category" passes for the wrong reason as soon as a fixture has a second defect. at-25 and at-26 also lacked a binding.
+- The repair path worked live the first time it was needed: the Apple GPU's INT_MAX limit at 2048×2048 was classified, repaired with the tiled decode and passed.
+
 ## 2026-11-16 13:28 — The recipe set (milestone 5)
 
 TODO items: 5.1 to 5.5 and 5.7; 5.6's renders (its owner review is open). GAPS Q24, Q27, Q32, Q33, Q34, Q35. PR on branch `feat/milestone-5`.

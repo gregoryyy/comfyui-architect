@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "prefix": "architect-acceptance-",
+  "files": [
+    {
+      "name": "scene-1024.png",
+      "width": 1024,
+      "height": 1024,
+      "pattern": "scene"
+    },
+    {
+      "name": "scene-1456x816.png",
+      "width": 1456,
+      "height": 816,
+      "pattern": "scene"
+    },
+    {
+      "name": "scene-512.png",
+      "width": 512,
+      "height": 512,
+      "pattern": "scene"
+    },
+    {
+      "name": "pattern-1024.png",
+      "width": 1024,
+      "height": 1024,
+      "pattern": "stripes"
+    },
+    {
+      "name": "mask-1024.png",
+      "width": 1024,
+      "height": 1024,
+      "pattern": "mask-disc"
+    },
+    {
+      "name": "mask-768.png",
+      "width": 768,
+      "height": 768,
+      "pattern": "mask-disc"
+    }
+  ]
+}

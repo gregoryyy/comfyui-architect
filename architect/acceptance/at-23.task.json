@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "at-23",
+  "title": "WebP output",
+  "expect": {
+    "outcome": "blocked",
+    "category": "unsupported_operation",
+    "checks": [
+      "the recipe writes format png, the task asks for webp"
+    ]
+  },
+  "live": "plan",
+  "why": "The recipes save PNG; another format is a hard conflict, not a conversion.",
+  "task": {
+    "intent": "A red bicycle leaning against a white wall, soft morning light.",
+    "media": {
+      "kind": "image",
+      "operation": "text_to_image",
+      "output": {
+        "width": 1024,
+        "height": 1024,
+        "format": "webp"
+      }
+    }
+  }
+}

@@ -21,6 +21,7 @@ import {
 } from "./admission.js";
 import { acceptanceFrom } from "./evaluation.js";
 import { artifactDir, writeFileNoFollow } from "./files.js";
+import { buildRevision, chainStopOf, classifyFailure, smokeStep } from "./repair.js";
 import { canonicalJson, sha256Hex } from "./hash.js";
 import {
   type Acceptance,
@@ -31,6 +32,7 @@ import {
   type Effect,
   type EvaluationRecord,
   FINAL_RUN_STATES,
+  type GraphRevision,
   type LocalRenderEffect,
   type RunPrincipal,
   type RunRecord,
@@ -241,7 +243,10 @@ export class ArchitectExecution {
     // One unfinished run per plan. A run whose outcome is unknown may be rendering: a new
     // action plan for the same plan would render it again (spec §15.4). The user resolves
     // or cancels it first; a deliberate rerun then gets its own approval.
-    const open = this.deps.store.listRuns().filter((r) => r.planId === request.planId && JOB_MAY_RUN.includes(r.state));
+    // A chain whose next attempt isn't decided yet may still render (ARCH 2026-11-16, milestone 6).
+    const open = this.deps.store
+      .listRuns()
+      .filter((r) => r.planId === request.planId && (JOB_MAY_RUN.includes(r.state) || (r.attempt?.index === 1 && !chainStopOf(this.deps.store.listRunEvents(r.id)))));
     if (open.length > 0) {
       throw new ApprovalError(
         "GRAPH_CONFLICT",
@@ -270,11 +275,36 @@ export class ArchitectExecution {
     const key = idempotencyKey(stored);
     const existing = store.findRunByIdempotencyKey(key);
     if (existing) return { run: existing, resumed: true };
-    const { actionPlan, grant } = await admitEffect(this.deps, stored.id, dialog);
+    const { actionPlan, grant, graph } = await admitEffect(this.deps, stored.id, dialog);
+    const render = renderEffect(actionPlan);
+    const runId = `run-${newId()}`;
+    // A plan with stages or a repair scope starts attempt 1 of its chain; with a smoke stage,
+    // that attempt renders the smoke revision of the approved graph (TODO 6.2.1).
+    const smoke = render.stages?.find((s): s is Extract<NonNullable<LocalRenderEffect["stages"]>[number], { stage: "smoke" }> => s.stage === "smoke");
+    const chained = render.stages !== undefined || render.repair !== undefined;
+    let revision: GraphRevision | undefined;
+    if (smoke) {
+      try {
+        revision = buildRevision({
+          id: `grev-${newId()}`,
+          rootRunId: runId,
+          actionPlanId: actionPlan.id,
+          candidateId: actionPlan.candidateId,
+          approved: graph,
+          approvedFingerprint: render.graphFingerprint,
+          steps: [smokeStep(smoke.transformation)],
+          at: now(),
+        }).revision;
+      } catch (err) {
+        throw new ApprovalError("GRAPH_CONFLICT", `the smoke stage doesn't apply to the approved graph: ${err instanceof Error ? err.message : String(err)}`, "Call architect_run prepare again.");
+      }
+    }
     const created = store.createRunWithGrant({
+      ...(revision ? { revision } : {}),
       run: {
         schemaVersion: 1,
-        id: `run-${newId()}`,
+        id: runId,
+        ...(chained ? { attempt: { rootRunId: runId, index: 1, stage: smoke ? "smoke" : "final", repairRound: 0, ...(revision ? { revisionId: revision.id } : {}) } } : {}),
         actionPlanId: actionPlan.id,
         planId: actionPlan.planId,
         taskId: actionPlan.taskId,
@@ -308,10 +338,15 @@ export class ArchitectExecution {
   /** The run as the target sees it now: one reconciliation, then the record. */
   async status(request: { runId: string }) {
     const { store, driver } = this.deps;
-    const before = this.requireRun(request.runId);
+    const requested = this.requireRun(request.runId);
+    // In a chain the attempt in flight is the one reconciled, which also lets the controller
+    // decide what follows a finished one (ARCH 2026-11-16, milestone 6, attempts).
+    const before = requested.attempt ? (store.listAttempts(requested.attempt.rootRunId).at(-1) ?? requested) : requested;
     // A step already running on this run (a download being started) isn't waited for: the
     // stored record is current as far as it goes, and the next status sees the step's result.
-    const run = FINAL_RUN_STATES.includes(before.state) || driver.busy?.(before.id) ? before : await driver.reconcile(before.id);
+    const observed = FINAL_RUN_STATES.includes(before.state) || driver.busy?.(before.id) ? before : await driver.reconcile(before.id);
+    const run = observed.id === requested.id ? observed : this.requireRun(requested.id);
+    const chain = run.attempt ? this.chainView(run.attempt.rootRunId) : undefined;
     const records = store.listEvaluations(run.id);
     const events = store.listRunEvents(run.id);
     const acquisitions = this.deps.acquirer
@@ -320,16 +355,38 @@ export class ArchitectExecution {
     return {
       run,
       ...(acquisitions.length > 0 ? { acquisitions } : {}),
-      verdicts: verdictsOf(run, records, this.submitted(run.id)),
-      evaluations: records.map((r) => ({ criterion: r.criterionId, verdict: r.verdict, source: r.source, explanation: r.explanation })),
+      // A chain reports its result, the final attempt's; a smoke attempt never stands for it (spec §13.1).
+      verdicts: chain ? chain.verdicts : verdictsOf(run, records, this.submitted(run.id)),
+      ...(chain ? { chain: chain.summary, attempts: chain.attempts } : {}),
+      // An advisory verdict is shown as such: it doesn't count toward acceptance (GAPS A11).
+      evaluations: records.map((r) => ({ criterion: r.criterionId, verdict: r.verdict, source: r.source, ...(r.advisory ? { advisory: true } : {}), explanation: r.explanation })),
       recentEvents: events.slice(-5).map((e) => ({ seq: e.seq, at: e.at, kind: e.kind, ...(e.to ? { to: e.to } : {}), reason: e.reason })),
     };
   }
 
-  /** Cancel the run's own prompt; never touches other jobs. */
+  /**
+   * Cancel the run's own prompt; never touches other jobs. In a chain, the attempt in flight
+   * is cancelled, and the root records the request so no further attempt is created.
+   */
   async cancel(request: { runId: string }) {
+    const { store, now, driver } = this.deps;
     const run = this.requireRun(request.runId);
-    return { run: await this.deps.driver.cancel(run.id, "agent") };
+    const render = store.getActionPlan(run.actionPlanId)?.effects.find((e): e is LocalRenderEffect => e.kind === "local_render");
+    const chained = run.attempt !== undefined || render?.stages !== undefined || render?.repair !== undefined;
+    if (!chained) return { run: await driver.cancel(run.id, "agent") };
+    const root = this.requireRun(run.attempt?.rootRunId ?? run.id);
+    // The root's cancel event is what stops the chain: the store refuses a further attempt
+    // after it, and the controller decides nothing more. It is written whatever the attempt in
+    // flight is, since the controller's cancel is a no-op on a run that is EVALUATING, waiting
+    // for review or final, and such a root may still be followed by a repair or a final. It
+    // is written before the attempt in flight is read, so an attempt created a moment earlier
+    // is the one cancelled, and none can be created after.
+    if (!store.listRunEvents(root.id).some((e) => e.kind === "cancel")) {
+      store.appendRunEvent({ runId: root.id, kind: "cancel", principal: "agent", reason: "cancellation of the attempts requested by the agent", at: now() });
+    }
+    const current = store.listAttempts(root.id).at(-1) ?? root;
+    await driver.cancel(current.id, "agent");
+    return { run: this.requireRun(run.id), ...(root.attempt ? { chain: this.chainView(root.id).summary } : {}) };
   }
 
   /**
@@ -339,7 +396,7 @@ export class ArchitectExecution {
    */
   async evaluate(request: { runId: string; reportedVerdict?: "accept" | "reject"; note?: string }, dialog?: VerdictDialog) {
     const { store, now, newId } = this.deps;
-    const run = this.requireRun(request.runId);
+    const run = this.verdictTarget(this.requireRun(request.runId));
     if (run.state !== "AWAITING_REVIEW" && run.state !== "COMPLETED") {
       throw new ApprovalError("MISSING_INPUT", `run ${run.id} is ${run.state}; a verdict needs its outputs`, "Call status until the run is AWAITING_REVIEW or COMPLETED.");
     }
@@ -432,6 +489,7 @@ export class ArchitectExecution {
             actionPlan: actionPlan ? { id: actionPlan.id, hash: actionPlan.hash } : run.actionPlanId,
             grant: grant ? { id: grant.id, channel: grant.channel, issuer: grant.issuer, issuedAt: grant.issuedAt } : undefined,
             promptId: run.promptId,
+            ...(run.attempt ? { attempts: this.chainView(run.attempt.rootRunId).attempts } : {}),
             ...(inputs ? { inputs } : {}),
             ...(acquisitions.length > 0
               ? {
@@ -498,6 +556,70 @@ export class ArchitectExecution {
   /** Whether the run's job was ever submitted (an attempt is recorded before the POST). */
   private submitted(runId: string): boolean {
     return this.deps.store.listRunEvents(runId).some((e) => e.kind === "submit_attempt");
+  }
+
+  /**
+   * The run a user's verdict is about: in a chain, its last final attempt (ARCH 2026-11-16,
+   * milestone 6, attempts); a chain without one has nothing to judge yet.
+   */
+  private verdictTarget(run: RunRecord): RunRecord {
+    if (!run.attempt) return run;
+    const final = this.deps.store.listAttempts(run.attempt.rootRunId).filter((a) => a.attempt?.stage === "final").at(-1);
+    if (!final) {
+      throw new ApprovalError("MISSING_INPUT", `run ${run.id}'s attempts have no final render yet`, "Call status until a final attempt is AWAITING_REVIEW or COMPLETED.");
+    }
+    return final;
+  }
+
+  /**
+   * A chain as status reports it: whether it goes on or stopped and why, the result (its
+   * final attempt) with the three verdicts of spec §4.2, and each attempt with its stage,
+   * state, transformations and node-level diff against the approved graph.
+   */
+  private chainView(rootId: string) {
+    const { store } = this.deps;
+    const attempts = store.listAttempts(rootId);
+    const stop = chainStopOf(store.listRunEvents(rootId));
+    const finals = attempts.filter((a) => a.attempt?.stage === "final");
+    const result = (stop?.resultRunId ? attempts.find((a) => a.id === stop.resultRunId) : undefined) ?? finals.at(-1);
+    const current = attempts.at(-1);
+    const verdicts = result
+      ? verdictsOf(result, store.listEvaluations(result.id), this.submitted(result.id))
+      : { execution: stop ? ("not_run" as const) : ("in_progress" as const), acceptance: "pending" as const, userVerdict: "none" as const };
+    return {
+      verdicts,
+      summary: {
+        rootRunId: rootId,
+        state: stop ? ("stopped" as const) : ("running" as const),
+        ...(stop ? { stopRule: stop.rule, stopReason: stop.reason } : {}),
+        ...(current ? { currentRunId: current.id } : {}),
+        ...(result ? { resultRunId: result.id } : {}),
+      },
+      attempts: attempts.map((a) => {
+        const revision = a.attempt?.revisionId ? store.getGraphRevision(a.attempt.revisionId) : undefined;
+        return {
+          runId: a.id,
+          index: a.attempt?.index,
+          stage: a.attempt?.stage,
+          repairRound: a.attempt?.repairRound,
+          state: a.state,
+          execution: executionVerdict(a, this.submitted(a.id)),
+          acceptance: a.acceptance,
+          // The graph it rendered: the approved one, or a revision with its steps and diff.
+          graph: revision
+            ? {
+                revisionId: revision.id,
+                fingerprint: revision.fingerprint,
+                transformations: revision.steps.map((s) => ({ id: s.id, version: s.version, ...(s.node ? { node: s.node } : {}), reason: s.reason, ...(s.failureClass ? { failureClass: s.failureClass } : {}) })),
+                diff: revision.diff,
+              }
+            : { approved: a.graphFingerprint },
+          ...(a.state === "FAILED" && a.error
+            ? { error: { code: a.error.code, message: a.error.message.slice(0, 500), failureClass: classifyFailure(a.error).failureClass } }
+            : {}),
+        };
+      }),
+    };
   }
 
   /** What the user sees before giving a verdict. */

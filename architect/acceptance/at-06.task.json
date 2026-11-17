@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "at-06",
+  "title": "Z-Image Turbo, 2K upscale",
+  "expect": {
+    "outcome": "feasible",
+    "recipes": [
+      "recipe-zimage-turbo.upscale-2k"
+    ]
+  },
+  "recipeIds": [
+    "recipe-zimage-turbo.upscale-2k"
+  ],
+  "live": "render",
+  "why": "The tiled-VAE 2K upscaler, the recipe the INT_MAX error first showed up in.",
+  "task": {
+    "intent": "The same image at a higher resolution.",
+    "media": {
+      "kind": "image",
+      "operation": "upscale",
+      "output": {
+        "width": 2048,
+        "height": 2048
+      }
+    },
+    "inputs": [
+      {
+        "assetId": "comfyui-input:architect-acceptance-scene-1024.png",
+        "role": "source_image"
+      }
+    ]
+  }
+}

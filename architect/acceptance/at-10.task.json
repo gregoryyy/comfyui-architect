@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "id": "at-10",
+  "title": "FLUX.1-schnell checkpoint, inpainting with protected pixels",
+  "expect": {
+    "outcome": "feasible",
+    "recipes": [
+      "recipe-flux1-schnell.ckpt-inpaint"
+    ]
+  },
+  "recipeIds": [
+    "recipe-flux1-schnell.ckpt-inpaint"
+  ],
+  "live": "render",
+  "why": "Latent-noise-mask inpainting, composited over the source.",
+  "task": {
+    "intent": "A small wooden rowing boat.",
+    "media": {
+      "kind": "image",
+      "operation": "inpaint",
+      "output": {
+        "width": 1024,
+        "height": 1024
+      }
+    },
+    "inputs": [
+      {
+        "assetId": "comfyui-input:architect-acceptance-scene-1024.png",
+        "role": "source_image"
+      },
+      {
+        "assetId": "comfyui-input:architect-acceptance-mask-1024.png",
+        "role": "mask"
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "outside-mask",
+        "kind": "protected_region_exact",
+        "required": true,
+        "sourceAssetId": "comfyui-input:architect-acceptance-scene-1024.png",
+        "maskAssetId": "comfyui-input:architect-acceptance-mask-1024.png",
+        "coordinateSpace": "source_pixels"
+      }
+    ]
+  }
+}

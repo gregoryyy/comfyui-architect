@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  contractGroup,
   MAX_EXPANDED_CANDIDATES,
   MAX_PRESENTED_CANDIDATES,
   missingTaskFields,
   planCandidates,
   type PlanningInput,
 } from "../../services/architect/planner.js";
-import { PlanCandidate, type Recipe } from "../../services/architect/schemas.js";
+import { PlanCandidate, type PlanBlockers, type Recipe } from "../../services/architect/schemas.js";
 import { fixtureObjectInfo, fixtureRecipe, fixtureSnapshot, fixtureTask } from "./fixtures/load.js";
 
 let n = 0;
@@ -146,5 +147,87 @@ describe("planCandidates", () => {
     ];
     const out = planCandidates(input({ recipes: [curated, fixtureRecipe("t2i-basic")], proposals }));
     expect(out.presented.map((c) => c.status)).toEqual(["feasible", "feasible", "blocked"]);
+  });
+});
+
+describe("planCandidates: the §9.5 group of a failing contract check", () => {
+  const RECIPE = "recipe-fixture.t2i-basic";
+  /** The fixture recipe alone, planned with one proposal or none. */
+  function blockersFor(recipe: Recipe, bindings?: Record<string, string | number>, task = fixtureTask()): PlanBlockers {
+    const out = planCandidates(input({ task, recipes: [recipe], ...(bindings ? { proposals: [{ recipeId: recipe.id, bindings }] } : {}) }));
+    expect(out.presented.every((c) => c.status === "blocked")).toBe(true);
+    return out.blockers;
+  }
+  const lines = (b: string[], text: string) => b.filter((l) => l.includes(text));
+
+  // A proposal error is the agent's to fill or correct, so it is missing evidence, never an
+  // operation the recipe can't serve.
+  it("files a binding that names no slot as insufficient evidence", () => {
+    const b = blockersFor(fixtureRecipe("t2i-basic"), { stepz: 30 });
+    expect(lines(b.insufficient_evidence, `binding "stepz" names no slot of recipe ${RECIPE}`)).toHaveLength(1);
+    expect(b.unsupported_operation).toEqual([]);
+  });
+
+  it("files a binding that contradicts the task as insufficient evidence", () => {
+    const b = blockersFor(fixtureRecipe("t2i-basic"), { width: 512 });
+    expect(lines(b.insufficient_evidence, "slot width: binding 512 differs from the task's media.output.width (1024)")).toHaveLength(1);
+    expect(b.unsupported_operation).toEqual([]);
+  });
+
+  it("files a bound value of the wrong type or out of range as insufficient evidence", () => {
+    const wrong = blockersFor(fixtureRecipe("t2i-basic"), { seed: "forty-two" });
+    expect(lines(wrong.insufficient_evidence, 'slot seed (binding): expected a finite number, got "forty-two"')).toHaveLength(1);
+    const range = blockersFor(fixtureRecipe("t2i-basic"), { steps: 999 });
+    expect(lines(range.insufficient_evidence, "slot steps (binding): 999 is above the maximum 150")).toHaveLength(1);
+    expect([...wrong.unsupported_operation, ...range.unsupported_operation]).toEqual([]);
+  });
+
+  it("files a bound input slot as insufficient evidence", () => {
+    const r = fixtureRecipe("t2i-basic");
+    const withInput: Recipe = {
+      ...r,
+      slots: [...r.slots, { id: "reference", label: "Reference", valueType: "input_image", target: { node: "2", input: "text" }, required: false, fromTask: "inputs.reference_image" }],
+    };
+    const b = blockersFor(withInput, { reference: "other.png" });
+    expect(lines(b.insufficient_evidence, "slot reference takes the task's inputs.reference_image; it can't be bound")).toHaveLength(1);
+    expect(b.unsupported_operation).toEqual([]);
+  });
+
+  it("files a required slot without a binding, task value or default as insufficient evidence", () => {
+    const r = fixtureRecipe("t2i-basic");
+    const open: Recipe = { ...r, slots: r.slots.map((s) => (s.id === "steps" ? { ...s, default: undefined } : s)) };
+    const b = blockersFor(open);
+    expect(lines(b.insufficient_evidence, "required slot steps has no binding, task value or default")).toHaveLength(1);
+    expect(b.unsupported_operation).toEqual([]);
+    // The same slot filled by the agent plans.
+    expect(planCandidates(input({ recipes: [open], proposals: [{ recipeId: RECIPE, bindings: { steps: 20 } }] })).presented[0].status).toBe("feasible");
+  });
+
+  it("files a graph that isn't the recipe compiled with its bindings as insufficient evidence", () => {
+    const r = fixtureRecipe("t2i-basic");
+    expect(contractGroup(r, fixtureTask(), {}, fixtureSnapshot(), { id: "compiled_from_recipe" })).toBe("insufficient_evidence");
+  });
+
+  it("files an open model slot whose folder lists no file as a missing dependency", () => {
+    const snapshot = fixtureSnapshot({ installedModels: { folders: { checkpoints: [] }, unanswered: [], absent: [] } });
+    const out = planCandidates(input({ snapshot, recipes: [t2iWithoutDefault()] }));
+    expect(lines(out.blockers.missing_dependencies, "required slot checkpoint has no binding, task value or default")).toHaveLength(1);
+    expect(lines(out.blockers.insufficient_evidence, "required slot checkpoint has no binding")).toEqual([]);
+  });
+
+  // A capability failure stays unsupported: nothing the agent binds or the user installs serves it.
+  it("files a task value the recipe can't take as an unsupported operation", () => {
+    const t = fixtureTask();
+    const b = blockersFor(fixtureRecipe("t2i-basic"), undefined, { ...t, media: { ...t.media, output: { ...t.media.output, count: 12 } } });
+    expect(lines(b.unsupported_operation, "slot batch_size (task media.output.count): 12 is above the maximum 8")).toHaveLength(1);
+    expect(b.insufficient_evidence.filter((l) => l.includes("batch_size"))).toEqual([]);
+  });
+
+  it("files a task size off the recipe's divisor as unsupported, even with a binding for the slot", () => {
+    const r = fixtureRecipe("t2i-basic");
+    const divided: Recipe = { ...r, slots: r.slots.map((s) => (s.id === "width" ? { ...s, fromTaskDivisor: 3 } : s)) };
+    const b = blockersFor(divided, { width: 341 });
+    expect(lines(b.unsupported_operation, "slot width: the task's media.output.width (1024) isn't divisible by 3")).toHaveLength(1);
+    expect(b.insufficient_evidence.filter((l) => l.includes("slot width"))).toEqual([]);
   });
 });

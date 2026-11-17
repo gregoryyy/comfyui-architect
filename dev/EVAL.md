@@ -1,6 +1,6 @@
 # Evaluation
 
-How ComfyUI Architect's claims are tested: questions, baselines, fixtures, procedure, measures, success and stop criteria, limitations. The acceptance suite and the comparison with stock upstream are defined in [SPEC](design/SPEC.md) §19; this file states the claims they test, fixes what SPEC leaves open, and separates proposed targets from observed results. [TODO](TODO.md) schedules the work, [DONE](DONE.md) records results. Status: 2026-11-15 14:43.
+How ComfyUI Architect's claims are tested: questions, baselines, fixtures, procedure, measures, success and stop criteria, limitations. The acceptance suite and the comparison with stock upstream are defined in [SPEC](design/SPEC.md) §19; this file states the claims they test, fixes what SPEC leaves open, and separates proposed targets from observed results. [TODO](TODO.md) schedules the work, [DONE](DONE.md) records results. Status: 2026-11-16 23:34.
 
 No evaluation has run yet. Every number below is a proposed target.
 
@@ -47,6 +47,33 @@ No evaluation has run yet. Every number below is a proposed target.
 - **Procedure:** upstream's LLM Arena for tool use, then Architect's own tasks for schema adherence, tool selection, planning quality and latency.
 - **Measures:** schema-valid proposals per attempt (at most two repair attempts), correct tool choice, plan acceptance by the validator, latency per proposal.
 - **Success:** a model qualifies when its proposals pass validation without repair on most fixture tasks *(proposed; the threshold is set with the first measurements)*. Parameter count isn't a criterion.
+
+## Test matrix
+
+The matrix the acceptance suite runs on (GAPS Q28; TODO 6.6). Claims about real devices hold for this machine only.
+
+| Profile | Device | Runtime | Used for |
+| --- | --- | --- | --- |
+| Reference Mac (real) | Apple M5 Pro, 48 GB unified memory, one MPS device; macOS 27.2 | ComfyUI Desktop 0.44.0 (standalone, PyTorch 2.12.1, Python 3.13, frontend 1.58.5, templates 0.11.103), core nodes only; Ollama 0.40.16 with `glm-ocr:bf16`; the fork's server on Node 22 or newer | Live renders of the 20 feasible fixtures, live planning of the conflicts without an environment change, AT-04, AT-09 |
+| Apple unified memory (fixture) | The reference Mac's device snapshot as recorded | Node schemas of ComfyUI Desktop 0.44.0 (`object-info-desktop-0.44.0.json`) and the recorded model lists | CI: AT-01, AT-02, AT-10 (one lease pool per target, nothing counted twice) |
+| Dedicated GPU (fixture) | A CUDA device with its own VRAM next to system RAM, as data only | The same node schemas | CI: AT-10 (VRAM and system RAM kept apart as reported; one lease pool per target, as for unified memory, and nothing summed while estimates are `unknown`); no claim about such a device |
+
+No paid or cloud machine is part of the matrix (RunPod and similar stay out). The models are the shipped recipes' pinned files as placed on the reference target after milestone 5 (23.6 GB downloaded, [DONE](DONE.md)).
+
+## Results
+
+### E1, 2026-11-16, reference Mac, before the assurance fixes of part C
+
+Observed with `scripts/architect/acceptance.mjs` against ComfyUI Desktop 0.44.0 on `127.0.0.1:8188`, Ollama 0.40.16 with `glm-ocr:bf16`. The runner approved each render through the terminal channel's code (GAPS Q36). The run used the runner as it was before the fixes of the part C review, so its fixture verdicts used execution alone and its egress check covered fixture windows only; the report shows acceptance and egress per fixture, which is what's quoted here. The run that counts for the gate, on the fixed runner, is still to be made.
+
+- **28 live fixtures**: the 20 feasible ones rendered, the 8 `plan` conflicts planned; at-29 and at-30 run in CI only.
+- **AT-04**: 20 of 20 feasible fixtures executable (target 90%): 19 on the first attempt, 1 after repair. at-17 (Z-Image Turbo at 2048×2048) failed its smoke in `VAEDecode` with the Apple GPU's INT_MAX error, was repaired with the tiled decode in round 1, and its smoke and final then passed (551 s).
+- **Acceptance**: passed for all 20, including the protected regions of at-04, at-10 and at-13, the OCR criterion of at-18 and the size criterion of at-20.
+- **Conflicts**: at-21 refused, at-22 to at-28 blocked in their expected categories.
+- **AT-09**: 4,955 destination records, all loopback, none unreadable. The guard of that run didn't record child processes, DNS or UDP yet.
+- **Wall time**: 9 s (RealESRGAN 2×) to 232 s (FLUX.1-schnell checkpoint) per fixture, 551 s for the repaired at-17.
+
+The CI part (AT-01, AT-02, AT-10 under both resource profiles) passes in `acceptance-suite.test.ts`. AT-10 claims only that one target's pool is held by one run at a time and that no device memory is added to RAM; memory accounting isn't measured while recipes carry no resource estimates (GAPS Q38).
 
 ## Limitations
 

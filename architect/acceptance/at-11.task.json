@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "at-11",
+  "title": "FLUX.2 Klein 4B, instruction edit",
+  "expect": {
+    "outcome": "feasible",
+    "recipes": [
+      "recipe-flux2-klein-4b.edit"
+    ]
+  },
+  "recipeIds": [
+    "recipe-flux2-klein-4b.edit"
+  ],
+  "live": "render",
+  "why": "An instruction edit at the source's aspect ratio.",
+  "task": {
+    "intent": "Add a hot-air balloon in the sky.",
+    "media": {
+      "kind": "image",
+      "operation": "image_edit",
+      "output": {
+        "width": 1456,
+        "height": 816
+      }
+    },
+    "inputs": [
+      {
+        "assetId": "comfyui-input:architect-acceptance-scene-1456x816.png",
+        "role": "source_image"
+      }
+    ]
+  }
+}

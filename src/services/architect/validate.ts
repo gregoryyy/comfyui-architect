@@ -8,6 +8,8 @@
 
 import type { ComfyUINodeDef, NodeInputSpec, ObjectInfo } from "../../comfyui/types.js";
 import { compileRecipe, graphFingerprint, type Bindings, type CompileResult } from "./compile.js";
+import { acceptEvaluatorChecks } from "./evaluators/catalog.js";
+import { protectedRegionChecks } from "./evaluators/guarantee.js";
 import { type InputSizes, outputSizeChecks } from "./output-size.js";
 import type {
   ApiGraph,
@@ -188,6 +190,10 @@ function contractLayer(input: ValidateInput, compiled: CompileResult): CheckResu
     return { ...check, verdict: "unknown" as const, message: `slot ${slot.id}: no file to bind, ${slot.modelFolder} couldn't be read (${why})` };
   });
   checks.push(...outputSizeChecks(input.recipe, input.task, input.inputSizes));
+  // Whether the graph keeps a protected region, and whether an accepted evaluator exists
+  // (TODO 6.3.2, 6.4.1).
+  checks.push(...protectedRegionChecks(input.graph ?? compiled.graph, input.recipe, input.task, input.inputSizes));
+  checks.push(...acceptEvaluatorChecks(input.task));
   const transforms = input.transforms ?? [];
   checks.push(
     transforms.length === 0

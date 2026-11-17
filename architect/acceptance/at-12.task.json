@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "at-12",
+  "title": "FLUX.2 Klein 4B, two references",
+  "expect": {
+    "outcome": "feasible",
+    "recipes": [
+      "recipe-flux2-klein-4b.reference"
+    ]
+  },
+  "recipeIds": [
+    "recipe-flux2-klein-4b.reference"
+  ],
+  "live": "render",
+  "why": "Reference conditioning on two images.",
+  "task": {
+    "intent": "The landscape of the first reference painted in the pattern of the second.",
+    "media": {
+      "kind": "image",
+      "operation": "reference_guided",
+      "output": {
+        "width": 1024,
+        "height": 1024
+      }
+    },
+    "inputs": [
+      {
+        "assetId": "comfyui-input:architect-acceptance-scene-1024.png",
+        "role": "reference_image"
+      },
+      {
+        "assetId": "comfyui-input:architect-acceptance-pattern-1024.png",
+        "role": "reference_image"
+      }
+    ]
+  }
+}

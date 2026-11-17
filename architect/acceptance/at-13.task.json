@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "id": "at-13",
+  "title": "FLUX.2 Klein 4B, masked edit with protected pixels",
+  "expect": {
+    "outcome": "feasible",
+    "recipes": [
+      "recipe-flux2-klein-4b.masked-edit"
+    ]
+  },
+  "recipeIds": [
+    "recipe-flux2-klein-4b.masked-edit"
+  ],
+  "live": "render",
+  "why": "An instruction edit inside a mask at the source's size, so the composite guarantee holds.",
+  "task": {
+    "intent": "Replace the masked area with a stone well.",
+    "media": {
+      "kind": "image",
+      "operation": "inpaint",
+      "output": {
+        "width": 1024,
+        "height": 1024
+      }
+    },
+    "inputs": [
+      {
+        "assetId": "comfyui-input:architect-acceptance-scene-1024.png",
+        "role": "source_image"
+      },
+      {
+        "assetId": "comfyui-input:architect-acceptance-mask-1024.png",
+        "role": "mask"
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "outside-mask",
+        "kind": "protected_region_exact",
+        "required": true,
+        "sourceAssetId": "comfyui-input:architect-acceptance-scene-1024.png",
+        "maskAssetId": "comfyui-input:architect-acceptance-mask-1024.png",
+        "coordinateSpace": "source_pixels"
+      }
+    ]
+  }
+}

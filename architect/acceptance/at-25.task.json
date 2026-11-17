@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "id": "at-25",
+  "title": "Missing input file",
+  "expect": {
+    "outcome": "blocked",
+    "category": "insufficient_evidence",
+    "checks": [
+      "the output is the size of architect-acceptance-does-not-exist.png, whose size isn't known"
+    ],
+    "related": {
+      "missing_dependencies": [
+        "\"architect-acceptance-does-not-exist.png\" is not a file LoadImage lists in the target's input folder"
+      ]
+    }
+  },
+  "live": "plan",
+  "why": "The named file isn't in the target's input folder, so its size and content are unknown.",
+  "task": {
+    "intent": "Turn the sky into a dramatic orange sunset.",
+    "media": {
+      "kind": "image",
+      "operation": "image_edit",
+      "output": {
+        "width": 1024,
+        "height": 1024
+      }
+    },
+    "inputs": [
+      {
+        "assetId": "comfyui-input:architect-acceptance-does-not-exist.png",
+        "role": "source_image"
+      }
+    ]
+  },
+  "recipeIds": [
+    "recipe-zimage-turbo.img2img"
+  ],
+  "proposals": [
+    {
+      "recipeId": "recipe-zimage-turbo.img2img",
+      "bindings": {
+        "denoise": 0.6
+      }
+    }
+  ]
+}
